@@ -1,0 +1,469 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Ремонт</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+:root{
+  --bg:   var(--tg-theme-bg-color, #17212b);
+  --sec:  var(--tg-theme-secondary-bg-color, #232e3c);
+  --txt:  var(--tg-theme-text-color, #ffffff);
+  --hint: var(--tg-theme-hint-color, #7d8b99);
+  --btn:  var(--tg-theme-button-color, #5288c1);
+  --btxt: var(--tg-theme-button-text-color, #ffffff);
+  --ok:#4dcd5e; --warn:#f5a623; --bad:#e5484d; --link:#6ab3f3;
+}
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+body{background:var(--bg);color:var(--txt);font:15px/1.5 -apple-system,"Segoe UI",Roboto,sans-serif;
+  padding:14px 14px 40px;overscroll-behavior-y:contain}
+
+.hello{font-size:19px;font-weight:600}
+.sub{font-size:12px;color:var(--hint);margin-bottom:14px}
+
+.stat{background:var(--sec);border-radius:12px;padding:13px 15px;margin-bottom:12px}
+.stat .r{display:flex;justify-content:space-between;align-items:baseline;padding:4px 0;gap:10px}
+.stat .k{font-size:13px;color:var(--hint)}
+.stat .v{font-size:16px;font-weight:600;white-space:nowrap}
+.stat .v.ok{color:var(--ok)} .stat .v.warn{color:var(--warn)} .stat .v.bad{color:var(--bad)}
+.bar{height:6px;background:rgba(125,139,153,.25);border-radius:3px;overflow:hidden;margin-top:9px}
+.bar>i{display:block;height:100%;background:var(--ok);transition:width .4s}
+
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.tile{background:var(--sec);border:none;border-radius:14px;padding:18px 10px;color:var(--txt);
+  cursor:pointer;text-align:center;font:inherit;transition:transform .1s}
+.tile:active{transform:scale(.96)}
+.tile .ic{font-size:27px;display:block;margin-bottom:6px}
+.tile .nm{font-size:13px;font-weight:600;line-height:1.25}
+.tile .h{font-size:11px;color:var(--hint);margin-top:3px}
+.tile.pri{background:var(--btn);color:var(--btxt)}
+.tile.pri .h{opacity:.85;color:inherit}
+
+.card{background:var(--sec);border-radius:12px;padding:14px;margin-bottom:10px}
+.card .lbl{font-size:11px;color:var(--hint);text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px}
+.li{display:flex;justify-content:space-between;align-items:center;padding:11px 0;gap:10px;
+  border-bottom:1px solid rgba(125,139,153,.16)}
+.li:last-child{border:none}
+.li .n{font-size:14px;flex:1;min-width:0}
+.li .d{font-size:11px;color:var(--hint);margin-top:2px}
+.li .v{font-size:14px;font-weight:600;white-space:nowrap}
+
+select,input{background:var(--bg);border:1px solid rgba(125,139,153,.3);color:var(--txt);
+  padding:8px 10px;border-radius:9px;font:inherit;font-size:14px;width:100%}
+input[type=number]{text-align:center}
+.row{display:flex;gap:8px;align-items:center;margin-top:8px}
+.row label{font-size:12px;color:var(--hint);flex:0 0 96px}
+
+.filt{display:flex;gap:7px;overflow-x:auto;padding-bottom:10px;scrollbar-width:none}
+.filt::-webkit-scrollbar{display:none}
+.filt button{background:var(--sec);border:none;color:var(--hint);padding:7px 13px;border-radius:20px;
+  font:inherit;font-size:13px;white-space:nowrap;cursor:pointer}
+.filt button.on{background:var(--btn);color:var(--btxt)}
+
+.work{background:var(--sec);border-radius:12px;padding:12px 13px;margin-bottom:9px}
+.work.done{opacity:.55}
+.work .t{font-size:14px;font-weight:500;line-height:1.3}
+.work .m{font-size:11px;color:var(--hint);margin-top:3px}
+
+.warnbox{background:rgba(245,166,35,.13);border:1px solid rgba(245,166,35,.32);border-radius:12px;
+  padding:13px;margin-bottom:12px;font-size:14px;line-height:1.5}
+.warnbox b{color:var(--warn)}
+.mainbtn{width:100%;background:var(--btn);color:var(--btxt);border:none;border-radius:11px;
+  padding:13px;font:inherit;font-size:14px;font-weight:600;cursor:pointer;margin-top:11px}
+
+.load{text-align:center;padding:70px 20px;color:var(--hint)}
+.err{background:rgba(229,72,77,.13);border:1px solid rgba(229,72,77,.4);border-radius:12px;
+  padding:15px;font-size:14px;line-height:1.55}
+.toast{position:fixed;left:14px;right:14px;bottom:18px;background:var(--ok);color:#06240c;
+  padding:12px;border-radius:11px;text-align:center;font-weight:600;font-size:14px;
+  opacity:0;transform:translateY(12px);transition:.22s;pointer-events:none;z-index:9}
+.toast.on{opacity:1;transform:none}
+.toast.bad{background:var(--bad);color:#fff}
+.toast.wait{background:var(--sec);color:var(--hint)}
+</style>
+</head>
+<body>
+
+<div id="app"><div class="load">Загружаю…</div></div>
+<div class="toast" id="toast"></div>
+
+<script>
+/* ═══════════════════════════════════════════════════════════════
+   Адрес n8n. Уже прописан — менять не надо.
+   ═══════════════════════════════════════════════════════════════ */
+const API = "https://n8n.nc-lab.uz/webhook/remont";
+
+/* Ключ приходит в URL. Бот делает кнопку персонально для каждого:
+   у Юрия ссылка со своим ключом, у Насти — со своим.
+   Роль определяет СЕРВЕР по ключу, не этот файл.                  */
+const KEY = new URLSearchParams(location.search).get("key") || "";
+
+const tg = window.Telegram?.WebApp;
+if (tg) { tg.ready(); tg.expand(); }
+
+let D = null;                       // данные с сервера
+let stack = ["home"];               // стек навигации
+let fRoom = "";                     // активный фильтр по комнате
+const app = document.getElementById("app");
+const fmt = n => (Number(n) || 0).toLocaleString("ru-RU", { maximumFractionDigits: 0 });
+
+/* Бот пишет в таблицу произвольные названия материалов. Одна кавычка в имени
+   сломала бы разметку — поэтому всё, что пришло с сервера, экранируем.        */
+const esc  = t => String(t ?? "").replace(/[&<>"']/g, c =>
+  ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c]));
+const attr = t => esc(t);
+
+/* ── ЗАГРУЗКА ─────────────────────────────────────────────── */
+async function load(){
+  try{
+    const r = await fetch(`${API}/data?key=${encodeURIComponent(KEY)}`, { cache: "no-store" });
+    const BAD = "Ссылка недействительна — попросите новую у Дмитрия.";
+    if(r.status === 401 || r.status === 403) throw new Error(BAD);
+    if(!r.ok) throw new Error("Сервер не отвечает (HTTP " + r.status + ")");
+    /* При неверном ключе n8n обрывает цепочку и отдаёт пустое тело с кодом 200.
+       Данные не утекают, но и JSON не приходит — трактуем это как отказ в доступе. */
+    const raw = (await r.text()).trim();
+    if(!raw) throw new Error(BAD);
+    try{ D = JSON.parse(raw); }catch{ throw new Error(BAD); }
+    if(!D || !D.role) throw new Error(BAD);
+    render();
+  }catch(e){
+    app.innerHTML = `<div class="err"><b>Не удалось загрузить.</b><br>${e.message}
+      <br><br><span style="color:var(--hint);font-size:13px">Проверьте интернет и откройте ещё раз.</span></div>`;
+  }
+}
+
+/* ── ЗАПИСЬ ───────────────────────────────────────────────────
+   Не перечитываем всё после каждой правки — правим локально.
+   Иначе на 102 работах экран моргает и уезжает наверх.        */
+async function upd(sheet, code, field, value){
+  toast("Сохраняю…", "wait");
+  try{
+    const r = await fetch(`${API}/update`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key: KEY, sheet, code, field, value })
+    });
+    if(!r.ok){
+      const t = await r.text();
+      throw new Error(t.includes("403") ? "Это поле только для чтения" : "Ошибка записи");
+    }
+    patch(sheet, code, field, value);
+    tg?.HapticFeedback?.notificationOccurred("success");
+    toast("Сохранено");
+  }catch(e){
+    tg?.HapticFeedback?.notificationOccurred("error");
+    toast(e.message, "bad");
+    load();                                   // откатить экран к правде сервера
+  }
+}
+
+/* локально отразить правку — чтобы прогресс и суммы пересчитались сразу */
+function patch(sheet, code, field, value){
+  if(sheet === "01_Работы"){
+    const w = D.works.find(x => x.code === code);
+    if(!w) return;
+    if(field === "Статус")        w.status   = value;
+    if(field === "Готовность_%")  w.progress = Number(value) || 0;
+    if(field === "Цена_Юрия_USD") w.price_contractor_usd = value === "" ? null : Number(value);
+    if(field === "Комментарий")   w.comment  = value;
+    if(w.status === "Готово") w.progress = 100;
+  }
+  if(sheet === "03_Материалы"){
+    const m = D.materials.find(x => x.name === code);
+    if(!m) return;
+    if(field === "Куплено")       m.in  = Number(value) || 0;
+    if(field === "Израсходовано") m.out = Number(value) || 0;
+    m.rest = (m.in || 0) - (m.out || 0);
+  }
+}
+
+let tt;
+function toast(msg, kind){
+  const t = document.getElementById("toast");
+  t.textContent = msg;
+  t.className = "toast on" + (kind ? " " + kind : "");
+  clearTimeout(tt);
+  if(kind !== "wait") tt = setTimeout(() => t.className = "toast", 1900);
+}
+
+/* ── НАВИГАЦИЯ (стек, ровно один уровень вглубь) ───────────── */
+function go(k){ stack.push(k); render(true); }
+function back(){ if(stack.length > 1){ stack.pop(); render(true); } }
+
+function render(toTop){
+  const k = stack[stack.length - 1];
+  app.innerHTML = (SCREENS[k] || SCREENS.home)();
+  if(toTop) window.scrollTo(0, 0);
+  if(tg){
+    if(stack.length > 1){ tg.BackButton.show(); tg.BackButton.onClick(back); }
+    else tg.BackButton.hide();
+  }
+}
+
+const progress = () => D.works.length
+  ? D.works.reduce((s,w) => s + (w.progress || 0), 0) / D.works.length : 0;
+
+/* ═══════════════════════════════════════════════════════════════
+   ЭКРАНЫ
+   ═══════════════════════════════════════════════════════════════ */
+const SCREENS = {
+
+home(){
+  const worker = D.role === "worker";
+  const p = progress();
+  const m = D.my_money;
+  const S = D.settings;
+
+  const head = worker && m ? `
+    <div class="stat">
+      <div class="r"><span class="k">Вам ещё должны за работу</span>
+        <span class="v ok">${fmt(m.owed_usd)} $</span></div>
+      <div class="r"><span class="k">Получено</span>
+        <span class="v">${fmt(m.received_usd)} из ${fmt(m.contract_usd)} $</span></div>
+      <div class="r"><span class="k">Готовность объекта</span>
+        <span class="v">${Math.round(p)} %</span></div>
+      <div class="bar"><i style="width:${p}%"></i></div>
+    </div>` : `
+    <div class="stat">
+      <div class="r"><span class="k">Договор</span>
+        <span class="v">${fmt(S["Договор_USD"])} $</span></div>
+      <div class="r"><span class="k">Остаток за работу</span>
+        <span class="v warn">${fmt(S["Остаток_за_работу_USD"])} $</span></div>
+      <div class="r"><span class="k">Готовность</span>
+        <span class="v">${Math.round(p)} %</span></div>
+      <div class="bar"><i style="width:${p}%"></i></div>
+    </div>`;
+
+  const chekiUZS = worker ? (m?.unconfirmed_uzs || 0) : (S["Не_подтверждено_сум"] || 0);
+  const cheki = chekiUZS ? `
+    <div class="warnbox">
+      ${worker
+        ? `Из аванса на материалы <b>${fmt(chekiUZS)} сум</b> пока без чеков.<br>
+           <span style="color:var(--hint);font-size:13px">Сфотографируйте их в боте — строка исчезнет.</span>`
+        : `<b>${fmt(chekiUZS)} сум</b> из аванса 26.06 — без расшифровки.`}
+    </div>` : "";
+
+  return `
+    <div class="hello">${esc(D.who)}, добрый день</div>
+    <div class="sub">${new Date().toLocaleDateString("ru-RU",{day:"numeric",month:"long"})}</div>
+    ${head}${cheki}
+    <div class="grid">
+      <button class="tile pri" onclick="toBot()">
+        <span class="ic">🎤</span><span class="nm">Записать<br>голосом</span>
+        <div class="h">трату или работу</div></button>
+      <button class="tile pri" onclick="toBot()">
+        <span class="ic">📷</span><span class="nm">Сфотографировать<br>чек</span>
+        <div class="h">в чат с ботом</div></button>
+      <button class="tile" onclick="go('money')"><span class="ic">💰</span>
+        <span class="nm">${D.role === "worker" ? "Мои деньги" : "Финансы"}</span></button>
+      <button class="tile" onclick="go('works')"><span class="ic">🔨</span>
+        <span class="nm">Работы</span><div class="h">${D.works.length} позиций</div></button>
+      <button class="tile" onclick="go('buy')"><span class="ic">🛒</span>
+        <span class="nm">Материалы</span></button>
+      <button class="tile" onclick="go('deal')"><span class="ic">📋</span>
+        <span class="nm">Что входит<br>в договор</span></button>
+    </div>`;
+},
+
+works(){
+  const worker = D.role === "worker";
+  const rooms  = [...new Set(D.works.map(w => w.room))];
+  const list   = fRoom ? D.works.filter(w => w.room === fRoom) : D.works;
+
+  return `
+    <div class="hello">Работы</div>
+    <div class="sub">${list.length}${fRoom ? " из " + D.works.length : " позиций"}</div>
+    <div class="filt">
+      <button class="${!fRoom ? "on" : ""}" onclick="fRoom='';render()">Все</button>
+      ${rooms.map(r => `<button class="${fRoom===r?"on":""}" data-r="${attr(r)}"
+        onclick="fRoom=this.dataset.r;render()">${esc(r.split(" (")[0])}</button>`).join("")}
+    </div>
+    ${list.map(w => `
+      <div class="work${w.status === "Готово" ? " done" : ""}">
+        <div class="t">${esc(w.name)}</div>
+        <div class="m">${esc(w.room.split(" (")[0])} · ${esc(w.section)} · ${w.unit === "компл" ? "комплект" : w.qty + " " + esc(w.unit)}</div>
+        <div class="row">
+          <label>Статус</label>
+          <select onchange="upd('01_Работы','${w.code}','Статус',this.value)">
+            ${["Не начато","В работе","Готово","Приостановлено","Снято"]
+              .map(s => `<option${s === w.status ? " selected" : ""}>${s}</option>`).join("")}
+          </select>
+        </div>
+        <div class="row">
+          <label>Готово, %</label>
+          <input type="number" min="0" max="100" step="10" value="${w.progress || 0}"
+            onchange="upd('01_Работы','${w.code}','Готовность_%',this.value)">
+        </div>
+        ${worker ? `
+        <div class="row">
+          <label>Ваша цена, $</label>
+          <input type="number" min="0" value="${w.price_contractor_usd ?? ""}" placeholder="— впишите"
+            onchange="upd('01_Работы','${w.code}','Цена_Юрия_USD',this.value)">
+        </div>` : `
+        <div class="row">
+          <label>Оценка</label>
+          <div style="flex:1;font-weight:600;font-size:14px">
+            ${w.price_alloc_usd ? "$" + Math.round(w.price_alloc_usd) : "—"}
+            ${w.price_contractor_usd != null
+              ? ` <span style="color:var(--hint);font-weight:400">· Юрий: $${w.price_contractor_usd}</span>` : ""}
+          </div>
+        </div>`}
+      </div>`).join("")}`;
+},
+
+money(){
+  const S = D.settings;
+
+  if(D.role === "worker"){
+    const m = D.my_money;
+    return `
+      <div class="hello">Мои деньги</div>
+      <div class="sub">на ${new Date().toLocaleDateString("ru-RU")}</div>
+
+      <div class="card">
+        <div class="lbl">За работу</div>
+        <div class="li"><div class="n">Договор</div><div class="v">${fmt(m.contract_usd)} $</div></div>
+        <div class="li"><div class="n">Получено</div><div class="v ok" style="color:var(--ok)">${fmt(m.received_usd)} $</div></div>
+        <div class="li"><div class="n"><b>Осталось получить</b></div><div class="v">${fmt(m.owed_usd)} $</div></div>
+      </div>
+
+      <div class="card">
+        <div class="lbl">Аванс на материалы</div>
+        <div class="li"><div class="n">Выдано 26.06</div><div class="v">${fmt(m.advance_uzs)} сум</div></div>
+        <div class="li"><div class="n">Подтверждено чеками</div>
+          <div class="v">${fmt((m.advance_uzs || 0) - (m.unconfirmed_uzs || 0))} сум</div></div>
+        <div class="li"><div class="n"><b>Ждём чеки на</b></div>
+          <div class="v" style="color:var(--warn)">${fmt(m.unconfirmed_uzs)} сум</div></div>
+      </div>
+
+      ${m.unconfirmed_uzs ? `
+      <div class="warnbox">
+        Пока чеков нет, эта сумма висит на вас. Сфотографируйте их в боте — я разберу сам.
+        <button class="mainbtn" onclick="toBot()">📷 Отправить чеки</button>
+      </div>` : ""}`;
+  }
+
+  return `
+    <div class="hello">Финансы</div>
+    <div class="sub">все платежи по объекту</div>
+    <div class="stat">
+      <div class="r"><span class="k">Договор</span><span class="v">${fmt(S["Договор_USD"])} $</span></div>
+      <div class="r"><span class="k">Оплачено за работу</span><span class="v ok">${fmt(S["Оплачено_за_работу_USD"])} $</span></div>
+      <div class="r"><span class="k">Остаток</span><span class="v warn">${fmt(S["Остаток_за_работу_USD"])} $</span></div>
+    </div>
+    ${S["Не_подтверждено_сум"] ? `
+      <div class="warnbox"><b>${fmt(S["Не_подтверждено_сум"])} сум</b> из аванса 26.06 — без расшифровки.</div>` : ""}
+    <div class="card">
+      <div class="lbl">Платежи</div>
+      ${(D.payments || []).map(p => `
+        <div class="li">
+          <div class="n">${esc(p["Назначение"])}
+            <div class="d">${esc(p["Дата"])} · ${esc(p["Кому"])}${
+              p["Статус_сверки"] && p["Статус_сверки"] !== "OK"
+                ? ` · <span style="color:var(--warn)">${esc(p["Статус_сверки"])}</span>` : ""}</div></div>
+          <div class="v">${fmt(String(p["Сумма"]).replace(/\s/g,""))} ${p["Валюта"] === "USD" ? "$" : "сум"}</div>
+        </div>`).join("")}
+    </div>
+    ${(D.extras || []).length ? `
+    <div class="card">
+      <div class="lbl">Допы</div>
+      ${D.extras.filter(e => e["Код"] && e["Доп"]).map(e => `
+        <div class="li"><div class="n">${esc(e["Доп"])}
+          <div class="d">${esc(e["Статус"])}</div></div>
+          <div class="v">${e["Расчёт_USD"] ? "$" + Math.round(Number(e["Расчёт_USD"])) : "—"}</div></div>`).join("")}
+    </div>` : ""}`;
+},
+
+buy(){
+  const worker = D.role === "worker";
+  const out  = D.materials.filter(m => (m.rest ?? 0) <= 0 && (m.out ?? 0) > 0);
+  const have = D.materials.filter(m => (m.rest ?? 0) > 0);
+  const rest = D.materials.filter(m => !out.includes(m) && !have.includes(m));
+
+  const line = m => worker ? `
+    <div class="work">
+      <div class="t">${esc(m.name)}</div>
+      <div class="m">${esc(m.src)}</div>
+      <div class="row"><label>Куплено, ${esc(m.unit)}</label>
+        <input type="number" min="0" value="${m.in ?? ""}" placeholder="—"
+          onchange="upd('03_Материалы', this.dataset.c, 'Куплено', this.value)" data-c="${attr(m.name)}"></div>
+      <div class="row"><label>Ушло, ${esc(m.unit)}</label>
+        <input type="number" min="0" value="${m.out ?? ""}" placeholder="—"
+          onchange="upd('03_Материалы', this.dataset.c, 'Израсходовано', this.value)" data-c="${attr(m.name)}"></div>
+    </div>` : `
+    <div class="li"><div class="n">${esc(m.name)}<div class="d">${esc(m.src)}</div></div>
+      <div class="v" style="${(m.rest ?? 0) <= 0 ? "color:var(--bad)" : ""}">${m.rest ?? 0} ${m.unit}</div></div>`;
+
+  return `
+    <div class="hello">Материалы</div>
+    <div class="sub">${worker ? "впишите, что купили и что ушло" : "остатки на объекте"}</div>
+    ${out.length ? `<div class="card"><div class="lbl" style="color:var(--bad)">Кончилось</div>
+      ${out.map(line).join("")}</div>` : ""}
+    ${have.length ? `<div class="card"><div class="lbl">Есть на объекте</div>
+      ${have.map(line).join("")}</div>` : ""}
+    ${rest.length ? `<div class="card"><div class="lbl">Без учёта</div>
+      ${rest.map(line).join("")}</div>` : ""}`;
+},
+
+deal(){
+  const S = D.settings;
+  return `
+    <div class="hello">Договор</div>
+    <div class="sub">что входит в сумму</div>
+    <div class="stat">
+      <div class="r"><span class="k">Сумма</span><span class="v">${fmt(S["Договор_USD"])} $</span></div>
+      <div class="r"><span class="k">Выплачено</span><span class="v ok">${fmt(S["Оплачено_за_работу_USD"])} $</span></div>
+      <div class="r"><span class="k">Остаток</span><span class="v">${fmt(S["Остаток_за_работу_USD"])} $</span></div>
+    </div>
+    <div class="card">
+      <div class="lbl">Входит в цену</div>
+      <div style="font-size:13.5px;line-height:1.9">
+        Малярка полным циклом — все комнаты, лоджия, кухня<br>
+        Электрика — 54 точки, щит, перекладка<br>
+        Кафель в санузле, поддон, гидроизоляция<br>
+        Батареи 3 шт., переварка, регистр на лоджии<br>
+        Утепление лоджии — три стены<br>
+        Двери, плинтусы, откосы<br>
+        Полы — базовый вариант (локальный ремонт)
+      </div>
+    </div>
+    <div class="card">
+      <div class="lbl">Не входит</div>
+      <div style="font-size:13.5px;line-height:1.9;color:var(--hint)">
+        Все материалы — покупает заказчик<br>
+        Стекло душевой кабины<br>
+        Тёплый пол<br>
+        Финишное покрытие полов — материал заказчика<br>
+        Двери и плинтусы — материал заказчика
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="lbl">Уже оплачено сверх договора</div>
+      <div class="li"><div class="n">Объединение санузла<div class="d">доп D-01, закрыт</div></div>
+        <div class="v">3 000 000 сум</div></div>
+    </div>
+
+    <div class="warnbox" style="border-color:var(--hint)">
+      Всё, что не в этом списке, — отдельный разговор <b>до</b> начала работ, а не после.
+    </div>`;
+},
+
+};   /* ── конец SCREENS ───────────────────────────────────────── */
+
+/* ── ВЫХОД В ЧАТ С БОТОМ ──────────────────────────────────────
+   Голос и фото живут в чате, а не в вебвью: короче путь.       */
+function toBot(){
+  if(tg){ tg.close(); }
+  else { toast("Откройте через Telegram — там ждёт бот", "wait"); }
+}
+
+/* ── СТАРТ ────────────────────────────────────────────────── */
+tg?.ready();
+tg?.expand();
+load();
+</script>
+</body>
+</html>
