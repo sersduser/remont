@@ -94,13 +94,16 @@ input[type=number]{text-align:center}
    ═══════════════════════════════════════════════════════════════ */
 const API = "https://n8n.nc-lab.uz/webhook/remont";
 
-/* Ключ приходит в URL. Бот делает кнопку персонально для каждого:
-   у Юрия ссылка со своим ключом, у Насти — со своим.
-   Роль определяет СЕРВЕР по ключу, не этот файл.                  */
-const KEY = new URLSearchParams(location.search).get("key") || "";
-
+/* Идентификация — по ЛИЧНОСТИ из Telegram (initData), а не по ключу в ссылке.
+   Сервер проверяет подпись Telegram его публичным ключом (токен бота не нужен)
+   и определяет роль по Telegram-ID из листа 09_Доступы. Подменить роль с клиента
+   или подставить чужой ключ нельзя. KEY оставлен запасным входом на переходный
+   период и для отладки в обычном браузере (вне Telegram initData недоступен).   */
 const tg = window.Telegram?.WebApp;
 if (tg) { tg.ready(); tg.expand(); }
+
+const INIT = (tg && tg.initData) || "";                              // подписанные данные Telegram
+const KEY  = new URLSearchParams(location.search).get("key") || "";  // legacy / отладка вне Telegram
 
 let D = null;                       // данные с сервера
 let stack = ["home"];               // стек навигации
@@ -117,8 +120,10 @@ const attr = t => esc(t);
 /* ── ЗАГРУЗКА ─────────────────────────────────────────────── */
 async function load(){
   try{
-    const r = await fetch(`${API}/data?key=${encodeURIComponent(KEY)}`, { cache: "no-store" });
-    const BAD = "Ссылка недействительна — попросите новую у Дмитрия.";
+    const auth = INIT ? `initData=${encodeURIComponent(INIT)}`
+                      : `key=${encodeURIComponent(KEY)}`;
+    const r = await fetch(`${API}/data?${auth}`, { cache: "no-store" });
+    const BAD = "Доступ не подтверждён — откройте панель через бота в Telegram.";
     if(r.status === 401 || r.status === 403) throw new Error(BAD);
     if(!r.ok) throw new Error("Сервер не отвечает (HTTP " + r.status + ")");
     /* При неверном ключе n8n обрывает цепочку и отдаёт пустое тело с кодом 200.
@@ -143,7 +148,7 @@ async function upd(sheet, code, field, value){
     const r = await fetch(`${API}/update`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ key: KEY, sheet, code, field, value })
+      body: JSON.stringify({ initData: INIT, key: KEY, sheet, code, field, value })
     });
     if(!r.ok){
       const t = await r.text();
