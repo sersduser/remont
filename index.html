@@ -81,12 +81,60 @@ input[type=number]{text-align:center}
 .toast.on{opacity:1;transform:none}
 .toast.bad{background:var(--bad);color:#fff}
 .toast.wait{background:var(--sec);color:var(--hint)}
+
+/* ── ГОЛОСОВОЙ ВВОД: модальное окно, индикатор, результат ── */
+.vmask{position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:flex-end;
+  justify-content:center;z-index:20;opacity:0;pointer-events:none;transition:.2s}
+.vmask.on{opacity:1;pointer-events:auto}
+.vsheet{background:var(--bg);width:100%;max-width:560px;border-radius:18px 18px 0 0;
+  padding:18px 16px calc(18px + env(safe-area-inset-bottom));transform:translateY(20px);transition:.24s}
+.vmask.on .vsheet{transform:none}
+.vsheet .vh{font-size:17px;font-weight:600;margin-bottom:4px}
+.vsheet .vs{font-size:12px;color:var(--hint);margin-bottom:14px}
+
+.vrec{display:flex;flex-direction:column;align-items:center;gap:12px;padding:14px 0 6px}
+.vmic{width:84px;height:84px;border-radius:50%;background:var(--btn);display:flex;align-items:center;
+  justify-content:center;font-size:38px}
+.vmic.rec{animation:pulse 1.2s ease-out infinite;background:var(--bad)}
+@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(229,72,77,.5)}100%{box-shadow:0 0 0 26px rgba(229,72,77,0)}}
+.vtime{font-size:22px;font-weight:600;font-variant-numeric:tabular-nums}
+.vwave{display:flex;gap:3px;align-items:center;height:20px}
+.vwave i{width:3px;background:var(--hint);border-radius:2px;animation:wv 1s ease-in-out infinite}
+.vwave i:nth-child(2){animation-delay:.15s}.vwave i:nth-child(3){animation-delay:.3s}
+.vwave i:nth-child(4){animation-delay:.45s}.vwave i:nth-child(5){animation-delay:.6s}
+@keyframes wv{0%,100%{height:6px}50%{height:20px}}
+
+.vrow{display:flex;gap:10px;margin-top:16px}
+.vrow button{flex:1;border:none;border-radius:11px;padding:13px;font:inherit;font-size:15px;
+  font-weight:600;cursor:pointer}
+.vbtn-ok{background:var(--btn);color:var(--btxt)}
+.vbtn-cancel{background:var(--sec);color:var(--txt)}
+.vbtn-bad{background:var(--bad);color:#fff}
+
+.vitem{display:flex;gap:11px;align-items:flex-start;background:var(--sec);border-radius:11px;
+  padding:12px;margin-bottom:8px;cursor:pointer}
+.vitem .vchk{width:22px;height:22px;border-radius:6px;border:2px solid var(--hint);flex:0 0 22px;
+  margin-top:1px;display:flex;align-items:center;justify-content:center;font-size:14px;color:#fff}
+.vitem.sel .vchk{background:var(--ok);border-color:var(--ok)}
+.vitem .vt{font-size:14px;font-weight:500;line-height:1.3}
+.vitem .vd{font-size:12px;color:var(--hint);margin-top:2px}
+.vitem .vv{font-size:13px;margin-top:3px}
+.vitem .vv b{color:var(--ok)}
+.vquote{background:var(--sec);border-radius:10px;padding:10px 12px;font-size:13px;color:var(--hint);
+  margin-bottom:12px;line-height:1.45}
+.vquote b{color:var(--txt);font-weight:500}
+.vspin{width:34px;height:34px;border:3px solid rgba(125,139,153,.3);border-top-color:var(--btn);
+  border-radius:50%;animation:spin .8s linear infinite;margin:8px auto}
+@keyframes spin{to{transform:rotate(360deg)}}
 </style>
 </head>
 <body>
 
 <div id="app"><div class="load">Загружаю…</div></div>
 <div class="toast" id="toast"></div>
+
+<!-- Модальное окно голосового ввода -->
+<div class="vmask" id="vmask"><div class="vsheet" id="vsheet"></div></div>
 
 <script>
 /* ═══════════════════════════════════════════════════════════════
@@ -150,17 +198,21 @@ async function upd(sheet, code, field, value){
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ initData: INIT, key: KEY, sheet, code, field, value })
     });
-    if(!r.ok){
-      const t = await r.text();
-      throw new Error(t.includes("403") ? "Это поле только для чтения" : "Ошибка записи");
+    /* При отказе сервер отдаёт пустой ответ с кодом 200 (n8n throw → пустое тело).
+       Поэтому «успех» = ok И непустое тело; пустое тело трактуем как отказ.      */
+    const t = (await r.text()).trim();
+    if(!r.ok || !t){
+      throw new Error(t.includes("403") ? "Это поле только для чтения" : "Не удалось сохранить");
     }
     patch(sheet, code, field, value);
     tg?.HapticFeedback?.notificationOccurred("success");
     toast("Сохранено");
+    return true;
   }catch(e){
     tg?.HapticFeedback?.notificationOccurred("error");
     toast(e.message, "bad");
     load();                                   // откатить экран к правде сервера
+    return false;
   }
 }
 
@@ -255,7 +307,7 @@ home(){
     <div class="sub">${new Date().toLocaleDateString("ru-RU",{day:"numeric",month:"long"})}</div>
     ${head}${cheki}
     <div class="grid">
-      <button class="tile pri" onclick="toBot()">
+      <button class="tile pri" onclick="startVoice()">
         <span class="ic">🎤</span><span class="nm">Записать<br>голосом</span>
         <div class="h">трату или работу</div></button>
       <button class="tile pri" onclick="toBot()">
@@ -458,8 +510,172 @@ deal(){
 
 };   /* ── конец SCREENS ───────────────────────────────────────── */
 
-/* ── ВЫХОД В ЧАТ С БОТОМ ──────────────────────────────────────
-   Голос и фото живут в чате, а не в вебвью: короче путь.       */
+/* ══════════════════════════════════════════════════════════════
+   ГОЛОСОВОЙ ВВОД — запись прямо в приложении, разбор на сервере.
+   Ничего не уходит в ленту бота: запись, распознавание и
+   подтверждение живут во встроенном окне.
+   Контракт сервера POST {API}/voice  (FormData: audio, initData|key):
+     ответ { ok:true, recognized:"…", items:[ {sheet,code,name,room,
+             field,field_label,value,value_label} ] }
+     items.length === 0  → ничего внятного не распознано (выбраковка)
+     items.length === 1  → одно подтверждение
+     items.length  >  1  → мультивыбор «N из M»
+   ══════════════════════════════════════════════════════════════ */
+let mediaRec = null, chunks = [], vTimer = null, vSec = 0, vStream = null, vItems = [];
+const vmask  = document.getElementById("vmask");
+const vsheet = document.getElementById("vsheet");
+
+function openVSheet(html){ vsheet.innerHTML = html; vmask.classList.add("on"); }
+function closeVSheet(){ vmask.classList.remove("on"); }
+
+async function startVoice(){
+  if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || typeof MediaRecorder === "undefined"){
+    toast("Запись голоса недоступна в этом клиенте", "bad"); return;
+  }
+  try{
+    vStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  }catch(e){
+    openVSheet(`
+      <div class="vh">Нужен доступ к микрофону</div>
+      <div class="vs">Разрешите приложению запись, чтобы диктовать правки.</div>
+      <div class="vrow"><button class="vbtn-cancel" onclick="closeVSheet()">Закрыть</button></div>`);
+    return;
+  }
+  chunks = [];
+  const mime = MediaRecorder.isTypeSupported("audio/webm;codecs=opus") ? "audio/webm;codecs=opus"
+             : MediaRecorder.isTypeSupported("audio/webm") ? "audio/webm"
+             : MediaRecorder.isTypeSupported("audio/ogg;codecs=opus") ? "audio/ogg;codecs=opus" : "";
+  try{
+    mediaRec = new MediaRecorder(vStream, mime ? { mimeType: mime } : undefined);
+  }catch(e){ mediaRec = new MediaRecorder(vStream); }
+  mediaRec.ondataavailable = e => { if(e.data && e.data.size) chunks.push(e.data); };
+  mediaRec.onstop = onRecStop;
+  mediaRec._send = false;
+  mediaRec.start();
+  vSec = 0;
+  renderRecUI();
+  vTimer = setInterval(() => { vSec++; const t = document.getElementById("vtime"); if(t) t.textContent = fmtTime(vSec); }, 1000);
+}
+
+function renderRecUI(){
+  openVSheet(`
+    <div class="vh">Говорите</div>
+    <div class="vs">Например: «покраска потолка в спальне готова» или «куплено 5 мешков цемента»</div>
+    <div class="vrec">
+      <div class="vmic rec">🎙️</div>
+      <div class="vtime" id="vtime">0:00</div>
+      <div class="vwave"><i></i><i></i><i></i><i></i><i></i></div>
+    </div>
+    <div class="vrow">
+      <button class="vbtn-cancel" onclick="stopVoice(false)">Отмена</button>
+      <button class="vbtn-ok" onclick="stopVoice(true)">Готово</button>
+    </div>`);
+}
+
+function stopVoice(send){
+  if(vTimer){ clearInterval(vTimer); vTimer = null; }
+  if(mediaRec && mediaRec.state !== "inactive"){ mediaRec._send = send; mediaRec.stop(); }
+  if(vStream){ vStream.getTracks().forEach(t => t.stop()); vStream = null; }
+  if(!send) closeVSheet();
+}
+
+async function onRecStop(){
+  if(!mediaRec._send){ return; }
+  const blob = new Blob(chunks, { type: (chunks[0] && chunks[0].type) || "audio/webm" });
+  if(!blob.size){ showVError("Не расслышал — попробуйте ещё раз."); return; }
+  openVSheet(`<div class="vh">Распознаю…</div><div class="vspin"></div>
+    <div class="vs" style="text-align:center">Отправляю запись на разбор</div>`);
+  try{
+    const fd = new FormData();
+    fd.append("audio", blob, "voice.webm");
+    fd.append("initData", INIT);
+    fd.append("key", KEY);                       // legacy / отладка вне Telegram
+    const r = await fetch(`${API}/voice`, { method: "POST", body: fd });
+    const raw = (await r.text()).trim();
+    if(r.status === 401 || r.status === 403) throw new Error("Доступ не подтверждён.");
+    if(!raw) throw new Error("Не удалось разобрать запись. Попробуйте ещё раз.");
+    let d; try{ d = JSON.parse(raw); }catch{ throw new Error("Сервер вернул неожиданный ответ."); }
+    showVResult(d);
+  }catch(e){ showVError(e.message); }
+}
+
+function showVError(msg){
+  tg?.HapticFeedback?.notificationOccurred("error");
+  openVSheet(`
+    <div class="vh">Не получилось</div>
+    <div class="vs">${esc(msg)}</div>
+    <div class="vrow">
+      <button class="vbtn-cancel" onclick="closeVSheet()">Закрыть</button>
+      <button class="vbtn-ok" onclick="startVoice()">Записать заново</button>
+    </div>`);
+}
+
+/* Показ распознанного. items===[] → выбраковка (ничего не поняли). */
+function showVResult(d){
+  const items = Array.isArray(d.items) ? d.items : [];
+  vItems = items.map(x => ({ ...x, _sel: true }));
+
+  if(items.length === 0){
+    tg?.HapticFeedback?.notificationOccurred("warning");
+    openVSheet(`
+      <div class="vh">Не разобрал</div>
+      <div class="vs">Не понял, какую работу или трату вы имели в виду.</div>
+      ${d.recognized ? `<div class="vquote">Расслышал: <b>${esc(d.recognized)}</b></div>` : ""}
+      <div class="vrow">
+        <button class="vbtn-cancel" onclick="closeVSheet()">Закрыть</button>
+        <button class="vbtn-ok" onclick="startVoice()">Сказать иначе</button>
+      </div>`);
+    return;
+  }
+
+  const multi = items.length > 1;
+  const quote = d.recognized ? `<div class="vquote">Расслышал: <b>${esc(d.recognized)}</b></div>` : "";
+  const rows = vItems.map((it, i) => `
+    <div class="vitem sel" data-i="${i}" onclick="toggleVItem(${i})">
+      <div class="vchk">✓</div>
+      <div style="flex:1;min-width:0">
+        <div class="vt">${esc(it.name || it.code || "")}</div>
+        ${it.room ? `<div class="vd">${esc(it.room)}</div>` : ""}
+        <div class="vv">${esc(it.field_label || it.field || "")}: <b>${esc(it.value_label ?? it.value ?? "")}</b></div>
+      </div>
+    </div>`).join("");
+
+  openVSheet(`
+    <div class="vh">${multi ? "Проверьте — распознано несколько" : "Проверьте и подтвердите"}</div>
+    <div class="vs">${multi ? "Отметьте, что записать, и подтвердите." : "Запишу это изменение в таблицу."}</div>
+    ${quote}
+    <div id="vlist">${rows}</div>
+    <div class="vrow">
+      <button class="vbtn-cancel" onclick="closeVSheet()">Отмена</button>
+      <button class="vbtn-ok" id="vapply" onclick="applyVoice()">${multi ? "Записать выбранные" : "Да, записать"}</button>
+    </div>`);
+}
+
+function toggleVItem(i){
+  vItems[i]._sel = !vItems[i]._sel;
+  const el = document.querySelector(`.vitem[data-i="${i}"]`);
+  if(el) el.classList.toggle("sel", vItems[i]._sel);
+}
+
+/* Применяем выбранные — по одной записи через тот же /update. */
+async function applyVoice(){
+  const chosen = vItems.filter(x => x._sel);
+  if(!chosen.length){ toast("Ничего не отмечено", "wait"); return; }
+  const btn = document.getElementById("vapply");
+  if(btn){ btn.disabled = true; btn.textContent = "Записываю…"; }
+  let done = 0, fail = 0;
+  for(const it of chosen){
+    const ok = await upd(it.sheet, it.code, it.field, it.value);
+    ok ? done++ : fail++;
+  }
+  closeVSheet();
+  if(fail === 0) toast(done > 1 ? `Записано: ${done}` : "Записано");
+  else toast(`Записано ${done}, не удалось ${fail}`, fail && !done ? "bad" : "");
+}
+
+function fmtTime(s){ const m = Math.floor(s / 60); const ss = String(s % 60).padStart(2, "0"); return `${m}:${ss}`; }
+
+/* ── ВЫХОД В ЧАТ С БОТОМ (только для фото чека) ────────────── */
 function toBot(){
   if(tg){ tg.close(); }
   else { toast("Откройте через Telegram — там ждёт бот", "wait"); }
