@@ -156,6 +156,7 @@ const KEY  = new URLSearchParams(location.search).get("key") || "";  // legacy /
 let D = null;                       // данные с сервера
 let stack = ["home"];               // стек навигации
 let fRoom = "";                     // активный фильтр по комнате
+let hideDone = false;               // глобальный фильтр «скрыть готовое»
 const app = document.getElementById("app");
 const fmt = n => (Number(n) || 0).toLocaleString("ru-RU", { maximumFractionDigits: 0 });
 
@@ -181,6 +182,7 @@ async function load(){
     try{ D = JSON.parse(raw); }catch{ throw new Error(BAD); }
     if(!D || !D.role) throw new Error(BAD);
     render();
+    _sig = _snapshot(D);            // калибровка живого обновления
   }catch(e){
     app.innerHTML = `<div class="err"><b>Не удалось загрузить.</b><br>${e.message}
       <br><br><span style="color:var(--hint);font-size:13px">Проверьте интернет и откройте ещё раз.</span></div>`;
@@ -242,7 +244,7 @@ function patch(sheet, code, field, value){
 
 let tt;
 async function acceptWork(code){ if(await upd("01_Работы", code, "Статус", "Готово")) render(); }
-async function disputeWork(code){ if(await upd("01_Работы", code, "Статус", "В работе")) render(); }
+async function disputeWork(code){ if(await upd("01_Работы", code, "Статус", "Оспорено")) render(); }
 
 function toast(msg, kind){
   const t = document.getElementById("toast");
@@ -336,24 +338,31 @@ home(){
 works(){
   const worker = D.role === "worker";
   const rooms  = [...new Set(D.works.map(w => w.room))];
-  const list   = fRoom ? D.works.filter(w => w.room === fRoom) : D.works;
+  const base   = fRoom ? D.works.filter(w => w.room === fRoom) : D.works;
+  const doneN  = base.filter(w => w.status === "Готово").length;
+  const list   = hideDone ? base.filter(w => w.status !== "Готово") : base;
 
   return `
     <div class="hello">Работы</div>
-    <div class="sub">${list.length}${fRoom ? " из " + D.works.length : " позиций"}</div>
+    <div class="sub">${list.length}${fRoom ? " из " + D.works.length : " позиций"}${hideDone && doneN ? ` · скрыто готовых: ${doneN}` : ""}</div>
     <div class="filt">
       <button class="${!fRoom ? "on" : ""}" onclick="fRoom='';render()">Все</button>
       ${rooms.map(r => `<button class="${fRoom===r?"on":""}" data-r="${attr(r)}"
         onclick="fRoom=this.dataset.r;render()">${esc(r.split(" (")[0])}</button>`).join("")}
     </div>
+    <div class="filt">
+      <button class="${hideDone ? "on" : ""}" onclick="hideDone=!hideDone;render()">${hideDone ? "Показать готовое" : "Скрыть готовое"}${doneN ? ` (${doneN})` : ""}</button>
+    </div>
     ${list.map(w => `
       <div class="work${w.status === "Готово" ? " done" : ""}">
         <div class="t">${esc(w.name)}</div>
         <div class="m">${esc(w.room.split(" (")[0])} · ${esc(w.section)} · ${w.unit === "компл" ? "комплект" : w.qty + " " + esc(w.unit)}</div>
+        ${w.status === "Оспорено" ? `<div class="m" style="color:var(--bad);font-weight:600">⚠ Заказчик оспорил — доработайте и заявите снова</div>` : ""}
+        ${w.status === "Заявлено" ? `<div class="m" style="color:var(--warn)">⏳ Заявлено — ждёт приёмки заказчиком</div>` : ""}
         <div class="row">
           <label>Статус</label>
           <select onchange="upd('01_Работы','${w.code}','Статус',this.value)">
-            ${["Не начато","В работе","Заявлено","Готово","Приостановлено","Снято"]
+            ${["Не начато","В работе","Заявлено","Оспорено","Готово","Приостановлено","Снято"]
               .map(s => `<option${s === w.status ? " selected" : ""}>${s}</option>`).join("")}
           </select>
         </div>
@@ -656,15 +665,20 @@ function showVResult(d){
 
   const multi = items.length > 1;
   const quote = d.recognized ? `<div class="vquote">Расслышал: <b>${esc(d.recognized)}</b></div>` : "";
-  const rows = vItems.map((it, i) => `
+  const rows = vItems.map((it, i) => {
+    const claim = D.role === "worker" && it.field === "Статус" && it.value === "Готово";
+    return `
     <div class="vitem sel" data-i="${i}" onclick="toggleVItem(${i})">
       <div class="vchk">✓</div>
       <div style="flex:1;min-width:0">
         <div class="vt">${esc(it.name || it.code || "")}</div>
         ${it.room ? `<div class="vd">${esc(it.room)}</div>` : ""}
-        <div class="vv">${esc(it.field_label || it.field || "")}: <b>${esc(it.value_label ?? it.value ?? "")}</b></div>
+        <div class="vv">${claim
+          ? `<b>Заявить готовность</b> — уйдёт заказчику на приёмку`
+          : `${esc(it.field_label || it.field || "")}: <b>${esc(it.value_label ?? it.value ?? "")}</b>`}</div>
       </div>
-    </div>`).join("");
+    </div>`;
+  }).join("");
 
   openVSheet(`
     <div class="vh">${multi ? "Проверьте — распознано несколько" : "Проверьте и подтвердите"}</div>
@@ -707,10 +721,47 @@ function toBot(){
   else { toast("Откройте через Telegram — там ждёт бот", "wait"); }
 }
 
+/* ── ЖИВОЕ ОБНОВЛЕНИЕ ──────────────────────────────────────────
+   Панель — инструмент взаимного подтверждения: заявка одной стороны
+   должна появляться у другой без ручной перезагрузки. Тихо перечитываем
+   /data; если данные изменились и пользователь не занят вводом или
+   голосовым окном — обновляем текущий экран.                          */
+let _sig = "";
+function _snapshot(d){
+  try{
+    return JSON.stringify({
+      w:(d.works||[]).map(x => x.code+":"+x.status+":"+(x.progress||0)+":"+(x.price_contractor_usd??"")),
+      m:(d.materials||[]).map(x => x.name+":"+(x.in||0)+":"+(x.out||0)),
+      s:d.settings, p:(d.payments||[]).length
+    });
+  }catch{ return ""; }
+}
+async function refresh(){
+  const el = document.activeElement;
+  const busy = (el && ["INPUT","SELECT","TEXTAREA"].includes(el.tagName)) || vmask.classList.contains("on");
+  if(busy) return;                       // не мешаем вводу/голосовому окну
+  try{
+    const auth = INIT ? `initData=${encodeURIComponent(INIT)}` : `key=${encodeURIComponent(KEY)}`;
+    const r = await fetch(`${API}/data?${auth}`, { cache:"no-store" });
+    if(!r.ok) return;
+    const raw = (await r.text()).trim();
+    if(!raw) return;
+    let nd; try{ nd = JSON.parse(raw); }catch{ return; }
+    if(!nd || !nd.role) return;
+    const sig = _snapshot(nd);
+    if(!_sig){ _sig = sig; return; }
+    if(sig === _sig) return;              // ничего не изменилось — не моргаем
+    _sig = sig; D = nd; render();
+  }catch{}
+}
+
 /* ── СТАРТ ────────────────────────────────────────────────── */
 tg?.ready();
 tg?.expand();
 load();
+setInterval(refresh, 15000);
+document.addEventListener("visibilitychange", () => { if(!document.hidden) refresh(); });
+window.addEventListener("focus", refresh);
 </script>
 </body>
 </html>
