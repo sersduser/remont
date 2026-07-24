@@ -237,6 +237,9 @@ function patch(sheet, code, field, value){
 }
 
 let tt;
+async function acceptWork(code){ if(await upd("01_Работы", code, "Статус", "Готово")) render(); }
+async function disputeWork(code){ if(await upd("01_Работы", code, "Статус", "В работе")) render(); }
+
 function toast(msg, kind){
   const t = document.getElementById("toast");
   t.textContent = msg;
@@ -317,6 +320,8 @@ home(){
         <span class="nm">${D.role === "worker" ? "Мои деньги" : "Финансы"}</span></button>
       <button class="tile" onclick="go('works')"><span class="ic">🔨</span>
         <span class="nm">Работы</span><div class="h">${D.works.length} позиций</div></button>
+      ${D.role !== "worker" ? `<button class="tile${D.works.filter(w=>w.status==="Заявлено").length ? " pri" : ""}" onclick="go('accept')"><span class="ic">✅</span>
+        <span class="nm">Приёмка</span><div class="h">${D.works.filter(w=>w.status==="Заявлено").length} на подтверждение</div></button>` : ""}
       <button class="tile" onclick="go('buy')"><span class="ic">🛒</span>
         <span class="nm">Материалы</span></button>
       <button class="tile" onclick="go('deal')"><span class="ic">📋</span>
@@ -344,7 +349,7 @@ works(){
         <div class="row">
           <label>Статус</label>
           <select onchange="upd('01_Работы','${w.code}','Статус',this.value)">
-            ${["Не начато","В работе","Готово","Приостановлено","Снято"]
+            ${["Не начато","В работе","Заявлено","Готово","Приостановлено","Снято"]
               .map(s => `<option${s === w.status ? " selected" : ""}>${s}</option>`).join("")}
           </select>
         </div>
@@ -368,6 +373,23 @@ works(){
           </div>
         </div>`}
       </div>`).join("")}`;
+},
+
+accept(){
+  const pend = D.works.filter(w => w.status === "Заявлено");
+  return `
+    <div class="hello">Приёмка</div>
+    <div class="sub">${pend.length ? pend.length + " на подтверждение" : "нет заявленных работ"}</div>
+    ${pend.length ? pend.map(w => `
+      <div class="work">
+        <div class="t">${esc(w.name)}</div>
+        <div class="m">${esc(w.room.split(" (")[0])} · ${esc(w.section)}</div>
+        <div class="m" style="color:var(--warn)">Работник заявил готовность${w.price_contractor_usd != null ? ` · $${w.price_contractor_usd}` : ""}</div>
+        <div class="row" style="gap:8px;margin-top:10px">
+          <button style="flex:1;padding:12px;border:0;border-radius:10px;background:var(--ok);color:#fff;font-weight:600;font-size:15px" onclick="acceptWork('${w.code}')">Принять</button>
+          <button style="flex:1;padding:12px;border:0;border-radius:10px;background:var(--bad);color:#fff;font-weight:600;font-size:15px" onclick="disputeWork('${w.code}')">Оспорить</button>
+        </div>
+      </div>`).join("") : `<div class="warnbox">Пока работник ничего не заявил к приёмке.</div>`}`;
 },
 
 money(){
