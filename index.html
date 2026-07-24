@@ -271,6 +271,14 @@ function render(toTop){
 const progress = () => D.works.length
   ? D.works.reduce((s,w) => s + (w.progress || 0), 0) / D.works.length : 0;
 
+/* Деньги от приёмки. «Принято» — только статус «Готово» (подтверждено заказчиком).
+   «В работе» — незавершённые, пропорционально проценту готовности (справочно).
+   Поле: заказчику — договорная разнесённая цена, работнику — его цена. */
+const accSum = f => D.works.filter(w => w.status === "Готово")
+  .reduce((s,w) => s + (Number(w[f]) || 0), 0);
+const wipSum = f => D.works.filter(w => w.status !== "Готово" && (w.progress || 0) > 0)
+  .reduce((s,w) => s + (Number(w[f]) || 0) * (w.progress || 0) / 100, 0);
+
 /* ═══════════════════════════════════════════════════════════════
    ЭКРАНЫ
    ═══════════════════════════════════════════════════════════════ */
@@ -288,6 +296,8 @@ home(){
         <span class="v ok">${fmt(m.owed_usd)} $</span></div>
       <div class="r"><span class="k">Получено</span>
         <span class="v">${fmt(m.received_usd)} из ${fmt(m.contract_usd)} $</span></div>
+      <div class="r"><span class="k">Принято заказчиком</span>
+        <span class="v" style="color:var(--ok)">${fmt(accSum("price_contractor_usd"))} $</span></div>
       <div class="r"><span class="k">Готовность объекта</span>
         <span class="v">${Math.round(p)} %</span></div>
       <div class="bar"><i style="width:${p}%"></i></div>
@@ -297,6 +307,8 @@ home(){
         <span class="v">${fmt(S["Договор_USD"])} $</span></div>
       <div class="r"><span class="k">Остаток за работу</span>
         <span class="v warn">${fmt(S["Остаток_за_работу_USD"])} $</span></div>
+      <div class="r"><span class="k">Принято работ</span>
+        <span class="v" style="color:var(--ok)">${fmt(accSum("price_alloc_usd"))} $</span></div>
       <div class="r"><span class="k">Готовность</span>
         <span class="v">${Math.round(p)} %</span></div>
       <div class="bar"><i style="width:${p}%"></i></div>
@@ -422,6 +434,14 @@ money(){
       </div>
 
       <div class="card">
+        <div class="lbl">Мои работы по приёмке</div>
+        <div class="li"><div class="n">Принято заказчиком<div class="d">статус «Готово»</div></div>
+          <div class="v" style="color:var(--ok)">${fmt(accSum("price_contractor_usd"))} $</div></div>
+        <div class="li"><div class="n">В работе, по прогрессу<div class="d">справочно, ждёт приёмки</div></div>
+          <div class="v" style="color:var(--hint)">${fmt(wipSum("price_contractor_usd"))} $</div></div>
+      </div>
+
+      <div class="card">
         <div class="lbl">Аванс на материалы</div>
         <div class="li"><div class="n">Выдано 26.06</div><div class="v">${fmt(m.advance_uzs)} сум</div></div>
         <div class="li"><div class="n">Подтверждено чеками</div>
@@ -444,6 +464,13 @@ money(){
       <div class="r"><span class="k">Договор</span><span class="v">${fmt(S["Договор_USD"])} $</span></div>
       <div class="r"><span class="k">Оплачено за работу</span><span class="v ok">${fmt(S["Оплачено_за_работу_USD"])} $</span></div>
       <div class="r"><span class="k">Остаток</span><span class="v warn">${fmt(S["Остаток_за_работу_USD"])} $</span></div>
+    </div>
+    <div class="card">
+      <div class="lbl">Работы по приёмке</div>
+      <div class="li"><div class="n">Принято и подтверждено<div class="d">статус «Готово»</div></div>
+        <div class="v" style="color:var(--ok)">${fmt(accSum("price_alloc_usd"))} $</div></div>
+      <div class="li"><div class="n">В работе, по прогрессу<div class="d">справочно, ещё не принято</div></div>
+        <div class="v" style="color:var(--hint)">${fmt(wipSum("price_alloc_usd"))} $</div></div>
     </div>
     ${S["Не_подтверждено_сум"] ? `
       <div class="warnbox"><b>${fmt(S["Не_подтверждено_сум"])} сум</b> из аванса 26.06 — без расшифровки.</div>` : ""}
