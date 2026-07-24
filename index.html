@@ -191,7 +191,11 @@ async function load(){
    Не перечитываем всё после каждой правки — правим локально.
    Иначе на 102 работах экран моргает и уезжает наверх.        */
 async function upd(sheet, code, field, value){
-  toast("Сохраняю…", "wait");
+  // Работник не пишет «Готово» напрямую (ни голосом, ни вручную):
+  // любое его «Готово» становится ЗАЯВКОЙ на приёмку заказчику.
+  const claimed = (D.role === "worker" && field === "Статус" && value === "Готово");
+  if(claimed) value = "Заявлено";
+  toast(claimed ? "Отправляю на приёмку…" : "Сохраняю…", "wait");
   try{
     const r = await fetch(`${API}/update`, {
       method: "POST",
@@ -206,7 +210,7 @@ async function upd(sheet, code, field, value){
     }
     patch(sheet, code, field, value);
     tg?.HapticFeedback?.notificationOccurred("success");
-    toast("Сохранено");
+    toast(claimed ? "Заявлено — ждёт приёмки заказчиком" : "Сохранено");
     return true;
   }catch(e){
     tg?.HapticFeedback?.notificationOccurred("error");
