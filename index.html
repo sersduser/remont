@@ -192,11 +192,11 @@ async function load(){
 /* ── ЗАПИСЬ ───────────────────────────────────────────────────
    Не перечитываем всё после каждой правки — правим локально.
    Иначе на 102 работах экран моргает и уезжает наверх.        */
-async function upd(sheet, code, field, value){
+async function upd(sheet, code, field, value, opts){
   // Работник не пишет «Готово» напрямую (ни голосом, ни вручную):
   // любое его «Готово» становится ЗАЯВКОЙ на приёмку заказчику.
-  const claimed = (D.role === "worker" && field === "Статус" && value === "Готово");
-  if(claimed) value = "Заявлено";
+  const claimed = (!(opts&&opts.confirm) && field === "Статус" && value === "Готово");
+  if(claimed) value = (D.role === "worker") ? "Заявлено" : "На приёмке у работника";
   toast(claimed ? "Отправляю на приёмку…" : "Сохраняю…", "wait");
   try{
     const r = await fetch(`${API}/update`, {
@@ -212,7 +212,7 @@ async function upd(sheet, code, field, value){
     }
     patch(sheet, code, field, value);
     tg?.HapticFeedback?.notificationOccurred("success");
-    toast(claimed ? "Заявлено — ждёт приёмки заказчиком" : "Сохранено");
+    toast(claimed ? (D.role === "worker" ? "Заявлено — ждёт приёмки заказчиком" : "Отправлено работнику на подтверждение") : "Сохранено");
     return true;
   }catch(e){
     tg?.HapticFeedback?.notificationOccurred("error");
@@ -243,7 +243,7 @@ function patch(sheet, code, field, value){
 }
 
 let tt;
-async function acceptWork(code){ if(await upd("01_Работы", code, "Статус", "Готово")) render(); }
+async function acceptWork(code){ if(await upd("01_Работы", code, "Статус", "Готово", {confirm:true})) render(); }
 async function disputeWork(code){ if(await upd("01_Работы", code, "Статус", "Оспорено")) render(); }
 
 function toast(msg, kind){
@@ -338,8 +338,8 @@ home(){
         <span class="nm">${D.role === "worker" ? "Мои деньги" : "Финансы"}</span></button>
       <button class="tile" onclick="go('works')"><span class="ic">🔨</span>
         <span class="nm">Работы</span><div class="h">${D.works.length} позиций</div></button>
-      ${D.role !== "worker" ? `<button class="tile${D.works.filter(w=>w.status==="Заявлено").length ? " pri" : ""}" onclick="go('accept')"><span class="ic">✅</span>
-        <span class="nm">Приёмка</span><div class="h">${D.works.filter(w=>w.status==="Заявлено").length} на подтверждение</div></button>` : ""}
+      ${(true) ? `<button class="tile${D.works.filter(w=>w.status===(D.role==="worker"?"На приёмке у работника":"Заявлено")).length ? " pri" : ""}" onclick="go('accept')"><span class="ic">✅</span>
+        <span class="nm">Приёмка</span><div class="h">${D.works.filter(w=>w.status===(D.role==="worker"?"На приёмке у работника":"Заявлено")).length} на подтверждение</div></button>` : ""}
       <button class="tile" onclick="go('buy')"><span class="ic">🛒</span>
         <span class="nm">Материалы</span></button>
       <button class="tile" onclick="go('deal')"><span class="ic">📋</span>
@@ -371,10 +371,11 @@ works(){
         <div class="m">${esc(w.room.split(" (")[0])} · ${esc(w.section)} · ${w.unit === "компл" ? "комплект" : w.qty + " " + esc(w.unit)}</div>
         ${w.status === "Оспорено" ? `<div class="m" style="color:var(--bad);font-weight:600">⚠ Заказчик оспорил — доработайте и заявите снова</div>` : ""}
         ${w.status === "Заявлено" ? `<div class="m" style="color:var(--warn)">⏳ Заявлено — ждёт приёмки заказчиком</div>` : ""}
+        ${w.status === "На приёмке у работника" ? `<div class="m" style="color:var(--warn)">⏳ Ждёт приёмки работником</div>` : ""}
         <div class="row">
           <label>Статус</label>
           <select onchange="upd('01_Работы','${w.code}','Статус',this.value)">
-            ${["Не начато","В работе","Заявлено","Оспорено","Готово","Приостановлено","Снято"]
+            ${["Не начато","В работе","Заявлено","На приёмке у работника","Оспорено","Готово","Приостановлено","Снято"]
               .map(s => `<option${s === w.status ? " selected" : ""}>${s}</option>`).join("")}
           </select>
         </div>
@@ -401,7 +402,7 @@ works(){
 },
 
 accept(){
-  const pend = D.works.filter(w => w.status === "Заявлено");
+  const worker = D.role === "worker"; const pend = D.works.filter(w => w.status === (worker ? "На приёмке у работника" : "Заявлено"));
   return `
     <div class="hello">Приёмка</div>
     <div class="sub">${pend.length ? pend.length + " на подтверждение" : "нет заявленных работ"}</div>
@@ -409,12 +410,12 @@ accept(){
       <div class="work">
         <div class="t">${esc(w.name)}</div>
         <div class="m">${esc(w.room.split(" (")[0])} · ${esc(w.section)}</div>
-        <div class="m" style="color:var(--warn)">Работник заявил готовность${w.price_contractor_usd != null ? ` · $${w.price_contractor_usd}` : ""}</div>
+        <div class="m" style="color:var(--warn)">${worker ? "Заказчик заявил готовность" : "Работник заявил готовность"}${w.price_contractor_usd != null ? ` · $${w.price_contractor_usd}` : ""}</div>
         <div class="row" style="gap:8px;margin-top:10px">
           <button style="flex:1;padding:12px;border:0;border-radius:10px;background:var(--ok);color:#fff;font-weight:600;font-size:15px" onclick="acceptWork('${w.code}')">Принять</button>
           <button style="flex:1;padding:12px;border:0;border-radius:10px;background:var(--bad);color:#fff;font-weight:600;font-size:15px" onclick="disputeWork('${w.code}')">Оспорить</button>
         </div>
-      </div>`).join("") : `<div class="warnbox">Пока работник ничего не заявил к приёмке.</div>`}`;
+      </div>`).join("") : `<div class="warnbox">${worker ? "Пока заказчик ничего не заявил к приёмке." : "Пока работник ничего не заявил к приёмке."}</div>`}`;
 },
 
 money(){
@@ -693,7 +694,7 @@ function showVResult(d){
   const multi = items.length > 1;
   const quote = d.recognized ? `<div class="vquote">Расслышал: <b>${esc(d.recognized)}</b></div>` : "";
   const rows = vItems.map((it, i) => {
-    const claim = D.role === "worker" && it.field === "Статус" && it.value === "Готово";
+    const claim = it.field === "Статус" && it.value === "Готово";
     return `
     <div class="vitem sel" data-i="${i}" onclick="toggleVItem(${i})">
       <div class="vchk">✓</div>
@@ -701,7 +702,7 @@ function showVResult(d){
         <div class="vt">${esc(it.name || it.code || "")}</div>
         ${it.room ? `<div class="vd">${esc(it.room)}</div>` : ""}
         <div class="vv">${claim
-          ? `<b>Заявить готовность</b> — уйдёт заказчику на приёмку`
+          ? `<b>Заявить готовность</b> — уйдёт ${D.role==="worker" ? "заказчику" : "работнику"} на приёмку`
           : `${esc(it.field_label || it.field || "")}: <b>${esc(it.value_label ?? it.value ?? "")}</b>`}</div>
       </div>
     </div>`;
