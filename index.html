@@ -192,10 +192,80 @@ async function load(){
 /* ── ЗАПИСЬ ───────────────────────────────────────────────────
    Не перечитываем всё после каждой правки — правим локально.
    Иначе на 102 работах экран моргает и уезжает наверх.        */
+/* ═══ Зависимости работ · мягкое предупреждение ═══════════════════════
+   Предшественники берутся из колонки «Зависит_от» листа 01_Работы
+   (приходит в поле deps). Зависимость снята, когда предшественник
+   «Готово» или «Снято». Предупреждение НЕ блокирует: карта связей
+   черновая, и ошибка в ней не должна стопорить реальную работу.     */
+function depCodes(w){
+  const raw = String((w && w.deps) || "").trim();
+  if (!raw || raw === "—" || raw === "-") return [];
+  return raw.split(",").map(s => s.trim()).filter(Boolean);
+}
+function depBlockers(w){
+  if (!D || !D.works || !w) return [];
+  return depCodes(w)
+    .map(c => D.works.find(x => x.code === c))
+    .filter(p => p && p.status !== "Готово" && p.status !== "Снято");
+}
+function depAsk(w, blockers){
+  return new Promise(resolve => {
+    const rows = blockers.map(b =>
+      '<div style="margin:8px 0;padding:8px 10px;background:rgba(255,255,255,.07);border-radius:10px">' +
+      '<b>' + esc(b.name) + '</b><br><span style="opacity:.65;font-size:13px">' +
+      esc(String(b.room || "").split(" (")[0]) + ' · ' + esc(b.status) + '</span></div>').join("");
+    const box = document.createElement("div");
+    box.style.cssText = "position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;padding:18px";
+    box.innerHTML =
+      '<div style="background:#1c1c1e;color:#fff;border-radius:16px;padding:18px;max-width:420px;width:100%;max-height:80vh;overflow:auto;font-size:15px">' +
+        '<div style="font-weight:700;margin-bottom:8px">⚠ Предыдущее ещё не принято</div>' +
+        '<div style="opacity:.7;font-size:14px;margin-bottom:6px">«' + esc(w.name) + '» обычно делается после того, как принято:</div>' +
+        rows +
+        '<div style="opacity:.6;font-size:13px;margin:10px 0 14px">Это подсказка, а не запрет. Если на объекте порядок другой — продолжайте.</div>' +
+        '<div style="display:flex;gap:8px">' +
+          '<button id="depNo" style="flex:1;padding:13px;border-radius:12px;border:0;background:#3a3a3c;color:#fff;font-size:15px">Отмена</button>' +
+          '<button id="depYes" style="flex:1;padding:13px;border-radius:12px;border:0;background:#0a84ff;color:#fff;font-size:15px">Всё равно заявить</button>' +
+        '</div>' +
+      '</div>';
+    document.body.appendChild(box);
+    box.querySelector("#depNo").onclick  = () => { box.remove(); resolve(false); };
+    box.querySelector("#depYes").onclick = () => { box.remove(); resolve(true);  };
+  });
+}
+
+/* Баланс от приёмки: сколько из выданного аванса уже отработано принятыми
+   работами. null — если считать не из чего (нет ни оплат, ни приёмки).  */
+function advCalc(field){
+  const acc  = accSum(field);
+  const S2   = D.settings || {};
+  const paid = Number(S2["Оплачено_за_работу_USD"] ?? (D.my_money && D.my_money.received_usd) ?? 0);
+  if (!paid && !acc) return null;
+  if (!paid)        return { k:"Принято работ",             main: fmt(acc) + " $",
+                             sub:"Оплат пока не поступало", pct:0, color:"var(--ok)" };
+  if (acc < paid)   return { k:"Отработано аванса",         main: fmt(acc) + " из " + fmt(paid) + " $",
+                             sub:"Осталось отработать " + fmt(paid - acc) + " $",
+                             pct: Math.max(1, Math.round(acc / paid * 100)), color:"var(--warn)" };
+  if (acc === paid) return { k:"Аванс отработан полностью", main: fmt(paid) + " $",
+                             sub:"Расчёты сошлись", pct:100, color:"var(--ok)" };
+  return              { k:"Аванс отработан, к доплате",     main: fmt(acc - paid) + " $",
+                        sub:"Принято на " + fmt(acc) + " $ при оплаченных " + fmt(paid) + " $",
+                        pct:100, color:"var(--ok)" };
+}
+
 async function upd(sheet, code, field, value, opts){
   // Работник не пишет «Готово» напрямую (ни голосом, ни вручную):
   // любое его «Готово» становится ЗАЯВКОЙ на приёмку заказчику.
   const claimed = (!(opts&&opts.confirm) && field === "Статус" && value === "Готово");
+  /* Мягкая проверка зависимостей: если предшественник ещё не принят —
+     спрашиваем, но не запрещаем (карта связей черновая).            */
+  if (claimed && sheet === "01_Работы" && !(opts && opts.skipDeps)) {
+    const _w = (D.works || []).find(x => x.code === code);
+    const _b = depBlockers(_w);
+    if (_b.length) {
+      const _go = await depAsk(_w, _b);
+      if (!_go) { toast("Отменено", "err"); return false; }
+    }
+  }
   if(claimed) value = (D.role === "worker") ? "Заявлено" : "На приёмке у работника";
   toast(claimed ? "Отправляю на приёмку…" : "Сохраняю…", "wait");
   try{
@@ -290,8 +360,21 @@ home(){
   const m = D.my_money;
   const S = D.settings;
 
+  /* Баланс от приёмки. Для работника считаем по его ценам, но только если они
+     заполнены (колонка «Цена_Юрия_USD»); иначе блок не показываем.        */
+  const adv = (() => {
+    const f = worker ? "price_contractor_usd" : "price_alloc_usd";
+    return (worker && !accSum(f)) ? null : advCalc(f);
+  })();
+  const advBox = adv ? `
+    <div class="r"><span class="k">${adv.k}</span>
+      <span class="v" style="color:${adv.color}">${adv.main}</span></div>
+    <div class="r"><span class="k" style="font-size:13px;opacity:.65">${adv.sub}</span><span class="v"></span></div>
+    <div class="bar"><i style="width:${adv.pct}%"></i></div>` : "";
+
   const head = worker && m ? `
     <div class="stat">
+      ${advBox}
       <div class="r"><span class="k">Вам ещё должны за работу</span>
         <span class="v ok">${fmt(m.owed_usd)} $</span></div>
       <div class="r"><span class="k">Получено</span>
@@ -303,12 +386,11 @@ home(){
       <div class="bar"><i style="width:${p}%"></i></div>
     </div>` : `
     <div class="stat">
+      ${advBox}
       <div class="r"><span class="k">Договор</span>
         <span class="v">${fmt(S["Договор_USD"])} $</span></div>
-      <div class="r"><span class="k">Остаток за работу</span>
+      <div class="r"><span class="k">Остаток по договору</span>
         <span class="v warn">${fmt(S["Остаток_за_работу_USD"])} $</span></div>
-      <div class="r"><span class="k">Принято работ</span>
-        <span class="v" style="color:var(--ok)">${fmt(accSum("price_alloc_usd"))} $</span></div>
       <div class="r"><span class="k">Готовность</span>
         <span class="v">${Math.round(p)} %</span></div>
       <div class="bar"><i style="width:${p}%"></i></div>
@@ -369,6 +451,8 @@ works(){
       <div class="work${w.status === "Готово" ? " done" : ""}">
         <div class="t">${esc(w.name)}</div>
         <div class="m">${esc(w.room.split(" (")[0])} · ${esc(w.section)} · ${w.unit === "компл" ? "комплект" : w.qty + " " + esc(w.unit)}</div>
+        ${(() => { const _b = (w.status === "Готово" || w.status === "Не начато") ? [] : depBlockers(w);
+          return _b.length ? `<div class="m" style="color:var(--warn)">⏳ Сначала должно быть принято: ${_b.map(x => esc(x.name)).join(", ")}</div>` : ""; })()}
         ${w.status === "Оспорено" ? `<div class="m" style="color:var(--bad);font-weight:600">⚠ Заказчик оспорил — доработайте и заявите снова</div>` : ""}
         ${w.status === "Заявлено" ? `<div class="m" style="color:var(--warn)">⏳ Заявлено — ждёт приёмки заказчиком</div>` : ""}
         ${w.status === "На приёмке у работника" ? `<div class="m" style="color:var(--warn)">⏳ Ждёт приёмки работником</div>` : ""}
