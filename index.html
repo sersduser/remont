@@ -252,6 +252,68 @@ function advCalc(field){
                         pct:100, color:"var(--ok)" };
 }
 
+/* ═══ Цены Юрия: подсказка, разнесение, пакетная запись ═══════════════
+   Пока колонка «Цена_Юрия_USD» пуста, работник не видит своей витрины
+   приёмки. Панель показывает, сколько позиций осталось, принимает ставку
+   голосом и умеет разнести общую сумму пропорционально договору.      */
+function priceStats(){
+  const all = (D.works || []);
+  const set = all.filter(w => Number(w.price_contractor_usd) > 0);
+  return { all: all.length, set: set.length, empty: all.length - set.length,
+           sumSet: set.reduce((s,w) => s + Number(w.price_contractor_usd), 0) };
+}
+async function writeCell(sheet, code, field, value){
+  const r = await fetch(API + '/update', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ initData: INIT, key: KEY, sheet: sheet, code: code, field: field, value: value })
+  });
+  const txt = (await r.text()).trim();
+  if (!r.ok || !txt) throw new Error('Не удалось сохранить ' + code);
+  patch(sheet, code, field, value);
+  return true;
+}
+async function applyPrices(list){
+  if (!list.length) { toast('Нечего записывать', 'err'); return; }
+  const box = document.createElement('div');
+  box.style.cssText = 'position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;padding:18px;color:#fff;font-size:16px';
+  box.innerHTML = '<div style="background:#1c1c1e;border-radius:16px;padding:20px;min-width:240px;text-align:center">Записываю цены…<div id="prN" style="opacity:.7;font-size:14px;margin-top:8px">0 из ' + list.length + '</div></div>';
+  document.body.appendChild(box);
+  let ok = 0, fail = 0;
+  for (const it of list) {
+    try { await writeCell('01_Работы', it.code, 'Цена_Юрия_USD', String(it.value)); ok++; }
+    catch (e) { fail++; }
+    const el = box.querySelector('#prN'); if (el) el.textContent = (ok + fail) + ' из ' + list.length;
+  }
+  box.remove();
+  toast(fail ? ('Записано ' + ok + ', не удалось ' + fail) : ('Записано цен: ' + ok), fail ? 'err' : 'ok');
+  render();
+}
+function spreadPrices(onlyEmpty){
+  const inp = document.getElementById('spSum');
+  const sum = Number(String(inp ? inp.value : '').replace(',', '.'));
+  if (!(sum > 0)) { toast('Введите сумму больше нуля', 'err'); return; }
+  const targets = (D.works || []).filter(w => onlyEmpty ? !(Number(w.price_contractor_usd) > 0) : true);
+  const base = targets.reduce((s, w) => s + (Number(w.price_alloc_usd) || 0), 0);
+  if (!(base > 0)) { toast('Не от чего считать пропорцию', 'err'); return; }
+  const list = targets.map(w => ({ code: w.code, name: w.name,
+    value: Math.round(sum * (Number(w.price_alloc_usd) || 0) / base * 100) / 100 })).filter(x => x.value > 0);
+  const total = list.reduce((s, x) => s + x.value, 0);
+  const box = document.createElement('div');
+  box.style.cssText = 'position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;padding:18px';
+  box.innerHTML =
+    '<div style="background:#1c1c1e;color:#fff;border-radius:16px;padding:18px;max-width:420px;width:100%;font-size:15px">' +
+      '<div style="font-weight:700;margin-bottom:8px">Разнести ' + fmt(sum) + ' USD</div>' +
+      '<div style="opacity:.7;font-size:14px;margin-bottom:12px">Пропорционально договорной цене работ.<br>Позиций: <b>' + list.length + '</b>, сумма после округления: <b>' + fmt(total) + ' USD</b><br>' +
+      (onlyEmpty ? 'Затрагиваются только работы без цены.' : 'Перезапишутся все цены, включая заданные.') + '</div>' +
+      '<div style="display:flex;gap:8px">' +
+        '<button id="spNo" style="flex:1;padding:13px;border-radius:12px;border:0;background:#3a3a3c;color:#fff;font-size:15px">Отмена</button>' +
+        '<button id="spYes" style="flex:1;padding:13px;border-radius:12px;border:0;background:#0a84ff;color:#fff;font-size:15px">Записать</button>' +
+      '</div></div>';
+  document.body.appendChild(box);
+  box.querySelector('#spNo').onclick = () => box.remove();
+  box.querySelector('#spYes').onclick = () => { box.remove(); applyPrices(list); };
+}
+
 async function upd(sheet, code, field, value, opts){
   // Работник не пишет «Готово» напрямую (ни голосом, ни вручную):
   // любое его «Готово» становится ЗАЯВКОЙ на приёмку заказчику.
@@ -418,6 +480,9 @@ home(){
         <div class="h">в чат с ботом</div></button>
       <button class="tile" onclick="go('money')"><span class="ic">💰</span>
         <span class="nm">${D.role === "worker" ? "Мои деньги" : "Финансы"}</span></button>
+      <button class="tile" onclick="go('prices')" style="${(D.role === 'worker' || !priceStats().empty) ? 'display:none' : ''}">
+        <span class="ic">🏷️</span><span class="nm">Цены Юрия</span>
+        <div class="h">не задано ${priceStats().empty}</div></button>
       <button class="tile" onclick="go('works')"><span class="ic">🔨</span>
         <span class="nm">Работы</span><div class="h">${D.works.length} позиций</div></button>
       ${(true) ? `<button class="tile${D.works.filter(w=>w.status===(D.role==="worker"?"На приёмке у работника":"Заявлено")).length ? " pri" : ""}" onclick="go('accept')"><span class="ic">✅</span>
@@ -500,6 +565,37 @@ accept(){
           <button style="flex:1;padding:12px;border:0;border-radius:10px;background:var(--bad);color:#fff;font-weight:600;font-size:15px" onclick="disputeWork('${w.code}')">Оспорить</button>
         </div>
       </div>`).join("") : `<div class="warnbox">${worker ? "Пока заказчик ничего не заявил к приёмке." : "Пока работник ничего не заявил к приёмке."}</div>`}`;
+},
+
+prices(){
+  const st = priceStats();
+  const empty = (D.works || []).filter(w => !(Number(w.price_contractor_usd) > 0));
+  const dogovor = (D.settings && D.settings['Договор_USD']) || 0;
+  const rows = empty.slice(0, 40).map(w =>
+    '<div class="work"><div class="t">' + esc(w.name) + '</div>' +
+    '<div class="m">' + esc(String(w.room||'').split(' (')[0]) + ' · ' + esc(w.section) + ' · ' +
+    (w.unit === 'компл' ? 'комплект' : w.qty + ' ' + esc(w.unit)) +
+    (w.price_alloc_usd ? ' · по договору ' + fmt(w.price_alloc_usd) + ' USD' : '') + '</div></div>').join('');
+  return '' +
+    '<div class="hello">Цены Юрия</div>' +
+    '<div class="sub">Задано ' + st.set + ' из ' + st.all + (st.empty ? (' · не задано ' + st.empty) : ' · всё заполнено') + '</div>' +
+    '<div class="stat">' +
+      '<div class="r"><span class="k">Сумма заданных цен</span><span class="v">' + fmt(st.sumSet) + ' USD</span></div>' +
+      '<div class="r"><span class="k">Договор, для ориентира</span><span class="v">' + fmt(dogovor) + ' USD</span></div>' +
+    '</div>' +
+    '<div class="warnbox">Скажите ставку голосом — панель посчитает цены сама.<br>' +
+      '<span style="opacity:.7;font-size:13px">Например: «сдир потолков по доллару за квадрат, а в спальне по два» или «за всю электрику 300 долларов».</span>' +
+      '<div style="margin-top:10px"><button onclick="startVoice()" style="width:100%;padding:12px;border-radius:12px;border:0;background:#0a84ff;color:#fff;font-size:15px">🎤 Сказать ставку</button></div>' +
+    '</div>' +
+    '<div class="stat">' +
+      '<div class="r"><span class="k">Разнести сумму пропорционально договору</span><span class="v"></span></div>' +
+      '<div class="r"><input id="spSum" type="number" inputmode="decimal" value="' + (dogovor || '') + '" style="width:100%;padding:12px;border-radius:12px;border:1px solid #3a3a3c;background:#000;color:#fff;font-size:16px"></div>' +
+      '<div class="r" style="display:flex;gap:8px">' +
+        '<button onclick="spreadPrices(true)" style="flex:1;padding:12px;border-radius:12px;border:0;background:#0a84ff;color:#fff;font-size:15px">Только пустым</button>' +
+        '<button onclick="spreadPrices(false)" style="flex:1;padding:12px;border-radius:12px;border:0;background:#3a3a3c;color:#fff;font-size:15px">По всем работам</button>' +
+      '</div>' +
+    '</div>' +
+    (st.empty ? ('<div class="sub" style="margin-top:14px">Без цены' + (empty.length > 40 ? (' (первые 40 из ' + empty.length + ')') : '') + ':</div>' + rows) : '');
 },
 
 money(){
