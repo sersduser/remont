@@ -312,6 +312,150 @@ async function savePrice(el){
   el.disabled = false;
 }
 
+/* ══════════════════════════════════════════════════════════════
+   ПРОФИЛЬ РЕМОНТА — сборка сметы из обмеров и прайса [чат 007]
+   К помещению применяются виды работ; объём считается из его размеров
+   по колонке «База_объёма» справочника, цена — из прайса исполнителя.
+   Итог дописывается строками в 01_Работы через POST /remont/append.
+   ══════════════════════════════════════════════════════════════ */
+let PROF = { room: null, picked: {} };   // выбранное помещение и отмеченные виды
+
+async function openProfile(){
+  try{
+    if(!D.catalog) toast('Загружаю справочник…');
+    await loadCatalog();
+    PROF = { room: null, picked: {} };
+    go('profile');
+  }catch(e){ toast(e.message, 'err'); }
+}
+
+function profRoom(){ return (D.rooms || []).find(r => r.code === PROF.room) || null; }
+
+// Сколько единиц работы даёт помещение по базе объёма из справочника
+function profVol(kind, room){
+  if(!kind || !room) return null;
+  const part = b => {
+    if(b === 'пол')       return room.floor_m2;
+    if(b === 'потолок')   return room.ceiling_m2;
+    if(b === 'стены')     return room.wall_m2;
+    if(b === 'периметр')  return room.perimeter_m;
+    if(b === 'окна')      return room.windows;
+    if(b === 'двери')     return room.doors;
+    if(b === 'помещение' || b === 'объект') return 1;
+    return null;
+  };
+  const base = String(kind.base || '').trim();
+  if(!base || base === 'вручную') return null;
+  let sum = 0;
+  for(const p of base.split('+')){
+    const v = part(p.trim());
+    if(v === null || v === undefined || v === '') return null;   // нет данных — просим ввести руками
+    sum += Number(v) || 0;
+  }
+  return Math.round(sum * 100) / 100;
+}
+
+function profPrice(code){
+  const p = ((D.catalog || {}).price || []).find(x => x.code === code);
+  if(p && Number(p.price_usd) > 0) return Number(p.price_usd);
+  const k = ((D.catalog || {}).kinds || []).find(x => x.code === code);
+  return (k && Number(k.base_usd) > 0) ? Number(k.base_usd) : 0;   // прайс пуст — ориентир из справочника
+}
+
+function profToggle(code){
+  if(PROF.picked[code]) delete PROF.picked[code];
+  else {
+    const kind = ((D.catalog || {}).kinds || []).find(x => x.code === code);
+    PROF.picked[code] = { vol: profVol(kind, profRoom()), manual: false };
+  }
+  render();
+}
+
+function profSetVol(el){
+  const code = el.getAttribute('data-code');
+  const v = String(el.value ?? '').trim().replace(',', '.');
+  if(!PROF.picked[code]) return;
+  PROF.picked[code].vol = v === '' ? null : Number(v);
+  PROF.picked[code].manual = true;
+  const box = document.getElementById('profSum');
+  if(box) box.textContent = profTotalText();
+}
+
+function profTotal(){
+  let n = 0, sum = 0, blank = 0;
+  for(const code of Object.keys(PROF.picked)){
+    const it = PROF.picked[code];
+    n++;
+    if(it.vol === null || !(Number(it.vol) > 0)) { blank++; continue; }
+    sum += Number(it.vol) * profPrice(code);
+  }
+  return { n, sum: Math.round(sum * 100) / 100, blank };
+}
+function profTotalText(){
+  const t = profTotal();
+  return t.n ? ('Выбрано ' + t.n + ' · на ' + fmt(t.sum) + ' USD' + (t.blank ? (' · без объёма: ' + t.blank) : '')) : 'Ничего не выбрано';
+}
+
+// Сборка сметы: выбранные виды превращаются в строки листа 01_Работы [чат 007]
+async function profBuild(){
+  const room = profRoom();
+  if(!room) { toast('Сначала выберите помещение'); return; }
+  const codes = Object.keys(PROF.picked);
+  if(!codes.length) { toast('Ничего не выбрано'); return; }
+  const noVol = codes.filter(c => !(Number((PROF.picked[c]||{}).vol) > 0));
+  if(noVol.length){ toast('Без объёма: ' + noVol.length + ' — заполните или снимите'); return; }
+
+  const kinds = (D.catalog || {}).kinds || [];
+  const kindOf = c => kinds.find(k => k.code === c) || {};
+
+  // Новые коды строк: продолжаем нумерацию помещения, чтобы не столкнуться с существующими
+  const used = (D.works || []).filter(w => String(w.code || '').indexOf(room.code + '-') === 0)
+    .map(w => parseInt(String(w.code).split('-')[1], 10) || 0);
+  let next = (used.length ? Math.max.apply(null, used) : 0) + 1;
+  const newCode = {};
+  codes.forEach(c => { newCode[c] = room.code + '-' + String(next++).padStart(2, '0'); });
+
+  const rows = codes.map(c => {
+    const k = kindOf(c);
+    const vol = Number(PROF.picked[c].vol);
+    const rate = profPrice(c);
+    // Типовые зависимости вида превращаются в ссылки на строки этого же помещения —
+    // те предшественники, которые здесь не выбраны, просто опускаются.
+    const deps = String(k.deps || '').split(',').map(x => x.trim()).filter(x => x && newCode[x]).map(x => newCode[x]);
+    return {
+      'Код': newCode[c],
+      'Помещение': room.name,
+      'Раздел': k.section || '',
+      'Работа': k.name || c,
+      'Ед': k.unit || '',
+      'Объём': vol,
+      'Ставка_USD': rate || '',
+      'Категория': 'База',
+      'Цена_аллокация_USD': rate ? Math.round(vol * rate * 100) / 100 : '',
+      'Статус': 'Не начато',
+      'Готовность_%': 0,
+      'Источник': 'профиль ремонта',
+      'Примечание': 'вид ' + c,
+      'Зависит_от': deps.length ? deps.join(', ') : '—',
+    };
+  });
+
+  const t = profTotal();
+  if(!confirm('Добавить ' + rows.length + ' работ в смету на ' + fmt(t.sum) + ' USD? Помещение: ' + room.name)) return;
+
+  try{
+    const r = await fetch(API + '/append', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ initData: INIT, key: KEY, sheet: '01_Работы', rows: rows })
+    });
+    const txt = (await r.text()).trim();
+    if(!r.ok || !txt) throw new Error('Не удалось добавить работы');
+    toast('Добавлено работ: ' + rows.length);
+    PROF.picked = {};
+    await load();
+  }catch(e){ toast(e.message, 'err'); }
+}
+
 async function writeCell(sheet, code, field, value){
   const r = await fetch(API + '/update', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -536,6 +680,9 @@ home(){
       <button class="tile" onclick="openBook()">
         <span class="ic">📕</span><span class="nm">Прайс исполнителя</span>
         <div class="h">цены по видам работ</div></button>
+      <button class="tile" onclick="openProfile()">
+        <span class="ic">📐</span><span class="nm">Профиль ремонта</span>
+        <div class="h">собрать смету по помещениям</div></button>
       <button class="tile" onclick="go('works')"><span class="ic">🔨</span>
         <span class="nm">Работы</span><div class="h">${D.works.length} позиций</div></button>
       ${(true) ? `<button class="tile${D.works.filter(w=>w.status===(D.role==="worker"?"На приёмке у работника":"Заявлено")).length ? " pri" : ""}" onclick="go('accept')"><span class="ic">✅</span>
@@ -687,6 +834,64 @@ book(){
     '<div class="sub" id="bookCap">Задано ' + st.set + ' из ' + st.all + (st.empty ? (' · не задано ' + st.empty) : ' · всё заполнено') + '</div>' +
     '<div class="stat"><span class="k">Цена ставится за единицу вида работы и хранится в общей базе, а не в этом объекте: на следующем объекте задавать её заново не нужно. Объём подставится из профиля помещения.</span></div>' +
     (rows.length ? blocks : '<div class="stat"><span class="k">В прайсе пока нет ни одной позиции.</span></div>');
+},
+
+profile(){
+  const room = profRoom();
+  const cat  = D.catalog || { kinds: [], price: [] };
+
+  if(!room){
+    const items = (D.rooms || []).map(r => {
+      const miss = [];
+      if(!(Number(r.windows) >= 0)) miss.push('окна');
+      if(!(Number(r.doors) >= 0)) miss.push('двери');
+      return '<div class="work" onclick="PROF.room=\'' + esc(r.code) + '\'; render(true)" style="cursor:pointer">' +
+        '<div class="t">' + esc(r.name) + '</div>' +
+        '<div class="m">пол ' + fmt(r.floor_m2) + ' · стены ' + fmt(r.wall_m2) + ' · потолок ' + fmt(r.ceiling_m2) + ' · периметр ' + fmt(r.perimeter_m) +
+        (miss.length ? ' · не заданы: ' + miss.join(', ') : '') + '</div></div>';
+    }).join('');
+    return '<div class="hello">Профиль ремонта</div>' +
+      '<div class="sub">Выберите помещение</div>' +
+      '<div class="stat"><span class="k">К помещению применяются виды работ, объём считается из его размеров, цена — из прайса исполнителя. Готовые позиции добавляются в смету.</span></div>' +
+      items;
+  }
+
+  const inPrice = (cat.price || []).map(p => p.code);
+  const pool = (cat.kinds || []).filter(k => k.active !== false && (inPrice.length ? inPrice.indexOf(k.code) >= 0 : true));
+  const groups = {};
+  pool.forEach(k => { const g = k.section || 'Прочее'; (groups[g] = groups[g] || []).push(k); });
+
+  const blocks = Object.keys(groups).sort((a,b) => a.localeCompare(b,'ru')).map(g => {
+    const items = groups[g].map(k => {
+      const on = !!PROF.picked[k.code];
+      const auto = profVol(k, room);
+      const vol = on ? PROF.picked[k.code].vol : auto;
+      const rate = profPrice(k.code);
+      const sum = (Number(vol) > 0 && rate) ? Math.round(Number(vol) * rate * 100) / 100 : 0;
+      return '<div class="work" style="' + (on ? 'border-left:3px solid #30d158;padding-left:9px' : '') + '">' +
+        '<div class="t" onclick="profToggle(\'' + esc(k.code) + '\')" style="cursor:pointer">' + (on ? '✅ ' : '⬜ ') + esc(k.name) + '</div>' +
+        '<div class="m">' + esc(k.code) + ' · ' + esc(k.unit || '') + ' · ' + (rate ? (fmt(rate) + ' USD за единицу') : 'цена не задана') +
+          (auto === null ? ' · объём вводится вручную' : '') + '</div>' +
+        (on ? ('<div class="m" style="margin-top:6px">объём: ' +
+          '<input type="number" step="0.01" inputmode="decimal" data-code="' + esc(k.code) + '" value="' + (vol === null ? '' : vol) + '"' +
+          ' onchange="profSetVol(this)" style="width:100px;padding:6px;border-radius:8px;border:1px solid #3a3a3c;background:#000;color:#fff"> ' + esc(k.unit || '') +
+          (sum ? ('  →  ' + fmt(sum) + ' USD') : '') +
+          (PROF.picked[k.code].manual ? ' · изменено вручную' : '') + '</div>') : '') +
+        '</div>';
+    }).join('');
+    return '<div class="sub" style="margin-top:14px">' + esc(g) + '</div>' + items;
+  }).join('');
+
+  return '' +
+    '<div class="hello">' + esc(room.name) + '</div>' +
+    '<div class="sub" id="profSum">' + profTotalText() + '</div>' +
+    '<div class="stat">' +
+      '<div class="r" style="display:flex;gap:8px">' +
+        '<button onclick="profBuild()" style="flex:1;padding:12px;border-radius:12px;border:0;background:#0a84ff;color:#fff;font-size:15px">Добавить в смету</button>' +
+        '<button onclick="PROF.room=null; PROF.picked={}; render(true)" style="flex:1;padding:12px;border-radius:12px;border:0;background:#3a3a3c;color:#fff;font-size:15px">Другое помещение</button>' +
+      '</div>' +
+    '</div>' +
+    (pool.length ? blocks : '<div class="stat"><span class="k">Справочник пуст.</span></div>');
 },
 
 money(){
