@@ -456,6 +456,73 @@ async function profBuild(){
   }catch(e){ toast(e.message, 'err'); }
 }
 
+/* ══════════════════════════════════════════════════════════════
+   СРОКИ — критический путь и шкала «опережение / отставание» [чат 007]
+   Длительности приезжают в поле dur (черновая оценка из ставки чел-часа),
+   связи — в поле deps. По ним считается самая длинная цепочка: она и есть
+   срок объекта. Работы вне этой цепочки имеют запас и на финиш не влияют.
+   ══════════════════════════════════════════════════════════════ */
+function schedule(){
+  const ws = (D.works || []).filter(w => w.code);
+  const by = {}; ws.forEach(w => { by[w.code] = w; });
+  const dur = w => (Number(w.dur) > 0 ? Number(w.dur) : 0.5);
+  const depsOf = w => String(w.deps || '').split(',').map(s => s.trim())
+    .filter(s => s && s !== '—' && by[s]);
+
+  const ef = {};                       // ранний финиш, в днях от старта
+  const calc = (code, seen) => {
+    if(ef[code] !== undefined) return ef[code];
+    if(seen[code]) return 0;           // страховка от цикла в карте связей
+    seen[code] = 1;
+    const w = by[code]; if(!w) return 0;
+    const ds = depsOf(w);
+    const start = ds.length ? Math.max.apply(null, ds.map(d => calc(d, Object.assign({}, seen)))) : 0;
+    ef[code] = Math.round((start + dur(w)) * 100) / 100;
+    return ef[code];
+  };
+  ws.forEach(w => calc(w.code, {}));
+  const total = ws.length ? Math.max.apply(null, ws.map(w => ef[w.code] || 0)) : 0;
+
+  const succ = {};                     // последователи
+  ws.forEach(w => depsOf(w).forEach(d => { (succ[d] = succ[d] || []).push(w.code); }));
+  const lf = {};                       // поздний финиш
+  const late = (code, seen) => {
+    if(lf[code] !== undefined) return lf[code];
+    if(seen[code]) return total;
+    seen[code] = 1;
+    const ss = succ[code] || [];
+    lf[code] = ss.length
+      ? Math.min.apply(null, ss.map(s => late(s, Object.assign({}, seen)) - dur(by[s])))
+      : total;
+    return lf[code];
+  };
+  ws.forEach(w => late(w.code, {}));
+  const slack = {}; ws.forEach(w => { slack[w.code] = Math.round(((lf[w.code] || 0) - (ef[w.code] || 0)) * 100) / 100; });
+  const critical = ws.filter(w => Math.abs(slack[w.code]) < 0.01).map(w => w.code);
+  return { ef, lf, slack, total, critical, by };
+}
+
+// Где мы во времени: сравниваем пройденное по плану с прошедшими днями
+function timeCalc(){
+  const s = schedule();
+  const done = (D.works || []).filter(w => w.status === 'Готово' && w.code);
+  const reached = done.length ? Math.max.apply(null, done.map(w => s.ef[w.code] || 0)) : 0;
+  const dates = (D.works || []).map(w => String(w.updated || '').slice(0, 10)).filter(d => /^\d{4}-\d{2}-\d{2}$/.test(d)).sort();
+  const start = dates.length ? new Date(dates[0] + 'T00:00:00') : null;
+  const elapsed = start ? Math.max(0, Math.round((Date.now() - start.getTime()) / 86400000)) : null;
+  const diff = (elapsed === null) ? null : Math.round((reached - elapsed) * 10) / 10;
+  // Критический путь — это технологический минимум: столько займёт ремонт, если
+  // на каждую готовую к работе позицию хватает людей. Реальный срок упирается в руки:
+  // сумма всех длительностей, делённая на размер бригады. Берём больший из двух.
+  const sumDur = (D.works || []).reduce((a, w) => a + (Number(w.dur) > 0 ? Number(w.dur) : 0.5), 0);
+  const crew = Number((D.settings || {})['Рабочих_в_бригаде']) || 2;
+  const byCrew = Math.round((sumDur / crew) * 10) / 10;
+  const real = Math.max(Math.round(s.total * 10) / 10, byCrew);
+  return { total: Math.round(s.total * 10) / 10, reached: Math.round(reached * 10) / 10, elapsed, diff,
+           critical: s.critical, sched: s, startDate: dates[0] || null,
+           sumDur: Math.round(sumDur * 10) / 10, crew, byCrew, real };
+}
+
 async function writeCell(sheet, code, field, value){
   const r = await fetch(API + '/update', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -627,10 +694,18 @@ home(){
       <span class="v" style="color:${adv.color}">${adv.main}</span></div>
     <div class="r"><span class="k" style="font-size:13px;opacity:.65">${adv.sub}</span><span class="v"></span></div>
     <div class="bar"><i style="width:${adv.pct}%"></i></div>` : "";
+  /* Временна́я шкала — симметрия денежной: как «отработано аванса» отвечает,
+     где деньги относительно работ, так эта отвечает, где мы относительно срока. */
+  const tm = timeCalc();
+  const timeBox = (tm.diff === null) ? "" : `
+    <div class="r"><span class="k">${tm.diff >= 0 ? "Опережение графика" : "Отставание от графика"}</span>
+      <span class="v" style="color:${tm.diff >= 0 ? '#30d158' : '#ff9f0a'}">${Math.abs(tm.diff)} дн</span></div>
+    <div class="r"><span class="k" style="font-size:13px;opacity:.65">Пройдено ${tm.reached} из ${tm.real} дн · прошло ${tm.elapsed}</span><span class="v"></span></div>
+    <div class="bar"><i style="width:${Math.max(0, Math.min(100, Math.round(tm.reached / (tm.real || 1) * 100)))}%"></i></div>`;
 
   const head = worker && m ? `
     <div class="stat">
-      ${advBox}
+      ${advBox}${timeBox}
       <div class="r"><span class="k">Вам ещё должны за работу</span>
         <span class="v ok">${fmt(m.owed_usd)} $</span></div>
       <div class="r"><span class="k">Получено</span>
@@ -642,7 +717,7 @@ home(){
       <div class="bar"><i style="width:${p}%"></i></div>
     </div>` : `
     <div class="stat">
-      ${advBox}
+      ${advBox}${timeBox}
       <div class="r"><span class="k">Договор</span>
         <span class="v">${fmt(S["Договор_USD"])} $</span></div>
       <div class="r"><span class="k">Остаток по договору</span>
@@ -683,6 +758,9 @@ home(){
       <button class="tile" onclick="openProfile()">
         <span class="ic">📐</span><span class="nm">Профиль ремонта</span>
         <div class="h">собрать смету по помещениям</div></button>
+      <button class="tile" onclick="go('terms')">
+        <span class="ic">📅</span><span class="nm">Сроки</span>
+        <div class="h">критический путь и отставание</div></button>
       <button class="tile" onclick="go('works')"><span class="ic">🔨</span>
         <span class="nm">Работы</span><div class="h">${D.works.length} позиций</div></button>
       ${(true) ? `<button class="tile${D.works.filter(w=>w.status===(D.role==="worker"?"На приёмке у работника":"Заявлено")).length ? " pri" : ""}" onclick="go('accept')"><span class="ic">✅</span>
@@ -892,6 +970,38 @@ profile(){
       '</div>' +
     '</div>' +
     (pool.length ? blocks : '<div class="stat"><span class="k">Справочник пуст.</span></div>');
+},
+
+terms(){
+  const t = timeCalc();
+  const s = t.sched;
+  const by = s.by;
+  const crit = t.critical.slice().sort((a, b) => (s.ef[a] || 0) - (s.ef[b] || 0));
+  const line = code => {
+    const w = by[code]; if(!w) return '';
+    return '<div class="work"><div class="t">' + esc(w.name) + '</div>' +
+      '<div class="m">' + esc(code) + ' · ' + esc(String(w.room || '').split(' (')[0]) + ' · ' +
+      (Number(w.dur) || 0.5) + ' дн · финиш на ' + (s.ef[code] || 0) + '-й день · ' + esc(w.status || '') + '</div></div>';
+  };
+  const soon = (D.works || []).filter(w => w.status !== 'Готово' && w.code)
+    .sort((a, b) => (s.ef[a.code] || 0) - (s.ef[b.code] || 0)).slice(0, 12);
+  const late = t.diff === null ? '' : (t.diff >= 0
+    ? ('<div class="r"><span class="k">Опережение</span><span class="v">' + t.diff + ' дн</span></div>')
+    : ('<div class="r"><span class="k">Отставание</span><span class="v">' + Math.abs(t.diff) + ' дн</span></div>'));
+  return '' +
+    '<div class="hello">Сроки</div>' +
+    '<div class="sub">Оценка ' + t.real + ' дн при бригаде из ' + t.crew + ' человек</div>' +
+    '<div class="stat">' +
+      '<div class="r"><span class="k">Технологический минимум (критический путь)</span><span class="v">' + t.total + ' дн</span></div>' +
+      '<div class="r"><span class="k">Всего работы</span><span class="v">' + t.sumDur + ' чел-дн</span></div>' +
+      '<div class="r"><span class="k">При бригаде ' + t.crew + ' чел.</span><span class="v">' + t.byCrew + ' дн</span></div>' +
+      (t.elapsed !== null ? ('<div class="r"><span class="k">Прошло с начала работ</span><span class="v">' + t.elapsed + ' дн</span></div>') : '') +
+      '<div class="r"><span class="k">Пройдено по плану</span><span class="v">' + t.reached + ' дн</span></div>' +
+      late +
+    '</div>' +
+    '<div class="stat"><span class="k">Критический путь — цепочка, которая определяет срок целиком: задержка любой её работы двигает финиш день в день. Остальные работы имеют запас.</span></div>' +
+    '<div class="sub" style="margin-top:14px">Критический путь · ' + crit.length + ' работ</div>' + crit.map(line).join('') +
+    '<div class="sub" style="margin-top:14px">Ближайшие по плану</div>' + soon.map(w => line(w.code)).join('');
 },
 
 money(){
