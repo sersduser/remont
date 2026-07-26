@@ -523,6 +523,36 @@ function timeCalc(){
            sumDur: Math.round(sumDur * 10) / 10, crew, byCrew, real };
 }
 
+/* ══════════════════════════════════════════════════════════════
+   ЧЕКИ — привязка фото из буфера к материалу [чат 007]
+   Бот кладёт снимок чека в 08_Черновики, но фактом учёта он становится
+   только здесь: человек говорит, за какой материал и на какую сумму.
+   ══════════════════════════════════════════════════════════════ */
+function checkList(){
+  return (D.drafts || []).filter(d => String(d.kind || '').indexOf('чек') >= 0);
+}
+
+async function bindCheck(id){
+  const sel = document.getElementById('mat_' + id);
+  const amt = document.getElementById('sum_' + id);
+  const mat = sel ? sel.value : '';
+  const raw = String(amt ? amt.value : '').replace(/\s/g, '').replace(',', '.');
+  const sum = Number(raw);
+  if(!mat){ toast('Выберите материал'); return; }
+  if(!(sum > 0)){ toast('Укажите сумму в сумах'); return; }
+  const btn = document.getElementById('btn_' + id);
+  if(btn) btn.disabled = true;
+  try{
+    await writeCell('03_Материалы', mat, 'Сумма_сум', sum);
+    await writeCell('03_Материалы', mat, 'Чек', id);
+    await writeCell('08_Черновики', id, 'Статус', 'привязан');
+    const wait = Number((D.settings || {})['Не_подтверждено_сум']) || 0;
+    if(wait > 0) await writeCell('07_Настройки', 'Не_подтверждено_сум', 'Значение', Math.max(0, wait - sum));
+    toast('Чек привязан к материалу');
+    await load();
+  }catch(e){ toast(e.message, 'err'); if(btn) btn.disabled = false; }
+}
+
 async function writeCell(sheet, code, field, value){
   const r = await fetch(API + '/update', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -761,6 +791,9 @@ home(){
       <button class="tile" onclick="go('terms')">
         <span class="ic">📅</span><span class="nm">Сроки</span>
         <div class="h">критический путь и отставание</div></button>
+      <button class="tile" onclick="go('checks')" style="${(D.role === 'worker' || !checkList().length) ? 'display:none' : ''}">
+        <span class="ic">🧾</span><span class="nm">Чеки</span>
+        <div class="h">ждут привязки ${checkList().length}</div></button>
       <button class="tile" onclick="go('works')"><span class="ic">🔨</span>
         <span class="nm">Работы</span><div class="h">${D.works.length} позиций</div></button>
       ${(true) ? `<button class="tile${D.works.filter(w=>w.status===(D.role==="worker"?"На приёмке у работника":"Заявлено")).length ? " pri" : ""}" onclick="go('accept')"><span class="ic">✅</span>
@@ -1002,6 +1035,33 @@ terms(){
     '<div class="stat"><span class="k">Критический путь — цепочка, которая определяет срок целиком: задержка любой её работы двигает финиш день в день. Остальные работы имеют запас.</span></div>' +
     '<div class="sub" style="margin-top:14px">Критический путь · ' + crit.length + ' работ</div>' + crit.map(line).join('') +
     '<div class="sub" style="margin-top:14px">Ближайшие по плану</div>' + soon.map(w => line(w.code)).join('');
+},
+
+checks(){
+  const list = checkList();
+  const mats = (D.materials || []).map(m => m.name).filter(Boolean);
+  const wait = Number((D.settings || {})['Не_подтверждено_сум']) || 0;
+  const opts = ['<option value="">— выберите материал —</option>']
+    .concat(mats.map(m => '<option value="' + esc(m) + '">' + esc(m) + '</option>')).join('');
+  const items = list.map(d => {
+    const id = esc(d.id);
+    return '<div class="work">' +
+      '<div class="t">Чек от ' + esc(d.who || '') + '</div>' +
+      '<div class="m">' + esc(d.at || '') + ' · ' + esc(d.status || '') + ' · снимок остался в чате бота</div>' +
+      '<div class="m" style="margin-top:8px">' +
+        '<select id="mat_' + id + '" style="width:100%;padding:10px;border-radius:10px;border:1px solid #3a3a3c;background:#000;color:#fff;font-size:15px">' + opts + '</select>' +
+      '</div>' +
+      '<div class="m" style="margin-top:8px;display:flex;gap:8px;align-items:center">' +
+        '<input id="sum_' + id + '" type="number" inputmode="decimal" placeholder="сумма, сум" style="flex:1;padding:10px;border-radius:10px;border:1px solid #3a3a3c;background:#000;color:#fff;font-size:15px">' +
+        '<button id="btn_' + id + '" onclick="bindCheck(\'' + id + '\')" style="padding:10px 14px;border-radius:10px;border:0;background:#0a84ff;color:#fff;font-size:15px">Привязать</button>' +
+      '</div></div>';
+  }).join('');
+  return '' +
+    '<div class="hello">Чеки</div>' +
+    '<div class="sub">' + (list.length ? ('Ждут привязки: ' + list.length) : 'Непривязанных чеков нет') + '</div>' +
+    (wait > 0 ? ('<div class="stat"><div class="r"><span class="k">Не подтверждено расходов</span><span class="v">' + fmt(wait) + ' сум</span></div></div>') : '') +
+    '<div class="stat"><span class="k">Снимок чека приходит в буфер из чата бота. Фактом учёта он становится, когда указаны материал и сумма: тогда сумма уходит в материал, а плашка «не подтверждено» уменьшается.</span></div>' +
+    (list.length ? items : '');
 },
 
 money(){
