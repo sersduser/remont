@@ -553,6 +553,263 @@ async function bindCheck(id){
   }catch(e){ toast(e.message, 'err'); if(btn) btn.disabled = false; }
 }
 
+/* ══════════════════════════════════════════════════════════════
+   ИЗМЕНЕНИЯ СОСТАВА РАБОТ — подвижный договор [чат 008]
+   Решения чата 006: заявляют обе стороны · состав и цена согласуются
+   одним действием · цена уже принятых работ замораживается.
+
+   Договор в 07_Настройки остаётся БАЗОЙ и не переписывается. Действующая
+   сумма = база + принятые изменения, считается на лету. Так у каждой
+   прибавки есть автор, время и след в 11_Изменения, а перезаписанное
+   число этого не даёт: по нему не восстановить, из чего оно сложилось.
+   ══════════════════════════════════════════════════════════════ */
+/* Дробные деньги: fmt() режет копейки, а дельта изменения обязана сходиться
+   с договором до цента. usd() показывает копейки только когда они есть. */
+const usd = n => {
+  const v = Math.round((Number(n) || 0) * 100) / 100;
+  return Math.abs(v % 1) < 0.005 ? fmt(v) : v.toLocaleString('ru-RU', { minimumFractionDigits:2, maximumFractionDigits:2 });
+};
+const CH_LIVE  = ['Принято', 'Применено'];        // изменения, вошедшие в договор
+const CH_KINDS = ['добавить', 'убрать', 'цена', 'объём', 'срок'];
+
+const chgAll     = () => (D.changes || []);
+const chgSt      = c => String((c && c.status) || '').trim();
+const chgLive    = () => chgAll().filter(c => CH_LIVE.includes(chgSt(c)));
+const chgPending = () => chgAll().filter(c => chgSt(c) === 'Заявлено');
+const chgMine    = () => chgPending().filter(c => String(c.by || '') === String(D.who));
+const chgTheirs  = () => chgPending().filter(c => String(c.by || '') !== String(D.who));
+const chgToApply = () => chgAll().filter(c => chgSt(c) === 'Принято');
+const chgDone    = () => chgAll().filter(c => ['Применено', 'Оспорено'].includes(chgSt(c)));
+
+/* Действующий договор. База — то, что лежит в 07_Настройки (заказчику приходит
+   в settings, работнику — в my_money). Дельта — сумма принятых изменений. */
+function dealBase(){
+  const S = D.settings || {};
+  return Number(S['Договор_USD'] != null ? S['Договор_USD'] : ((D.my_money || {}).contract_usd || 0)) || 0;
+}
+function dealDelta(){ return Math.round(chgLive().reduce((a, c) => a + (Number(c.d_usd) || 0), 0) * 100) / 100; }
+function dealSum(){ return Math.round((dealBase() + dealDelta()) * 100) / 100; }
+function paidSum(){
+  const S = D.settings || {};
+  return Number(S['Оплачено_за_работу_USD'] != null ? S['Оплачено_за_работу_USD'] : ((D.my_money || {}).received_usd || 0)) || 0;
+}
+function dealRest(){ return Math.round((dealSum() - paidSum()) * 100) / 100; }
+function dealDaysDelta(){ return Math.round(chgLive().reduce((a, c) => a + (Number(c.d_days) || 0), 0) * 10) / 10; }
+function dealNote(){
+  const d = dealDelta();
+  if(!d) return '';
+  return 'база ' + usd(dealBase()) + ' ' + (d > 0 ? '+' : '−') + ' изменения ' + usd(Math.abs(d));
+}
+
+/* Форма заявки. Живёт вне render(), поэтому переключение вида не теряет ввод. */
+let CHG = { kind:'цена', code:'', room:'', section:'', name:'', unit:'', vol:'', rate:'', price:'', days:'', comment:'' };
+
+function chgOpen(){
+  CHG = { kind:'цена', code:'', room:'', section:'', name:'', unit:'', vol:'', rate:'', price:'', days:'', comment:'' };
+  go('chgnew');
+}
+function chgSet(field, el){
+  CHG[field] = String(el.value == null ? '' : el.value).replace(',', '.').trim();
+  const box = document.getElementById('chgPreview');
+  if(box) box.innerHTML = chgPreview();
+}
+function chgPickKind(v){ CHG.kind = v; render(); }
+function chgPickWork(el){ CHG.code = el.value; render(); }
+
+function chgWork(){ return (D.works || []).find(w => w.code === CHG.code) || null; }
+const workPrice = w => Number((w && w.price_alloc_usd) || 0) || 0;
+const workDur   = w => Number((w && w.dur) || 0) || 0;
+
+/* Работы, доступные для изменения: принятые заморожены решением чата 006 —
+   цена «Готово» не пересматривается, изменения действуют вперёд. */
+function chgOpenWorks(){
+  return (D.works || []).filter(w => w.status !== 'Готово' && w.status !== 'Снято');
+}
+
+function chgCalc(){
+  const k = CHG.kind;
+  if(k === 'добавить'){
+    const vol = Number(CHG.vol) || 0, rate = Number(CHG.rate) || 0;
+    if(!CHG.name || !CHG.room) return null;
+    const sum = Math.round(vol * rate * 100) / 100;
+    return { what:'Добавить работу', was:'—',
+             now:[CHG.name, CHG.room, CHG.section || 'Изменение', CHG.unit || 'компл', vol, rate].join(' | '),
+             d_usd:sum, d_days:Number(CHG.days) || 0,
+             human:CHG.name + ' · ' + vol + ' ' + (CHG.unit || 'компл') + ' × ' + usd(rate) + ' = ' + usd(sum) + ' USD' };
+  }
+  const w = chgWork();
+  if(!w) return null;
+  if(k === 'убрать')
+    return { what:'Убрать работу', was:usd(workPrice(w)) + ' USD', now:'снято',
+             d_usd:-workPrice(w), d_days:-workDur(w),
+             human:'из договора уйдёт ' + usd(workPrice(w)) + ' USD и ' + workDur(w) + ' дн' };
+  if(k === 'цена'){
+    if(CHG.price === '') return null;
+    const np = Number(CHG.price) || 0;
+    return { what:'Цена работы', was:usd(workPrice(w)) + ' USD', now:usd(np) + ' USD',
+             d_usd:Math.round((np - workPrice(w)) * 100) / 100, d_days:0,
+             human:'было ' + usd(workPrice(w)) + ' → станет ' + usd(np) + ' USD' };
+  }
+  if(k === 'объём'){
+    if(CHG.vol === '') return null;
+    const nv = Number(CHG.vol) || 0;
+    const rate = Number(w.qty) > 0 ? workPrice(w) / Number(w.qty) : 0;
+    const np = Math.round(nv * rate * 100) / 100;
+    return { what:'Объём работы', was:w.qty + ' ' + (w.unit || ''), now:nv + ' ' + (w.unit || ''),
+             d_usd:Math.round((np - workPrice(w)) * 100) / 100, d_days:0,
+             human:'по ставке ' + usd(Math.round(rate * 100) / 100) + ' за единицу цена станет ' + usd(np) + ' USD' };
+  }
+  if(k === 'срок'){
+    if(CHG.days === '') return null;
+    const nd = Number(CHG.days) || 0;
+    return { what:'Длительность', was:workDur(w) + ' дн', now:nd + ' дн',
+             d_usd:0, d_days:Math.round((nd - workDur(w)) * 10) / 10,
+             human:'было ' + workDur(w) + ' → станет ' + nd + ' дн' };
+  }
+  return null;
+}
+
+function chgPreview(){
+  const c = chgCalc();
+  if(!c) return '<span class="k" style="opacity:.6">Заполните поля — здесь появится, что именно уйдёт на согласование.</span>';
+  const sign = c.d_usd > 0 ? '+' : (c.d_usd < 0 ? '−' : '');
+  return '<div class="r"><span class="k">' + esc(c.what) + '</span><span class="v">' +
+         (c.d_usd ? (sign + usd(Math.abs(c.d_usd)) + ' $') : '—') + '</span></div>' +
+         '<div class="r"><span class="k" style="font-size:13px;opacity:.7">' + esc(c.human) + '</span><span class="v"></span></div>' +
+         (c.d_days ? ('<div class="r"><span class="k" style="font-size:13px;opacity:.7">срок: ' + (c.d_days > 0 ? '+' : '') + c.d_days + ' дн</span><span class="v"></span></div>') : '') +
+         '<div class="r"><span class="k">Договор станет</span><span class="v">' + usd(dealSum() + (Number(c.d_usd) || 0)) + ' $</span></div>';
+}
+
+/* Время в поясе объекта: сервер n8n живёт не по Ташкенту (грабля чата 006),
+   поэтому метку ставит панель, а не сервер. */
+function chgStamp(){
+  const d = new Date(Date.now() + (5 * 60 + new Date().getTimezoneOffset()) * 60000);
+  const p = n => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+}
+
+async function chgSubmit(){
+  const c = chgCalc();
+  if(!c){ toast('Заполните поля заявки', 'err'); return; }
+  if(CHG.kind !== 'добавить' && !CHG.code){ toast('Выберите работу', 'err'); return; }
+  if(!c.d_usd && !c.d_days){ toast('Изменение ничего не меняет', 'err'); return; }
+
+  // код строки для новой работы: продолжаем нумерацию помещения
+  let code = CHG.code;
+  if(CHG.kind === 'добавить'){
+    const room = (D.rooms || []).find(r => r.name === CHG.room);
+    const pref = room ? room.code : 'NEW';
+    const used = (D.works || []).filter(w => String(w.code || '').indexOf(pref + '-') === 0)
+      .map(w => parseInt(String(w.code).split('-')[1], 10) || 0);
+    code = pref + '-' + String((used.length ? Math.max.apply(null, used) : 0) + 1).padStart(2, '0');
+  }
+
+  const row = {
+    'id': 'CH-' + Date.now().toString(36).toUpperCase(),
+    'Время': chgStamp(),
+    'Инициатор': D.who,
+    'Вид': CHG.kind,
+    'Код_работы': code,
+    'Что_меняем': c.what,
+    'Было': c.was,
+    'Стало': c.now,
+    'Дельта_USD': c.d_usd || 0,
+    'Дельта_дней': c.d_days || 0,
+    'Статус': 'Заявлено',
+    'Решил': '',
+    'Комментарий': CHG.comment || '',
+  };
+  toast('Отправляю на согласование…', 'wait');
+  try{
+    const r = await fetch(API + '/append', {
+      method:'POST', headers:{ 'Content-Type':'application/json' },
+      body: JSON.stringify({ initData:INIT, key:KEY, sheet:'11_Изменения', rows:[row] })
+    });
+    const t = (await r.text()).trim();
+    if(!r.ok || !t) throw new Error('Не удалось отправить заявку');
+    toast('Заявлено — ждёт ответа второй стороны');
+    await load();
+    back();
+  }catch(e){ toast(e.message, 'err'); }
+}
+
+/* Принятие = согласие. Применение к смете идёт следом, если у принимающего
+   есть права на запись договорных полей; иначе заявка ждёт заказчика. */
+async function chgAccept(id){
+  const c = chgAll().find(x => String(x.id) === String(id));
+  if(!c) return;
+  if(String(c.by || '') === String(D.who)){ toast('Свою заявку принимает вторая сторона', 'err'); return; }
+  try{
+    await writeCell('11_Изменения', c.id, 'Статус', 'Принято');
+    await writeCell('11_Изменения', c.id, 'Решил', D.who);
+    if(['admin', 'owner'].includes(D.role)){
+      await chgApply(id, true);
+    }else{
+      toast('Принято — заказчик применит к смете');
+      await load();
+    }
+  }catch(e){ toast(e.message, 'err'); }
+}
+
+async function chgDispute(id){
+  const c = chgAll().find(x => String(x.id) === String(id));
+  if(!c) return;
+  try{
+    await writeCell('11_Изменения', c.id, 'Статус', 'Оспорено');
+    await writeCell('11_Изменения', c.id, 'Решил', D.who);
+    toast('Оспорено — заявка не вошла в договор');
+    await load();
+  }catch(e){ toast(e.message, 'err'); }
+}
+
+/* Применение принятой заявки к 01_Работы. Цена считается от дельты, а не
+   разбором текста: дельта — то, что стороны согласовали, и именно она
+   должна сойтись с договором. */
+async function chgApply(id, quiet){
+  const c = chgAll().find(x => String(x.id) === String(id));
+  if(!c) return;
+  const k = String(c.kind || '').trim();
+  const w = (D.works || []).find(x => x.code === c.code);
+  try{
+    if(k === 'добавить'){
+      const p = String(c.now || '').split('|').map(x => x.trim());
+      const vol = Number(p[4]) || 0, rate = Number(p[5]) || 0;
+      const r = await fetch(API + '/append', {
+        method:'POST', headers:{ 'Content-Type':'application/json' },
+        body: JSON.stringify({ initData:INIT, key:KEY, sheet:'01_Работы', rows:[{
+          'Код': c.code, 'Помещение': p[1] || '', 'Раздел': p[2] || 'Изменение', 'Работа': p[0] || '',
+          'Ед': p[3] || '', 'Объём': vol, 'Ставка_USD': rate || '',
+          'Категория': 'Изменение',
+          'Цена_аллокация_USD': Math.round(vol * rate * 100) / 100,
+          'Статус': 'Не начато', 'Готовность_%': 0,
+          'Длительность_дней': (Number(c.d_days) > 0 ? Number(c.d_days) : ''),
+          'Источник': 'изменение ' + c.id, 'Зависит_от': '—',
+        }] })
+      });
+      const t = (await r.text()).trim();
+      if(!r.ok || !t) throw new Error('Не удалось добавить работу в смету');
+    }else if(k === 'убрать'){
+      await writeCell('01_Работы', c.code, 'Статус', 'Снято');
+    }else if(k === 'цена'){
+      if(!w) throw new Error('Работа ' + c.code + ' не найдена');
+      await writeCell('01_Работы', c.code, 'Цена_аллокация_USD', Math.round((workPrice(w) + (Number(c.d_usd) || 0)) * 100) / 100);
+    }else if(k === 'объём'){
+      if(!w) throw new Error('Работа ' + c.code + ' не найдена');
+      await writeCell('01_Работы', c.code, 'Объём', parseFloat(String(c.now)) || 0);
+      await writeCell('01_Работы', c.code, 'Цена_аллокация_USD', Math.round((workPrice(w) + (Number(c.d_usd) || 0)) * 100) / 100);
+    }else if(k === 'срок'){
+      if(!w) throw new Error('Работа ' + c.code + ' не найдена');
+      await writeCell('01_Работы', c.code, 'Длительность_дней', parseFloat(String(c.now)) || 0);
+    }
+    await writeCell('11_Изменения', c.id, 'Статус', 'Применено');
+    toast(quiet ? 'Принято и внесено в смету' : 'Внесено в смету');
+    await load();
+  }catch(e){
+    toast('Принято, но применить не удалось: ' + e.message, 'err');
+    await load();
+  }
+}
+
 async function writeCell(sheet, code, field, value){
   const r = await fetch(API + '/update', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -737,9 +994,10 @@ home(){
     <div class="stat">
       ${advBox}${timeBox}
       <div class="r"><span class="k">Вам ещё должны за работу</span>
-        <span class="v ok">${fmt(m.owed_usd)} $</span></div>
+        <span class="v ok">${usd(dealRest())} $</span></div>
       <div class="r"><span class="k">Получено</span>
-        <span class="v">${fmt(m.received_usd)} из ${fmt(m.contract_usd)} $</span></div>
+        <span class="v">${fmt(m.received_usd)} из ${usd(dealSum())} $</span></div>
+      ${dealDelta() ? `<div class="r"><span class="k" style="font-size:13px;opacity:.65">${esc(dealNote())}</span><span class="v"></span></div>` : ""}
       <div class="r"><span class="k">Принято заказчиком</span>
         <span class="v" style="color:var(--ok)">${fmt(accSum("price_contractor_usd"))} $</span></div>
       <div class="r"><span class="k">Готовность объекта</span>
@@ -749,9 +1007,10 @@ home(){
     <div class="stat">
       ${advBox}${timeBox}
       <div class="r"><span class="k">Договор</span>
-        <span class="v">${fmt(S["Договор_USD"])} $</span></div>
+        <span class="v">${usd(dealSum())} $</span></div>
+      ${dealDelta() ? `<div class="r"><span class="k" style="font-size:13px;opacity:.65">${esc(dealNote())}</span><span class="v"></span></div>` : ""}
       <div class="r"><span class="k">Остаток по договору</span>
-        <span class="v warn">${fmt(S["Остаток_за_работу_USD"])} $</span></div>
+        <span class="v warn">${usd(dealRest())} $</span></div>
       <div class="r"><span class="k">Готовность</span>
         <span class="v">${Math.round(p)} %</span></div>
       <div class="bar"><i style="width:${p}%"></i></div>
@@ -800,6 +1059,10 @@ home(){
         <span class="nm">Приёмка</span><div class="h">${D.works.filter(w=>w.status===(D.role==="worker"?"На приёмке у работника":"Заявлено")).length} на подтверждение</div></button>` : ""}
       <button class="tile" onclick="go('buy')"><span class="ic">🛒</span>
         <span class="nm">Материалы</span></button>
+      <button class="tile${chgTheirs().length ? " pri" : ""}" onclick="go('changes')"><span class="ic">📝</span>
+        <span class="nm">Изменения</span>
+        <div class="h">${chgTheirs().length ? chgTheirs().length + " ждут решения"
+          : (dealDelta() ? ("в договоре " + (dealDelta() > 0 ? "+" : "−") + usd(Math.abs(dealDelta())) + " $") : "состав, цена, сроки")}</div></button>
       <button class="tile" onclick="go('deal')"><span class="ic">📋</span>
         <span class="nm">Что входит<br>в договор</span></button>
     </div>`;
@@ -881,7 +1144,7 @@ accept(){
 prices(){
   const st = priceStats();
   const empty = (D.works || []).filter(w => !(Number(w.price_contractor_usd) > 0));
-  const dogovor = (D.settings && D.settings['Договор_USD']) || 0;
+  const dogovor = dealSum();   // ориентир — действующий договор с изменениями [чат 008]
   const rows = empty.slice(0, 40).map(w =>
     '<div class="work"><div class="t">' + esc(w.name) + '</div>' +
     '<div class="m">' + esc(String(w.room||'').split(' (')[0]) + ' · ' + esc(w.section) + ' · ' +
@@ -1075,9 +1338,9 @@ money(){
 
       <div class="card">
         <div class="lbl">За работу</div>
-        <div class="li"><div class="n">Договор</div><div class="v">${fmt(m.contract_usd)} $</div></div>
+        <div class="li"><div class="n">Договор${dealDelta() ? `<div class="d">${esc(dealNote())}</div>` : ""}</div><div class="v">${usd(dealSum())} $</div></div>
         <div class="li"><div class="n">Получено</div><div class="v ok" style="color:var(--ok)">${fmt(m.received_usd)} $</div></div>
-        <div class="li"><div class="n"><b>Осталось получить</b></div><div class="v">${fmt(m.owed_usd)} $</div></div>
+        <div class="li"><div class="n"><b>Осталось получить</b></div><div class="v">${usd(dealRest())} $</div></div>
       </div>
 
       <div class="card">
@@ -1108,9 +1371,10 @@ money(){
     <div class="hello">Финансы</div>
     <div class="sub">все платежи по объекту</div>
     <div class="stat">
-      <div class="r"><span class="k">Договор</span><span class="v">${fmt(S["Договор_USD"])} $</span></div>
-      <div class="r"><span class="k">Оплачено за работу</span><span class="v ok">${fmt(S["Оплачено_за_работу_USD"])} $</span></div>
-      <div class="r"><span class="k">Остаток</span><span class="v warn">${fmt(S["Остаток_за_работу_USD"])} $</span></div>
+      <div class="r"><span class="k">Договор</span><span class="v">${usd(dealSum())} $</span></div>
+      ${dealDelta() ? `<div class="r"><span class="k" style="font-size:13px;opacity:.65">${esc(dealNote())}</span><span class="v"></span></div>` : ""}
+      <div class="r"><span class="k">Оплачено за работу</span><span class="v ok">${usd(paidSum())} $</span></div>
+      <div class="r"><span class="k">Остаток</span><span class="v warn">${usd(dealRest())} $</span></div>
     </div>
     <div class="card">
       <div class="lbl">Работы по приёмке</div>
@@ -1179,9 +1443,11 @@ deal(){
     <div class="hello">Договор</div>
     <div class="sub">что входит в сумму</div>
     <div class="stat">
-      <div class="r"><span class="k">Сумма</span><span class="v">${fmt(S["Договор_USD"])} $</span></div>
-      <div class="r"><span class="k">Выплачено</span><span class="v ok">${fmt(S["Оплачено_за_работу_USD"])} $</span></div>
-      <div class="r"><span class="k">Остаток</span><span class="v">${fmt(S["Остаток_за_работу_USD"])} $</span></div>
+      <div class="r"><span class="k">Сумма</span><span class="v">${usd(dealSum())} $</span></div>
+      ${dealDelta() ? `<div class="r"><span class="k">В том числе изменения</span><span class="v">${dealDelta() > 0 ? "+" : "−"}${usd(Math.abs(dealDelta()))} $</span></div>
+      <div class="r"><span class="k" style="font-size:13px;opacity:.65">${esc(dealNote())} · принятых заявок: ${chgLive().length}</span><span class="v"></span></div>` : ""}
+      <div class="r"><span class="k">Выплачено</span><span class="v ok">${usd(paidSum())} $</span></div>
+      <div class="r"><span class="k">Остаток</span><span class="v">${usd(dealRest())} $</span></div>
     </div>
     <div class="card">
       <div class="lbl">Входит в цену</div>
@@ -1215,6 +1481,107 @@ deal(){
     <div class="warnbox" style="border-color:var(--hint)">
       Всё, что не в этом списке, — отдельный разговор <b>до</b> начала работ, а не после.
     </div>`;
+},
+
+changes(){
+  const worker = D.role === 'worker';
+  const wname  = c => {
+    const w = (D.works || []).find(x => x.code === c.code);
+    return w ? w.name : (String(c.kind) === 'добавить' ? String(c.now || '').split('|')[0].trim() : c.code);
+  };
+  const card = (c, actions) => '<div class="work">' +
+    '<div class="t">' + esc(c.what || c.kind) + ' · ' + esc(wname(c)) + '</div>' +
+    '<div class="m">' + esc(c.code || '') + ' · заявил ' + esc(c.by || '') + ' · ' + esc(c.at || '') + '</div>' +
+    '<div class="m">было: ' + esc(c.was || '—') + ' → станет: ' + esc(String(c.now || '').split('|')[0].trim()) + '</div>' +
+    '<div class="m" style="color:' + ((Number(c.d_usd) || 0) >= 0 ? 'var(--warn)' : 'var(--ok)') + '">' +
+      ((Number(c.d_usd) || 0) ? ((Number(c.d_usd) > 0 ? '+' : '−') + usd(Math.abs(Number(c.d_usd))) + ' $ к договору') : 'на договор не влияет') +
+      ((Number(c.d_days) || 0) ? (' · ' + (Number(c.d_days) > 0 ? '+' : '') + c.d_days + ' дн') : '') + '</div>' +
+    (c.comment ? '<div class="m" style="opacity:.7">' + esc(c.comment) + '</div>' : '') +
+    (c.solved ? '<div class="m" style="opacity:.7">решил: ' + esc(c.solved) + ' · ' + esc(c.status) + '</div>' : '') +
+    (actions || '') + '</div>';
+
+  const theirs = chgTheirs().map(c => card(c,
+    '<div class="row" style="gap:8px;margin-top:10px">' +
+      '<button style="flex:1;padding:12px;border:0;border-radius:10px;background:var(--ok);color:#fff;font-weight:600;font-size:15px" onclick="chgAccept(\'' + esc(c.id) + '\')">Принять</button>' +
+      '<button style="flex:1;padding:12px;border:0;border-radius:10px;background:var(--bad);color:#fff;font-weight:600;font-size:15px" onclick="chgDispute(\'' + esc(c.id) + '\')">Оспорить</button>' +
+    '</div>')).join('');
+
+  const mine = chgMine().map(c => card(c, '<div class="m" style="color:var(--warn);margin-top:6px">⏳ Ждёт ответа второй стороны</div>')).join('');
+
+  const toApply = (['admin','owner'].includes(D.role) ? chgToApply() : []).map(c => card(c,
+    '<div class="row" style="margin-top:10px">' +
+      '<button style="flex:1;padding:12px;border:0;border-radius:10px;background:#0a84ff;color:#fff;font-weight:600;font-size:15px" onclick="chgApply(\'' + esc(c.id) + '\')">Внести в смету</button>' +
+    '</div>')).join('');
+
+  const done = chgDone().slice(-12).reverse().map(c => card(c, '')).join('');
+  const dd = dealDaysDelta();
+
+  return '' +
+    '<div class="hello">Изменения</div>' +
+    '<div class="sub">' + (chgTheirs().length ? (chgTheirs().length + ' ждут вашего решения') : 'состав и цена по взаимному согласию') + '</div>' +
+    '<div class="stat">' +
+      '<div class="r"><span class="k">Договор действующий</span><span class="v">' + usd(dealSum()) + ' $</span></div>' +
+      (dealDelta() ? ('<div class="r"><span class="k" style="font-size:13px;opacity:.65">' + esc(dealNote()) + '</span><span class="v"></span></div>') : '') +
+      (dd ? ('<div class="r"><span class="k" style="font-size:13px;opacity:.65">срок сдвинут на ' + (dd > 0 ? '+' : '') + dd + ' дн</span><span class="v"></span></div>') : '') +
+    '</div>' +
+    '<div class="stat"><div class="r">' +
+      '<button onclick="chgOpen()" style="width:100%;padding:13px;border-radius:12px;border:0;background:#0a84ff;color:#fff;font-size:15px">Заявить изменение</button>' +
+    '</div></div>' +
+    (theirs ? ('<div class="sub" style="margin-top:14px">Ждут вашего решения</div>' + theirs) : '') +
+    (mine ? ('<div class="sub" style="margin-top:14px">Заявлено вами</div>' + mine) : '') +
+    (toApply ? ('<div class="sub" style="margin-top:14px">Принято — внести в смету</div>' + toApply) : '') +
+    (done ? ('<div class="sub" style="margin-top:14px">История</div>' + done) : '') +
+    ((theirs || mine || toApply || done) ? '' :
+      '<div class="stat"><span class="k">Изменений пока не заявляли. Любая сторона может предложить добавить или убрать работу, поменять цену, объём или срок — вторая сторона примет или оспорит, и только принятое двигает сумму договора.</span></div>');
+},
+
+chgnew(){
+  const k = CHG.kind;
+  const titles = { 'добавить':'Добавить работу', 'убрать':'Убрать работу', 'цена':'Изменить цену', 'объём':'Изменить объём', 'срок':'Изменить срок' };
+  const tabs = CH_KINDS.map(v => '<button class="' + (k === v ? 'on' : '') + '" onclick="chgPickKind(\'' + v + '\')">' + esc(titles[v]) + '</button>').join('');
+
+  const box = 'width:100%;padding:11px;border-radius:12px;border:1px solid #3a3a3c;background:#000;color:#fff;font-size:16px';
+  const field = (label, html) => '<div class="m" style="margin-top:10px">' + esc(label) + '<div style="margin-top:5px">' + html + '</div></div>';
+
+  const works = chgOpenWorks();
+  const frozen = (D.works || []).filter(w => w.status === 'Готово').length;
+  const wsel = '<select onchange="chgPickWork(this)" style="' + box + '">' +
+    '<option value="">— выберите работу —</option>' +
+    works.map(w => '<option value="' + attr(w.code) + '"' + (CHG.code === w.code ? ' selected' : '') + '>' +
+      esc(w.name) + ' · ' + esc(String(w.room || '').split(' (')[0]) + '</option>').join('') + '</select>';
+
+  let body = '';
+  if(k === 'добавить'){
+    const rooms = (D.rooms || []).map(r => '<option value="' + attr(r.name) + '"' + (CHG.room === r.name ? ' selected' : '') + '>' + esc(r.name) + '</option>').join('');
+    body =
+      field('Помещение', '<select onchange="chgSet(\'room\',this)" style="' + box + '"><option value="">— выберите —</option>' + rooms + '</select>') +
+      field('Что за работа', '<input value="' + attr(CHG.name) + '" onchange="chgSet(\'name\',this)" placeholder="например: короб из гипсокартона" style="' + box + '">') +
+      field('Раздел (необязательно)', '<input value="' + attr(CHG.section) + '" onchange="chgSet(\'section\',this)" placeholder="Изменение" style="' + box + '">') +
+      field('Единица', '<input value="' + attr(CHG.unit) + '" onchange="chgSet(\'unit\',this)" placeholder="м2 / шт / компл" style="' + box + '">') +
+      field('Объём', '<input type="number" inputmode="decimal" step="0.01" value="' + attr(CHG.vol) + '" onchange="chgSet(\'vol\',this)" style="' + box + '">') +
+      field('Цена за единицу, USD', '<input type="number" inputmode="decimal" step="0.01" value="' + attr(CHG.rate) + '" onchange="chgSet(\'rate\',this)" style="' + box + '">') +
+      field('Сколько дней займёт (необязательно)', '<input type="number" inputmode="decimal" step="0.5" value="' + attr(CHG.days) + '" onchange="chgSet(\'days\',this)" style="' + box + '">');
+  }else{
+    body = field('Работа', wsel);
+    const w = chgWork();
+    if(k === 'цена')  body += field('Новая цена, USD', '<input type="number" inputmode="decimal" step="0.01" value="' + attr(CHG.price) + '" onchange="chgSet(\'price\',this)" placeholder="' + (w ? workPrice(w) : '') + '" style="' + box + '">');
+    if(k === 'объём') body += field('Новый объём' + (w && w.unit ? (', ' + w.unit) : ''), '<input type="number" inputmode="decimal" step="0.01" value="' + attr(CHG.vol) + '" onchange="chgSet(\'vol\',this)" placeholder="' + (w ? w.qty : '') + '" style="' + box + '">');
+    if(k === 'срок')  body += field('Новая длительность, дней', '<input type="number" inputmode="decimal" step="0.5" value="' + attr(CHG.days) + '" onchange="chgSet(\'days\',this)" placeholder="' + (w ? workDur(w) : '') + '" style="' + box + '">');
+  }
+
+  return '' +
+    '<div class="hello">Заявить изменение</div>' +
+    '<div class="sub">' + esc(titles[k]) + ' · решает вторая сторона</div>' +
+    '<div class="filt">' + tabs + '</div>' +
+    '<div class="stat">' + body +
+      field('Комментарий (необязательно)', '<input value="' + attr(CHG.comment) + '" onchange="chgSet(\'comment\',this)" placeholder="почему меняем" style="' + box + '">') +
+    '</div>' +
+    '<div class="stat" id="chgPreview">' + chgPreview() + '</div>' +
+    (frozen && k !== 'добавить' ? ('<div class="stat"><span class="k" style="font-size:13px;opacity:.7">Принятых работ в списке нет: ' + frozen + ' уже приняты, их цена заморожена — изменения действуют вперёд.</span></div>') : '') +
+    '<div class="stat"><div class="r" style="display:flex;gap:8px">' +
+      '<button onclick="back()" style="flex:1;padding:13px;border-radius:12px;border:0;background:#3a3a3c;color:#fff;font-size:15px">Отмена</button>' +
+      '<button onclick="chgSubmit()" style="flex:1;padding:13px;border-radius:12px;border:0;background:#0a84ff;color:#fff;font-size:15px">Заявить</button>' +
+    '</div></div>';
 },
 
 };   /* ── конец SCREENS ───────────────────────────────────────── */
@@ -1406,6 +1773,7 @@ function _snapshot(d){
     return JSON.stringify({
       w:(d.works||[]).map(x => x.code+":"+x.status+":"+(x.progress||0)+":"+(x.price_contractor_usd??"")),
       m:(d.materials||[]).map(x => x.name+":"+(x.in||0)+":"+(x.out||0)),
+      c:(d.changes||[]).map(x => x.id+":"+x.status),
       s:d.settings, p:(d.payments||[]).length
     });
   }catch{ return ""; }
