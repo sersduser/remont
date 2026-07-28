@@ -289,7 +289,7 @@ async function openBook(){
 }
 
 function bookStats(){
-  const rows = ((D.catalog || {}).price || []);
+  const rows = ((D.catalog || {}).price || []).filter(p => p.active !== false); // [чат 011] только активные строки прайса
   const set  = rows.filter(p => Number(p.price_usd) > 0);
   return { all: rows.length, set: set.length, empty: rows.length - set.length };
 }
@@ -1175,7 +1175,7 @@ prices(){
 book(){
   const cat    = D.catalog || { kinds: [], price: [] };
   const byCode = {}; (cat.kinds || []).forEach(k => { byCode[k.code] = k; });
-  const rows   = (cat.price || []);
+  const rows   = (cat.price || []).filter(p => p.active !== false); // [чат 011] неактивные строки прайса не показываем
   const st     = bookStats();
   const money  = n => (Number(n) || 0).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
@@ -1230,8 +1230,8 @@ profile(){
       items;
   }
 
-  const inPrice = (cat.price || []).map(p => p.code);
-  const pool = (cat.kinds || []).filter(k => k.active !== false && (inPrice.length ? inPrice.indexOf(k.code) >= 0 : true));
+  const inPrice = (cat.price || []).filter(p => p.active !== false).map(p => p.code); // [чат 011] только активный прайс
+  const pool = (cat.kinds || []).filter(k => k.active !== false && k.area !== 'объектная' && (inPrice.length ? inPrice.indexOf(k.code) >= 0 : true)); // [чат 011] объектные строки сметы в профиль не попадают
   const groups = {};
   pool.forEach(k => { const g = k.section || 'Прочее'; (groups[g] = groups[g] || []).push(k); });
 
