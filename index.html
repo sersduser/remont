@@ -935,8 +935,11 @@ async function disputeWork(code){ if(await upd("01_Работы", code, "Ста�
    по параметру crew; менять их отдельно от кода ноды нельзя.
    Существующий лист сервер не пересоздаёт: ответ приходит без ok —
    считаем «видимо, уже был» (не ошибка); упавший fetch — сбой связи,
-   его за «уже был» не выдаём. Бригада может состоять из одного
-   человека (решение 012): пустые листы — норма, а не недособранность.
+   его за «уже был» не выдаём. Замок CREW_BUSY: без него двойной тап
+   (клики копятся в очереди событий, пока идут запросы) запускал
+   второй круг — воспроизведено при первом живом нажатии [чат 012].
+   После полного прохода плитка исчезает (CREW_DONE). Бригада может
+   состоять из одного человека (решение 012): пустые листы — норма.
    ══════════════════════════════════════════════════════════════ */
 const CREW_SHEETS = [
   { sheet: "Работники",      header: ["Бригадир","Имя","Telegram_ID","Телефон","Статус","Ставка_час_USD","Добавлен","Отключён","Примечание"] },
@@ -944,22 +947,28 @@ const CREW_SHEETS = [
   { sheet: "Табель",         header: ["id","Работник","Объект","Дата","Событие","Время","Отметил","Статус","Подтвердил","Комментарий"] },
   { sheet: "Отчёты_бригады", header: ["id","Дата","Работник","Тип","Код","Значение","Комментарий","Статус","Стало","Решил","Время"] },
 ];
+let CREW_BUSY = false, CREW_DONE = false;
 async function crewSheets(){
+  if(CREW_BUSY) return;
   if(!confirm("Подготовить листы бригады в общей базе (4 листа)?")) return;
+  CREW_BUSY = true;
   toast("Готовлю листы…", "wait");
   const made = [], had = [], fail = [];
-  for(const s of CREW_SHEETS){
-    try{
-      const r = await fetch(API + "/sheet", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ initData: INIT, key: KEY, sheet: s.sheet, header: s.header, base: "common" })
-      });
-      const txt = (await r.text()).trim();
-      let ok = false;
-      try{ ok = !!(txt && JSON.parse(txt).ok); }catch(e){}
-      (ok ? made : had).push(s.sheet);
-    }catch(e){ fail.push(s.sheet); }
-  }
+  try{
+    for(const s of CREW_SHEETS){
+      try{
+        const r = await fetch(API + "/sheet", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ initData: INIT, key: KEY, sheet: s.sheet, header: s.header, base: "common" })
+        });
+        const txt = (await r.text()).trim();
+        let ok = false;
+        try{ ok = !!(txt && JSON.parse(txt).ok); }catch(e){}
+        (ok ? made : had).push(s.sheet);
+      }catch(e){ fail.push(s.sheet); }
+    }
+  } finally { CREW_BUSY = false; }
+  CREW_DONE = !fail.length;
   if(fail.length && !made.length && !had.length){
     toast("Нет связи с сервером — листы не созданы", "err");
   } else {
@@ -967,6 +976,7 @@ async function crewSheets(){
       + (had.length ? " · видимо, уже были: " + had.length : "")
       + (fail.length ? " · сбой связи: " + fail.length : ""));
   }
+  render();
 }
 
 function toast(msg, kind){
@@ -1108,7 +1118,7 @@ home(){
           : (dealDelta() ? ("в договоре " + (dealDelta() > 0 ? "+" : "−") + usd(Math.abs(dealDelta())) + " $") : "состав, цена, сроки")}</div></button>
       <button class="tile" onclick="go('deal')"><span class="ic">📋</span>
         <span class="nm">Что входит<br>в договор</span></button>
-      ${['admin','owner'].includes(D.role) ? `<button class="tile" onclick="crewSheets()"><span class="ic">👷</span>
+      ${(['admin','owner'].includes(D.role) && !CREW_DONE) ? `<button class="tile" onclick="crewSheets()"><span class="ic">👷</span>
         <span class="nm">Листы бригады</span>
         <div class="h">разовая подготовка базы</div></button>` : ""}
     </div>`;
