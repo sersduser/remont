@@ -189,6 +189,9 @@ async function load(){
     if(!D || !D.role) throw new Error(BAD);
     render();
     _sig = _snapshot(D);            // калибровка живого обновления
+    /* Работник живёт данными контура бригады — тянем их при каждой полной
+       загрузке: load() зовётся и при старте, и при откате после ошибки [чат 013] */
+    if (D.kind === "hand") crewLoad().then(() => render()).catch(() => {});
   }catch(e){
     /* Незнакомый Telegram — возможно, это работник с приглашением [чат 012]:
        вместо тупика показываем экран регистрации по коду. */
@@ -1071,30 +1074,83 @@ async function crewSheets(){
 }
 
 /* ══════════════════════════════════════════════════════════════
-   БРИГАДА [чат 012] — экран бригадира: реестр, приглашения.
-   Данные контура бригады грузятся ОТДЕЛЬНЫМ запросом с параметром
-   crew при открытии экрана и живут в CREW_DATA, а не в D: поллинг
-   каждые 15 секунд перезаписывает D целиком и затёр бы их.
+   БРИГАДА [чат 012, экраны — чат 013] — контур бригадира и работника.
+   Данные контура грузятся ОТДЕЛЬНЫМ запросом с параметром crew и живут
+   в CREW_DATA, а не в D: поллинг каждые 15 секунд перезаписывает D
+   целиком и затёр бы их. Обновление — заходом на экран или кнопкой.
    Бригада может состоять из одного человека (решение 012): пустой
-   реестр — норма, бригадир работает сам; экран прямо это говорит.
-   Ставки работников здесь не показываются — экран о людях и доступе. */
+   реестр — норма, бригадир работает сам; экраны прямо это говорят.
+   Цепочка доверия (разбор 09): работник заявляет → бригадир
+   подтверждает или правит → только после этого запись факт учёта.
+   Ставка работника заказчику и самому работнику не показывается.  */
 let CREW_DATA = null, CREW_LOAD = false;
-async function openCrew(){
+
+async function crewLoad(){
+  const auth = INIT ? "initData=" + encodeURIComponent(INIT) : "key=" + encodeURIComponent(KEY);
+  const r = await fetch(API + "/data?" + auth + "&crew=1", { cache: "no-store" });
+  const raw = (await r.text()).trim();
+  let j = null; try{ j = JSON.parse(raw); }catch(e){}
+  if(!j || !j.crew) throw new Error("нет данных бригады");
+  CREW_DATA = j.crew;
+  return CREW_DATA;
+}
+/* Один вход для всех экранов контура: свежие данные, затем переход. */
+async function openCrewScreen(k){
   if(CREW_LOAD) return;
   CREW_LOAD = true;
   try{
     toast("Загружаю бригаду…", "wait");
-    const auth = INIT ? "initData=" + encodeURIComponent(INIT) : "key=" + encodeURIComponent(KEY);
-    const r = await fetch(API + "/data?" + auth + "&crew=1", { cache: "no-store" });
-    const raw = (await r.text()).trim();
-    let j = null; try{ j = JSON.parse(raw); }catch(e){}
-    if(!j || !j.crew) throw new Error("нет данных бригады");
-    CREW_DATA = j.crew;
-    toast("Бригада загружена");
-    if(stack[stack.length - 1] === "crew") render(); else go("crew");
+    await crewLoad();
+    toast("Готово");
+    if(stack[stack.length - 1] === k) render(); else go(k);
   }catch(e){ toast("Не удалось загрузить бригаду", "err"); }
   finally{ CREW_LOAD = false; }
 }
+function openCrew(){ return openCrewScreen("crew"); }
+
+/* Тихая запись ячейки контура: без локального patch (данные в CREW_DATA
+   правим сами по месту). Пустое тело при 200 = отказ (граблина 6).   */
+async function crewCell(sheet, code, field, value){
+  const r = await fetch(API + "/update", { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ initData: INIT, key: KEY, sheet: sheet, code: code, field: field, value: value }) });
+  const t = (await r.text()).trim();
+  if(!r.ok || !t) throw new Error("Не удалось сохранить (" + field + ")");
+  return true;
+}
+async function crewAppend(sheet, rows){
+  const r = await fetch(API + "/append", { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ initData: INIT, key: KEY, sheet: sheet, rows: rows }) });
+  const t = (await r.text()).trim();
+  let ok = false; try{ ok = !!(t && JSON.parse(t).ok); }catch(e){}
+  if(!r.ok || !ok) throw new Error("Сервер не принял запись");
+  return true;
+}
+
+/* Даты и время — всегда в поясе объекта (+5), как chgStamp: телефоны
+   работников могут жить в любом поясе, а табель — в ташкентском.     */
+function crewToday(){ return chgStamp().slice(0, 10); }
+function crewNow(){ return chgStamp().slice(11, 16); }
+function dShift(iso, n){
+  const d = new Date(iso + "T00:00:00Z");
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+function dLabel(iso){
+  const t = crewToday();
+  if(iso === t) return "сегодня";
+  if(iso === dShift(t, 1)) return "завтра";
+  if(iso === dShift(t, -1)) return "вчера";
+  const d = new Date(iso + "T00:00:00Z");
+  const wd = ["вс","пн","вт","ср","чт","пт","сб"][d.getUTCDay()] || "";
+  return iso.slice(8, 10) + "." + iso.slice(5, 7) + " " + wd;
+}
+function crewId(pfx){ return pfx + "-" + Date.now().toString(36).toUpperCase() + Math.floor(Math.random() * 36).toString(36).toUpperCase(); }
+const CREW_BTN  = 'style="padding:10px 14px;border-radius:10px;border:0;background:#0a84ff;color:#fff;font-size:14px"';
+const CREW_BTN2 = 'style="padding:10px 14px;border-radius:10px;border:0;background:#3a3a3c;color:#fff;font-size:14px"';
+const CREW_BTNR = 'style="padding:10px 14px;border-radius:10px;border:0;background:#e5484d;color:#fff;font-size:14px"';
+const CREW_INP  = 'style="width:100%;padding:12px;border-radius:12px;border:1px solid #3a3a3c;background:#000;color:#fff;font-size:15px"';
+
+/* ── Приглашения и реестр (как в 012) ── */
 function invGen(){
   const A = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";   // без похожих O/0, I/1, L
   const buf = new Uint32Array(8);
@@ -1123,18 +1179,352 @@ async function crewAdd(){
   try{
     toast("Создаю приглашение…", "wait");
     const code = invGen();
-    const r = await fetch(API + "/append", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ initData: INIT, key: KEY, sheet: "Работники", rows: [{
-        "Бригадир": D.who, "Имя": name, "Телефон": phone,
-        "Статус": "приглашён", "Добавлен": chgStamp(), "Код_приглашения": code,
-      }] }) });
-    const t = (await r.text()).trim();
-    let ok = false; try{ ok = !!(t && JSON.parse(t).ok); }catch(e){}
-    if(!ok) throw new Error("сервер не принял");
+    await crewAppend("Работники", [{
+      "Бригадир": D.who, "Имя": name, "Телефон": phone,
+      "Статус": "приглашён", "Добавлен": chgStamp(), "Код_приглашения": code,
+    }]);
     toast("Приглашение создано");
-    await openCrew();
+    await openCrewScreen("crew");
   }catch(e){ toast("Не удалось создать приглашение", "err"); }
   finally{ CREW_ADD_BUSY = false; }
+}
+
+/* Отключение работника = Статус «отключён» + снятие будущих нарядов.
+   Строка не удаляется: на ней висят табель и подтверждённые отчёты
+   (разбор 09 §3.1). Полное гашение строки в 09_Доступы — за заказчиком:
+   у бригадира нет прав на лист доступов, и это правильно.            */
+let CW_OFF_BUSY = false;
+async function cwOff(i){
+  const w = (((CREW_DATA || {}).workers) || [])[i];
+  if(!w || CW_OFF_BUSY) return;
+  if(!confirm("Отключить работника «" + w.name + "»? Будущие наряды снимутся, история останется.")) return;
+  CW_OFF_BUSY = true;
+  try{
+    toast("Отключаю…", "wait");
+    await crewCell("Работники", w.name, "Статус", "отключён");
+    await crewCell("Работники", w.name, "Отключён", crewToday());
+    const today = crewToday();
+    const future = ((CREW_DATA || {}).orders || []).filter(o =>
+      String(o.worker || "").trim() === String(w.name).trim() &&
+      String(o.date || "") >= today && String(o.status || "") === "назначен");
+    for(const o of future){ await crewCell("Наряды", o.id, "Статус", "отменён"); o.status = "отменён"; }
+    w.status = "отключён"; w.off = crewToday();
+    toast("Отключён" + (future.length ? " · снято нарядов: " + future.length : ""));
+    render();
+  }catch(e){ toast(e.message, "err"); }
+  finally{ CW_OFF_BUSY = false; }
+}
+async function cwOn(i){
+  const w = (((CREW_DATA || {}).workers) || [])[i];
+  if(!w || CW_OFF_BUSY) return;
+  CW_OFF_BUSY = true;
+  try{
+    toast("Возвращаю…", "wait");
+    await crewCell("Работники", w.name, "Статус", "активен");
+    await crewCell("Работники", w.name, "Отключён", "");
+    w.status = "активен"; w.off = "";
+    toast("Работник снова активен");
+    render();
+  }catch(e){ toast(e.message, "err"); }
+  finally{ CW_OFF_BUSY = false; }
+}
+
+/* ── НАРЯДЫ (бригадир): кто где завтра ── */
+let ORD_BUSY = false, ORD_PAST = false;
+function ordActive(){ return (((CREW_DATA || {}).orders) || []).filter(o => String(o.status || "") !== "отменён"); }
+async function ordCreate(){
+  const g = id => String((document.getElementById(id) || {}).value || "").trim();
+  const worker = g("or_worker"), from = g("or_from"), to = g("or_to") || from;
+  const load0 = g("or_load"), hours = g("or_hours"), object = g("or_object"), task = g("or_task");
+  if(!worker){ toast("Выберите работника", "err"); return; }
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(from)){ toast("Укажите дату", "err"); return; }
+  if(to < from){ toast("Дата «по» раньше даты «с»", "err"); return; }
+  if(!task){ toast("Напишите задание", "err"); return; }
+  const load = load0 === "часы" ? ("часы " + (Number(hours) || 4)) : load0;
+  const days = [];
+  for(let d = from; d <= to && days.length < 31; d = dShift(d, 1)) days.push(d);
+  if(days.length > 14 && !confirm("Наряд на " + days.length + " дней подряд — создать?")) return;
+  /* Конфликт (разбор 09 §3.2): два «весь день» на одну дату — предупреждаем,
+     но не запрещаем: бывает переброска в середине дня. */
+  const busyDays = days.filter(d => ordActive().some(o =>
+    String(o.worker || "").trim() === worker && String(o.date || "") === d &&
+    String(o.load || "") === "весь день" && load === "весь день"));
+  if(busyDays.length && !confirm(worker + " уже занят весь день: " + busyDays.map(dLabel).join(", ") + ". Всё равно назначить?")) return;
+  if(ORD_BUSY) return;
+  ORD_BUSY = true;
+  try{
+    toast("Создаю наряд…", "wait");
+    const rows = days.map(d => ({
+      "id": crewId("NR"), "Бригадир": D.who, "Работник": worker, "Дата": d,
+      "Объект": object, "Занятость": load, "Задание": task,
+      "Статус": "назначен", "Создан": chgStamp(),
+    }));
+    await crewAppend("Наряды", rows);
+    toast("Наряд создан" + (rows.length > 1 ? " на " + rows.length + " дн" : ""));
+    await crewLoad(); render();
+  }catch(e){ toast(e.message, "err"); }
+  finally{ ORD_BUSY = false; }
+}
+async function ordCancel(i){
+  const o = (((CREW_DATA || {}).orders) || [])[i];
+  if(!o || ORD_BUSY) return;
+  if(!confirm("Отменить наряд: " + (o.worker || "") + ", " + dLabel(String(o.date || "")) + "?")) return;
+  ORD_BUSY = true;
+  try{
+    toast("Отменяю…", "wait");
+    await crewCell("Наряды", o.id, "Статус", "отменён");
+    o.status = "отменён";
+    toast("Наряд отменён");
+    render();
+  }catch(e){ toast(e.message, "err"); }
+  finally{ ORD_BUSY = false; }
+}
+
+/* ── ТАБЕЛЬ (бригадир): подтверждение отметок ── */
+let TM_BUSY = false, TM_FIX = null, TM_ALL = false;
+async function tmDecide(i, mode){
+  const t = (((CREW_DATA || {}).time) || [])[i];
+  if(!t || TM_BUSY) return;
+  if(mode === "reject" && !confirm("Отклонить отметку «" + (t.event || "") + " " + (t.time || "") + "» (" + (t.worker || "") + ")?")) return;
+  let newTime = "";
+  if(mode === "fix"){
+    newTime = String((document.getElementById("tm_" + i) || {}).value || "").trim();
+    if(!/^\d{2}:\d{2}$/.test(newTime)){ toast("Время — в формате ЧЧ:ММ", "err"); return; }
+  }
+  if(TM_BUSY) return;
+  TM_BUSY = true;
+  try{
+    toast("Сохраняю…", "wait");
+    if(mode === "fix"){
+      await crewCell("Табель", t.id, "Время", newTime);
+      await crewCell("Табель", t.id, "Статус", "исправлено");
+      t.time = newTime; t.status = "исправлено";
+    } else if(mode === "reject"){
+      await crewCell("Табель", t.id, "Статус", "отклонено");
+      t.status = "отклонено";
+    } else {
+      await crewCell("Табель", t.id, "Статус", "подтверждено");
+      t.status = "подтверждено";
+    }
+    await crewCell("Табель", t.id, "Подтвердил", D.who);
+    t.confirmed = D.who;
+    TM_FIX = null;
+    toast(mode === "reject" ? "Отметка отклонена" : "Отметка " + (mode === "fix" ? "исправлена" : "подтверждена"));
+    render();
+  }catch(e){ toast(e.message, "err"); }
+  finally{ TM_BUSY = false; }
+}
+/* Человекодни: уникальные пары дата+работник по подтверждённым отметкам —
+   та же формула, что в GET-ноде для заказчика. */
+function tmMandays(rows){
+  const seen = {};
+  rows.forEach(r => {
+    if(["подтверждено", "исправлено"].includes(String(r.status || ""))){
+      seen[String(r.date || "") + "|" + String(r.worker || "")] = 1;
+    }
+  });
+  return Object.keys(seen).length;
+}
+
+/* ── ОТЧЁТЫ (бригадир): буфер работ и материалов от работников ──
+   Принять как есть → «принято»; поправить значение → «исправлено»,
+   исходное остаётся в «Значение», версия бригадира — в «Стало»:
+   через месяц в споре важно, что именно сказал работник (разбор 09).
+   Только принятое уходит в учёт объекта: работа → Готовность_%,
+   материал → Израсходовано (+= значение).                          */
+let RP_BUSY = false;
+async function rpDecide(i, mode){
+  const p = (((CREW_DATA || {}).reports) || [])[i];
+  if(!p || RP_BUSY) return;
+  if(mode === "reject" && !confirm("Отклонить отчёт " + (p.worker || "") + "?")) return;
+  let val = String(p.value || "").trim();
+  if(mode === "accept"){
+    val = String((document.getElementById("rp_" + i) || {}).value || "").trim().replace(",", ".");
+    if(val === "" || isNaN(Number(val))){ toast("Значение — число", "err"); return; }
+  }
+  if(RP_BUSY) return;
+  RP_BUSY = true;
+  try{
+    toast("Сохраняю…", "wait");
+    if(mode === "reject"){
+      await crewCell("Отчёты_бригады", p.id, "Статус", "отклонено");
+      p.status = "отклонено";
+    } else {
+      const changed = String(val) !== String(p.value ?? "").trim().replace(",", ".");
+      if(changed){
+        await crewCell("Отчёты_бригады", p.id, "Стало", val);
+        await crewCell("Отчёты_бригады", p.id, "Статус", "исправлено");
+        p.corrected = val; p.status = "исправлено";
+      } else {
+        await crewCell("Отчёты_бригады", p.id, "Статус", "принято");
+        p.status = "принято";
+      }
+    }
+    await crewCell("Отчёты_бригады", p.id, "Решил", D.who);
+    p.solved = D.who;
+    /* Перенос в учёт объекта — после фиксации решения: если он упадёт,
+       решение уже записано, а учёт бригадир поправит руками по подсказке. */
+    let carried = true;
+    if(mode !== "reject"){
+      try{
+        if(String(p.type || "") === "работа"){
+          const w = (D.works || []).find(x => x.code === String(p.code || "").trim());
+          if(w){
+            const prog = Math.max(0, Math.min(100, Number(val)));
+            await crewCell("01_Работы", w.code, "Готовность_%", prog);
+            patch("01_Работы", w.code, "Готовность_%", prog);
+            if(prog >= 100) toast("Готовность 100% — заявите приёмку на экране «Работы»", "wait");
+          } else toast("Работа «" + String(p.code || "") + "» не найдена в смете — учёт не тронут", "err");
+        } else {
+          const name = String(p.code || "").trim();
+          const m = (D.materials || []).find(x => String(x.name || "").trim() === name);
+          if(m){
+            const total = (Number(m.out) || 0) + Number(val);
+            await crewCell("03_Материалы", name, "Израсходовано", total);
+            patch("03_Материалы", name, "Израсходовано", total);
+          } else {
+            await crewAppend("03_Материалы", [{ "Материал": name, "Израсходовано": val, "Источник": "отчёт бригады" }]);
+          }
+        }
+      }catch(e2){ carried = false; toast("Решение записано, но учёт не обновился — поправьте с экрана работ или материалов", "err"); }
+    }
+    if(carried) toast(mode === "reject" ? "Отчёт отклонён" : "Отчёт принят — учёт обновлён");
+    render();
+  }catch(e){ toast(e.message, "err"); }
+  finally{ RP_BUSY = false; }
+}
+
+/* ── РАБОТНИК (hand): свой день, календарь, отчёты ── */
+let HM = null, HM_BUSY = false, HR_BUSY = false, HR_TYPE = "работа";
+function handMyOrders(){ return ordActive(); }   // сервер уже отдал hand только его наряды
+function handObject(){
+  const today = crewToday();
+  const t = handMyOrders().find(o => String(o.date || "") === today);
+  if(t) return String(t.object || "");
+  const past = handMyOrders().filter(o => String(o.date || "") <= today).sort((a, b) => String(a.date).localeCompare(String(b.date)));
+  return past.length ? String(past[past.length - 1].object || "") : "";
+}
+function handMark(ev){ HM = { ev: ev, mode: "now" }; render(); }
+function handMarkTime(){
+  if(!HM) return "";
+  const now = crewNow();
+  if(HM.mode === "custom"){
+    const v = String((document.getElementById("hm_time") || {}).value || "").trim();
+    return /^\d{2}:\d{2}$/.test(v) ? (v > now ? now : v) : "";
+  }
+  const shift = { now: 0, m10: 10, m30: 30, m60: 60 }[HM.mode] || 0;
+  const mins = Math.max(0, Number(now.slice(0, 2)) * 60 + Number(now.slice(3, 5)) - shift);
+  const p = n => String(n).padStart(2, "0");
+  return p(Math.floor(mins / 60)) + ":" + p(mins % 60);
+}
+async function handMarkGo(){
+  if(!HM || HM_BUSY) return;
+  const t = handMarkTime();
+  if(!t){ toast("Время — в формате ЧЧ:ММ, не позже текущего", "err"); return; }
+  const today = crewToday();
+  const dup = (((CREW_DATA || {}).time) || []).some(x =>
+    String(x.date || "") === today && String(x.event || "") === HM.ev && String(x.status || "") !== "отклонено");
+  if(dup && !confirm("Отметка «" + HM.ev + "» сегодня уже есть. Добавить ещё одну?")) return;
+  HM_BUSY = true;
+  try{
+    toast("Записываю…", "wait");
+    await crewAppend("Табель", [{
+      "id": crewId("TB"), "Работник": D.who, "Объект": handObject(), "Дата": today,
+      "Событие": HM.ev, "Время": t, "Отметил": D.who, "Статус": "заявлено",
+      "Подтвердил": "", "Комментарий": "",
+    }]);
+    toast("Отмечено: " + HM.ev + " " + t + " — уйдёт бригадиру на подтверждение");
+    HM = null;
+    await crewLoad(); render();
+  }catch(e){ toast(e.message, "err"); }
+  finally{ HM_BUSY = false; }
+}
+async function handReport(){
+  const g = id => String((document.getElementById(id) || {}).value || "").trim();
+  let code = "", val = g("hr_val").replace(",", "."), comment = g("hr_comment");
+  if(HR_TYPE === "работа"){
+    code = g("hr_work");
+    if(!code){ toast("Выберите работу", "err"); return; }
+    const n = Number(val);
+    if(!(n >= 0 && n <= 100)){ toast("Готовность — число от 0 до 100", "err"); return; }
+  } else {
+    code = g("hr_mat");
+    if(!code){ toast("Напишите, какой материал", "err"); return; }
+    if(val === "" || isNaN(Number(val))){ toast("Количество — число", "err"); return; }
+  }
+  if(HR_BUSY) return;
+  HR_BUSY = true;
+  try{
+    toast("Отправляю бригадиру…", "wait");
+    await crewAppend("Отчёты_бригады", [{
+      "id": crewId("RP"), "Дата": crewToday(), "Работник": D.who,
+      "Тип": HR_TYPE, "Код": code, "Значение": val, "Комментарий": comment,
+      "Статус": "новый", "Стало": "", "Решил": "", "Время": crewNow(),
+    }]);
+    toast("Отчёт ушёл бригадиру");
+    await crewLoad(); render();
+  }catch(e){ toast(e.message, "err"); }
+  finally{ HR_BUSY = false; }
+}
+async function handRefresh(){
+  try{ toast("Обновляю…", "wait"); await crewLoad(); toast("Обновлено"); render(); }
+  catch(e){ toast("Не удалось обновить", "err"); }
+}
+
+/* Главный экран работника. Самый бедный в системе — осознанно (разбор 09 §4):
+   ни цен, ни сумм, ни договора. Наряд на сегодня, четыре кнопки дня, отчёт. */
+function handHome(){
+  const c = CREW_DATA;
+  const hello = '<div class="hello">' + esc(D.who) + ", добрый день</div>" +
+    '<div class="sub">' + new Date().toLocaleDateString("ru-RU", { day: "numeric", month: "long" }) + "</div>";
+  if(!c) return hello + '<div class="stat"><span class="k">Загружаю наряды…</span></div>' +
+    '<div class="grid"><button class="tile" onclick="handRefresh()"><span class="ic">🔄</span><span class="nm">Обновить</span></button></div>';
+  if(c.off) return hello + '<div class="warnbox">Бригадир отключил вас от объекта. Если это ошибка — свяжитесь с ним напрямую.</div>';
+  const today = crewToday();
+  const orders = handMyOrders().filter(o => String(o.date || "") === today);
+  const myTime = (c.time || []).filter(x => String(x.date || "") === today);
+  const ordBox = orders.length ? orders.map(o =>
+    '<div class="stat"><div class="r"><span class="k">Сегодня · ' + esc(String(o.load || "")) + (o.object ? " · " + esc(String(o.object)) : "") + '</span><span class="v"></span></div>' +
+    '<div style="font-size:15px;margin-top:4px">' + esc(String(o.task || "")) + "</div></div>").join("") :
+    '<div class="stat"><span class="k">На сегодня наряда нет' + (handMyOrders().some(o => String(o.date || "") > today) ? " — загляните в календарь" : "") + "</span></div>";
+  const marks = myTime.length ?
+    '<div class="stat">' + myTime.map(x =>
+      '<div class="r"><span class="k">' + esc(String(x.event || "")) + " " + esc(String(x.time || "")) + '</span><span class="v" style="font-size:13px;color:var(--hint)">' +
+      (x.status === "подтверждено" || x.status === "исправлено" ? "✓ " : "") + esc(String(x.status || "")) + "</span></div>").join("") + "</div>" : "";
+  const hmBox = HM ? (() => {
+    const now = crewNow();
+    const opt = (m, lbl) => '<button onclick="HM.mode=\'' + m + '\';render()" style="padding:9px 12px;border-radius:10px;border:0;font-size:14px;background:' +
+      (HM.mode === m ? "#0a84ff" : "#3a3a3c") + ';color:#fff">' + lbl + "</button>";
+    return '<div class="warnbox"><b>' + esc(HM.ev) + "</b> — когда?" +
+      '<div style="display:flex;gap:7px;flex-wrap:wrap;margin:10px 0">' +
+      opt("now", "сейчас " + now) + opt("m10", "−10 мин") + opt("m30", "−30 мин") + opt("m60", "−1 час") +
+      opt("custom", "своё время") + "</div>" +
+      (HM.mode === "custom" ? '<div style="margin-bottom:10px"><input id="hm_time" type="time" value="' + now + '" ' + CREW_INP + "></div>" : "") +
+      '<div style="color:var(--hint);font-size:12px;margin-bottom:10px">Задним числом — только в пределах сегодняшнего дня; раньше — через бригадира.</div>' +
+      '<div style="display:flex;gap:8px">' +
+      '<button onclick="HM=null;render()" style="flex:1;padding:12px;border-radius:10px;border:0;background:#3a3a3c;color:#fff;font-size:15px">Отмена</button>' +
+      '<button onclick="handMarkGo()" style="flex:1;padding:12px;border-radius:10px;border:0;background:#0a84ff;color:#fff;font-size:15px">Записать</button>' +
+      "</div></div>";
+  })() : "";
+  const btn = (ev, ic, nm) => '<button class="tile pri" onclick="handMark(\'' + ev + '\')"><span class="ic">' + ic + '</span><span class="nm">' + nm + "</span></button>";
+  return hello + ordBox + marks + hmBox +
+    '<div class="grid">' +
+    btn("пришёл", "🏁", "Пришёл") + btn("обед начало", "🍲", "Обед") +
+    btn("обед конец", "🔁", "Вернулся") + btn("ушёл", "🏠", "Ушёл") +
+    '<button class="tile" onclick="go(\'crew_cal\')"><span class="ic">📅</span><span class="nm">Мой календарь</span></button>' +
+    '<button class="tile" onclick="go(\'hand_rep\')"><span class="ic">📝</span><span class="nm">Отчёт бригадиру</span><div class="h">работа или материал</div></button>' +
+    '<button class="tile" onclick="go(\'works\')"><span class="ic">🔨</span><span class="nm">Работы</span><div class="h">без цен</div></button>' +
+    '<button class="tile" onclick="handRefresh()"><span class="ic">🔄</span><span class="nm">Обновить</span></button>' +
+    "</div>";
+}
+/* Работы для работника: read-only список без единой цифры денег. */
+function handWorks(){
+  const list = (D.works || []);
+  return '<div class="hello">Работы</div><div class="sub">' + list.length + " позиций · без цен</div>" +
+    list.map(w => '<div class="work' + (w.status === "Готово" ? " done" : "") + '"><div class="t">' + esc(w.name) + "</div>" +
+      '<div class="m">' + esc(String(w.room || "").split(" (")[0]) + " · " + esc(String(w.section || "")) + " · " +
+      (w.unit === "компл" ? "комплект" : (w.qty ?? "") + " " + esc(String(w.unit || ""))) + "</div>" +
+      '<div class="m">' + esc(String(w.status || "")) + (w.progress ? " · " + w.progress + " %" : "") + "</div></div>").join("");
 }
 
 function toast(msg, kind){
@@ -1176,6 +1566,7 @@ const wipSum = f => D.works.filter(w => w.status !== "Готово" && (w.progre
 const SCREENS = {
 
 home(){
+  if (D.kind === "hand") return handHome();   // контур работника [чат 013]
   const worker = D.role === "worker";
   const p = progress();
   const m = D.my_money;
@@ -1279,6 +1670,9 @@ home(){
       ${(D.kind === 'foreman' || D.role === 'foreman') ? `<button class="tile" onclick="openCrew()"><span class="ic">🛠️</span>
         <span class="nm">Бригада</span>
         <div class="h">работники и приглашения</div></button>` : ""}
+      ${['admin','owner'].includes(D.role) ? `<button class="tile" onclick="openCrew()"><span class="ic">👥</span>
+        <span class="nm">Бригада</span>
+        <div class="h">люди и человекодни</div></button>` : ""}
       ${(['admin','owner'].includes(D.role) && !CREW_DONE) ? `<button class="tile" onclick="crewSheets()"><span class="ic">👷</span>
         <span class="nm">Листы бригады</span>
         <div class="h">разовая подготовка базы</div></button>` : ""}
@@ -1286,6 +1680,7 @@ home(){
 },
 
 works(){
+  if (D.kind === "hand") return handWorks();  // без цен и без контролов [чат 013]
   const worker = D.role === "worker";
   const rooms  = [...new Set(D.works.map(w => w.room))];
   const base   = fRoom ? D.works.filter(w => w.room === fRoom) : D.works;
@@ -1521,31 +1916,250 @@ terms(){
 
 crew(){
   const c = CREW_DATA;
-  if(!c || c.role !== "foreman")
+  if(!c) return '<div class="hello">Бригада</div><div class="sub">Данные не загрузились — вернитесь и зайдите ещё раз</div>';
+  /* Заказчику — объём, а не имена (разбор 09 §7.2): сколько людей и
+     человекодней по подтверждённым отметкам. Для питания и темпа. */
+  if(c.role === "client"){
+    return '<div class="hello">Бригада</div><div class="sub">по подтверждённым отметкам табеля</div>' +
+      '<div class="stat">' +
+        '<div class="r"><span class="k">Людей на объекте (всего)</span><span class="v">' + (Number(c.people) || 0) + "</span></div>" +
+        '<div class="r"><span class="k">Человекодней отработано</span><span class="v">' + (Number(c.mandays) || 0) + "</span></div>" +
+      "</div>" +
+      '<div class="stat"><span class="k">Считаются только отметки, подтверждённые бригадиром. Поимённый состав бригады — дело бригадира: заказчику виден объём.</span></div>';
+  }
+  if(c.role !== "foreman")
     return '<div class="hello">Бригада</div><div class="sub">Экран доступен бригадиру</div>';
   const ws = c.workers || [];
   const inp = 'style="width:100%;padding:12px;border-radius:12px;border:1px solid #3a3a3c;background:#000;color:#fff;font-size:15px"';
-  const item = w => {
+  const waitTm = (c.time || []).filter(x => String(x.status || "") === "заявлено").length;
+  const waitRp = (c.reports || []).filter(x => String(x.status || "") === "новый").length;
+  const todayN = ordActive().filter(o => String(o.date || "") === crewToday()).length;
+  const item = (w, i) => {
     const st = String(w.status || "");
     const inv = (st === "приглашён" && w.invite) ? w.invite : "";
-    return '<div class="work"><div class="t">' + esc(w.name) + '</div>' +
-      '<div class="m">' + esc(st || "—") + (w.phone ? ' · ' + esc(w.phone) : '') +
-        (w.added ? ' · добавлен ' + esc(String(w.added).slice(0, 10)) : '') + '</div>' +
-      (inv ? '<div class="m" style="margin-top:8px">Код приглашения: <b style="letter-spacing:2px">' + esc(inv) + '</b> (действует сутки)<br>' +
-        '<span style="word-break:break-all">' + esc(invLink(inv)) + '</span></div>' +
-        '<div class="m" style="margin-top:8px"><button onclick="invShare(\'' + attr(inv) + '\')" style="padding:10px 14px;border-radius:10px;border:0;background:#0a84ff;color:#fff;font-size:15px">Скопировать приглашение</button></div>' : '') +
-      '</div>';
+    const off = st === "отключён";
+    return '<div class="work' + (off ? " done" : "") + '"><div class="t">' + esc(w.name) + "</div>" +
+      '<div class="m">' + esc(st || "—") + (w.phone ? " · " + esc(w.phone) : "") +
+        (w.added ? " · добавлен " + esc(String(w.added).slice(0, 10)) : "") +
+        (off && w.off ? " · отключён " + esc(String(w.off).slice(0, 10)) : "") + "</div>" +
+      (inv ? '<div class="m" style="margin-top:8px">Код приглашения: <b style="letter-spacing:2px">' + esc(inv) + "</b> (действует сутки)<br>" +
+        '<span style="word-break:break-all">' + esc(invLink(inv)) + "</span></div>" +
+        '<div class="m" style="margin-top:8px"><button onclick="invShare(\'' + attr(inv) + '\')" ' + CREW_BTN + ">Скопировать приглашение</button></div>" : "") +
+      '<div class="m" style="margin-top:8px">' +
+        (off ? '<button onclick="cwOn(' + i + ')" ' + CREW_BTN2 + ">Вернуть в бригаду</button>"
+             : '<button onclick="cwOff(' + i + ')" ' + CREW_BTN2 + ">Отключить</button>") +
+      "</div></div>";
   };
   return '' +
     '<div class="hello">Бригада</div>' +
-    '<div class="sub">' + (ws.length ? ('Работников: ' + ws.length) : 'Пока вы работаете один — это нормально') + '</div>' +
+    '<div class="sub">' + (ws.length ? ("Работников: " + ws.length) : "Пока вы работаете один — это нормально") + "</div>" +
+    '<div class="grid" style="margin-bottom:12px">' +
+      '<button class="tile" onclick="go(\'crew_orders\')"><span class="ic">🗓️</span><span class="nm">Наряды</span><div class="h">' + (todayN ? "сегодня в поле: " + todayN : "кто где завтра") + "</div></button>" +
+      '<button class="tile' + (waitTm ? " pri" : "") + '" onclick="go(\'crew_time\')"><span class="ic">⏱️</span><span class="nm">Табель</span><div class="h">' + (waitTm ? waitTm + " ждут решения" : "отметки бригады") + "</div></button>" +
+      '<button class="tile' + (waitRp ? " pri" : "") + '" onclick="go(\'crew_reports\')"><span class="ic">📨</span><span class="nm">Отчёты</span><div class="h">' + (waitRp ? waitRp + " новых" : "работы и материалы") + "</div></button>" +
+      '<button class="tile" onclick="openCrewScreen(\'crew\')"><span class="ic">🔄</span><span class="nm">Обновить</span></button>' +
+    "</div>" +
     '<div class="stat"><span class="k">Работник добавляется приглашением: создайте его, перешлите ссылку — человек откроет её, подтвердит себя, и система подключит его сама. Руками Telegram-ID не вводится.</span></div>' +
-    ws.map(item).join('') +
+    ws.map(item).join("") +
     '<div class="card"><div class="lbl">Добавить работника</div>' +
-      '<div style="margin:8px 0"><input id="cw_name" placeholder="Имя (как зовут в бригаде)" ' + inp + '></div>' +
-      '<div style="margin:8px 0"><input id="cw_phone" placeholder="Телефон (не обязательно)" ' + inp + '></div>' +
+      '<div style="margin:8px 0"><input id="cw_name" placeholder="Имя (как зовут в бригаде)" ' + inp + "></div>" +
+      '<div style="margin:8px 0"><input id="cw_phone" placeholder="Телефон (не обязательно)" ' + inp + "></div>" +
       '<button class="tile pri" style="width:100%" onclick="crewAdd()"><span class="nm">Создать приглашение</span></button>' +
-    '</div>';
+    "</div>";
+},
+
+/* Наряды: кто где и когда. Наряд на несколько дней — N строк, не диапазон:
+   так проще считать табель и отменять один день из трёх (разбор 09 §3.2). */
+crew_orders(){
+  const c = CREW_DATA;
+  if(!c || c.role !== "foreman") return '<div class="hello">Наряды</div><div class="sub">Экран доступен бригадиру</div>';
+  const today = crewToday();
+  const all = ordActive().slice().sort((a, b) => String(a.date || "").localeCompare(String(b.date || "")));
+  const view = all.filter(o => ORD_PAST ? (String(o.date || "") >= dShift(today, -14)) : (String(o.date || "") >= today));
+  const groups = {};
+  view.forEach(o => { const d = String(o.date || "?"); (groups[d] = groups[d] || []).push(o); });
+  const idxOf = o => (((CREW_DATA || {}).orders) || []).indexOf(o);
+  const wasThere = o => (c.time || []).some(x =>
+    String(x.worker || "").trim() === String(o.worker || "").trim() &&
+    String(x.date || "") === String(o.date || "") && String(x.event || "") === "пришёл" &&
+    String(x.status || "") !== "отклонено");
+  const card = o => {
+    const past = String(o.date || "") < today;   // сегодняшний наряд «прогулом» не пугаем — день ещё идёт
+    return '<div class="work"><div class="t">' + esc(String(o.worker || "")) + " · " + esc(String(o.load || "")) + "</div>" +
+      '<div class="m">' + (o.object ? esc(String(o.object)) + " · " : "") + esc(String(o.task || "")) + "</div>" +
+      (past && !wasThere(o) ? '<div class="m" style="color:var(--warn)">⚠ Отметки «пришёл» нет — молчание не значит «всё нормально»</div>' : "") +
+      (String(o.date || "") >= today ? '<div class="m" style="margin-top:8px"><button onclick="ordCancel(' + idxOf(o) + ')" ' + CREW_BTN2 + ">Отменить</button></div>" : "") +
+      "</div>";
+  };
+  const list = Object.keys(groups).sort().map(d =>
+    '<div class="sub" style="margin-top:14px">' + dLabel(d) + " · " + groups[d].length + "</div>" + groups[d].map(card).join("")).join("");
+  const workers = (c.workers || []).filter(w => String(w.status || "") !== "отключён");
+  const lastObj = all.length ? String(all[all.length - 1].object || "") : "";
+  const form = workers.length ?
+    '<div class="card"><div class="lbl">Новый наряд</div>' +
+      '<div style="margin:8px 0"><select id="or_worker" ' + CREW_INP + ">" +
+        workers.map(w => '<option value="' + attr(w.name) + '">' + esc(w.name) + (String(w.status || "") === "приглашён" ? " (ещё не вошёл)" : "") + "</option>").join("") + "</select></div>" +
+      '<div style="display:flex;gap:8px;margin:8px 0">' +
+        '<div style="flex:1"><div class="lbl">с</div><input id="or_from" type="date" value="' + dShift(today, 1) + '" ' + CREW_INP + "></div>" +
+        '<div style="flex:1"><div class="lbl">по (можно ту же)</div><input id="or_to" type="date" value="' + dShift(today, 1) + '" ' + CREW_INP + "></div>" +
+      "</div>" +
+      '<div style="display:flex;gap:8px;margin:8px 0">' +
+        '<select id="or_load" style="flex:1;padding:12px;border-radius:12px;border:1px solid #3a3a3c;background:#000;color:#fff;font-size:15px" onchange="document.getElementById(\'or_hours_box\').style.display = this.value === \'часы\' ? \'block\' : \'none\'">' +
+          ["весь день", "до обеда", "после обеда", "часы"].map(x => "<option>" + x + "</option>").join("") + "</select>" +
+        '<div id="or_hours_box" style="flex:1;display:none"><input id="or_hours" type="number" min="1" max="12" placeholder="сколько часов" ' + CREW_INP + "></div>" +
+      "</div>" +
+      '<div style="margin:8px 0"><input id="or_object" placeholder="Объект" value="' + attr(lastObj) + '" ' + CREW_INP + "></div>" +
+      '<div style="margin:8px 0"><input id="or_task" placeholder="Задание («демонтаж в спальне»)" ' + CREW_INP + "></div>" +
+      '<button class="tile pri" style="width:100%" onclick="ordCreate()"><span class="nm">Назначить</span></button>' +
+    "</div>" :
+    '<div class="stat"><span class="k">В бригаде пока никого — вы работаете один, наряды не нужны. Появится работник — здесь вы распределите, кто где и когда.</span></div>';
+  return '<div class="hello">Наряды</div>' +
+    '<div class="sub">' + (view.length ? ("назначений: " + view.length) : "впереди пусто") + "</div>" +
+    '<div class="filt"><button class="' + (ORD_PAST ? "on" : "") + '" onclick="ORD_PAST=!ORD_PAST;render()">' + (ORD_PAST ? "Скрыть прошлые" : "Показать прошлые (14 дн)") + "</button></div>" +
+    form + list;
+},
+
+/* Табель: отметки работников. В человекодни идут только подтверждённые —
+   заявленное решает бригадир: подтвердить · исправить время · отклонить. */
+crew_time(){
+  const c = CREW_DATA;
+  if(!c || c.role !== "foreman") return '<div class="hello">Табель</div><div class="sub">Экран доступен бригадиру</div>';
+  const rows = (c.time || []);
+  const wait = rows.filter(x => String(x.status || "") === "заявлено");
+  const md7 = tmMandays(rows.filter(x => String(x.date || "") >= dShift(crewToday(), -7)));
+  const view = TM_ALL ? rows : rows.filter(x => String(x.date || "") >= dShift(crewToday(), -7));
+  const groups = {};
+  view.forEach(x => { const d = String(x.date || "?"); (groups[d] = groups[d] || []).push(x); });
+  const idxOf = x => rows.indexOf(x);
+  const card = x => {
+    const i = idxOf(x);
+    const st = String(x.status || "");
+    const open = st === "заявлено";
+    return '<div class="work"><div class="t">' + esc(String(x.worker || "")) + " · " + esc(String(x.event || "")) + " · " + esc(String(x.time || "")) + "</div>" +
+      '<div class="m">' + (x.object ? esc(String(x.object)) + " · " : "") + esc(st) +
+        (x.confirmed ? " · решил " + esc(String(x.confirmed)) : "") + "</div>" +
+      (open ? (TM_FIX === i ?
+        '<div class="m" style="margin-top:8px;display:flex;gap:8px;align-items:center">' +
+          '<input id="tm_' + i + '" type="time" value="' + attr(String(x.time || "")) + '" style="flex:1;padding:10px;border-radius:10px;border:1px solid #3a3a3c;background:#000;color:#fff;font-size:15px">' +
+          '<button onclick="tmDecide(' + i + ',\'fix\')" ' + CREW_BTN + ">Сохранить</button>" +
+          '<button onclick="TM_FIX=null;render()" ' + CREW_BTN2 + ">✕</button>" +
+        "</div>" :
+        '<div class="m" style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">' +
+          '<button onclick="tmDecide(' + i + ',\'ok\')" ' + CREW_BTN + ">Подтвердить</button>" +
+          '<button onclick="TM_FIX=' + i + ';render()" ' + CREW_BTN2 + ">Исправить время</button>" +
+          '<button onclick="tmDecide(' + i + ',\'reject\')" ' + CREW_BTNR + ">Отклонить</button>" +
+        "</div>") : "") +
+      "</div>";
+  };
+  const list = Object.keys(groups).sort().reverse().map(d =>
+    '<div class="sub" style="margin-top:14px">' + dLabel(d) + "</div>" + groups[d].map(card).join("")).join("");
+  return '<div class="hello">Табель</div>' +
+    '<div class="sub">' + (wait.length ? (wait.length + " ждут решения") : "все отметки решены") + "</div>" +
+    '<div class="stat">' +
+      '<div class="r"><span class="k">Человекодней за 7 дней (подтверждённых)</span><span class="v">' + md7 + "</span></div>" +
+    "</div>" +
+    '<div class="stat"><span class="k">Отмечается сам работник, отвечаете за данные вы: в человекодни и заказчику идёт только подтверждённое. Исправленное время сохраняет след — исходное останется в истории листа.</span></div>' +
+    '<div class="filt"><button class="' + (TM_ALL ? "on" : "") + '" onclick="TM_ALL=!TM_ALL;render()">' + (TM_ALL ? "Только последняя неделя" : "Показать всё") + "</button></div>" +
+    (view.length ? list : '<div class="stat"><span class="k">Отметок пока нет. Работник отмечается кнопками на своём главном экране.</span></div>');
+},
+
+/* Отчёты бригады: буфер, а не факт учёта — та же конструкция, что чеки.
+   Пока бригадир не решил, в 01_Работы и 03_Материалы ничего не меняется. */
+crew_reports(){
+  const c = CREW_DATA;
+  if(!c || c.role !== "foreman") return '<div class="hello">Отчёты</div><div class="sub">Экран доступен бригадиру</div>';
+  const rows = (c.reports || []);
+  const fresh = rows.filter(x => String(x.status || "") === "новый");
+  const done = rows.filter(x => String(x.status || "") !== "новый").slice(-15).reverse();
+  const idxOf = x => rows.indexOf(x);
+  const wname = code => {
+    const w = (D.works || []).find(v => v.code === String(code || "").trim());
+    return w ? w.name : String(code || "");
+  };
+  const title = x => String(x.type || "") === "работа"
+    ? esc(wname(x.code)) + " — готовность " + esc(String(x.value ?? "")) + " %"
+    : esc(String(x.code || "")) + " — израсходовано " + esc(String(x.value ?? ""));
+  const card = x => {
+    const i = idxOf(x);
+    const st = String(x.status || "");
+    return '<div class="work"><div class="t">' + esc(String(x.worker || "")) + " · " + esc(String(x.type || "")) + "</div>" +
+      '<div class="m">' + title(x) + "</div>" +
+      '<div class="m">' + esc(String(x.date || "")) + (x.at ? " " + esc(String(x.at)) : "") +
+        (x.comment ? " · " + esc(String(x.comment)) : "") + "</div>" +
+      (st === "новый" ?
+        '<div class="m" style="margin-top:8px;display:flex;gap:8px;align-items:center">' +
+          '<input id="rp_' + i + '" type="number" inputmode="decimal" value="' + attr(String(x.value ?? "")) + '" style="flex:1;padding:10px;border-radius:10px;border:1px solid #3a3a3c;background:#000;color:#fff;font-size:15px">' +
+          '<button onclick="rpDecide(' + i + ',\'accept\')" ' + CREW_BTN + ">Принять</button>" +
+          '<button onclick="rpDecide(' + i + ',\'reject\')" ' + CREW_BTNR + ">✕</button>" +
+        "</div>" +
+        '<div class="m" style="margin-top:4px;color:var(--hint)">Поправите число — в учёт уйдёт ваша версия, слова работника останутся рядом.</div>' :
+        '<div class="m" style="color:var(--hint)">' + esc(st) + (x.corrected !== "" && x.corrected != null && String(x.corrected) !== String(x.value) ? " · принято как " + esc(String(x.corrected)) : "") +
+          (x.solved ? " · решил " + esc(String(x.solved)) : "") + "</div>") +
+      "</div>";
+  };
+  return '<div class="hello">Отчёты бригады</div>' +
+    '<div class="sub">' + (fresh.length ? (fresh.length + " новых") : "новых нет") + "</div>" +
+    '<div class="stat"><span class="k">Это буфер: слова работника становятся фактом учёта только после вашего решения. Принятая работа уходит в готовность сметы, материал — в расход.</span></div>' +
+    (fresh.length ? fresh.map(card).join("") : "") +
+    (done.length ? '<div class="sub" style="margin-top:14px">Решённые</div>' + done.map(card).join("") : "") +
+    (!rows.length ? '<div class="stat"><span class="k">Отчётов пока нет. Работник отправляет их со своего экрана «Отчёт бригадиру».</span></div>' : "");
+},
+
+/* Календарь работника: прошлая неделя и всё будущее — наряды и свои отметки. */
+crew_cal(){
+  const c = CREW_DATA;
+  if(!c) return '<div class="hello">Календарь</div><div class="sub">нет данных — вернитесь на главный экран</div>';
+  const from = dShift(crewToday(), -7);
+  const days = {};
+  handMyOrders().forEach(o => { const d = String(o.date || ""); if(d >= from){ (days[d] = days[d] || { o: [], t: [] }).o.push(o); } });
+  (c.time || []).forEach(x => { const d = String(x.date || ""); if(d >= from){ (days[d] = days[d] || { o: [], t: [] }).t.push(x); } });
+  const keys = Object.keys(days).sort();
+  const today = crewToday();
+  const blocks = keys.map(d => {
+    const v = days[d];
+    return '<div class="sub" style="margin-top:14px">' + dLabel(d) + "</div>" +
+      v.o.map(o => '<div class="work"><div class="t">' + esc(String(o.load || "")) + (o.object ? " · " + esc(String(o.object)) : "") + "</div>" +
+        '<div class="m">' + esc(String(o.task || "")) + "</div></div>").join("") +
+      (v.t.length ? '<div class="work">' + v.t.map(x =>
+        '<div class="m">' + esc(String(x.event || "")) + " " + esc(String(x.time || "")) + " · " + esc(String(x.status || "")) + "</div>").join("") + "</div>" : "");
+  }).join("");
+  return '<div class="hello">Мой календарь</div>' +
+    '<div class="sub">неделя назад и всё, что назначено вперёд</div>' +
+    (keys.length ? blocks : '<div class="stat"><span class="k">Пока пусто: нарядов нет, отметок нет.</span></div>') +
+    (keys.every(d => d < today) && keys.length ? '<div class="stat"><span class="k">Вперёд пока ничего не назначено.</span></div>' : "");
+},
+
+/* Отчёт работника бригадиру: работа (готовность %) или материал (расход). */
+hand_rep(){
+  const c = CREW_DATA || {};
+  const my = (c.reports || []).slice(-10).reverse();
+  const works = (D.works || []).filter(w => String(w.status || "") !== "Снято");
+  const mats = (D.materials || []).map(m => String(m.name || "")).filter(Boolean);
+  const tab = (v, lbl) => '<button onclick="HR_TYPE=\'' + v + '\';render()" style="flex:1;padding:11px;border-radius:11px;border:0;font-size:14px;background:' +
+    (HR_TYPE === v ? "#0a84ff" : "#3a3a3c") + ';color:#fff">' + lbl + "</button>";
+  const wname = code => { const w = (D.works || []).find(v => v.code === String(code || "").trim()); return w ? w.name : String(code || ""); };
+  const form = HR_TYPE === "работа" ?
+    '<div style="margin:8px 0"><select id="hr_work" ' + CREW_INP + '><option value="">— какая работа —</option>' +
+      works.map(w => '<option value="' + attr(w.code) + '">' + esc(String(w.room || "").split(" (")[0]) + " · " + esc(w.name) + (w.progress ? " (" + w.progress + " %)" : "") + "</option>").join("") + "</select></div>" +
+    '<div style="margin:8px 0"><input id="hr_val" type="number" inputmode="numeric" min="0" max="100" placeholder="готовность теперь, %" ' + CREW_INP + "></div>" :
+    '<div style="margin:8px 0"><input id="hr_mat" list="hr_mats" placeholder="какой материал" ' + CREW_INP + ">" +
+      '<datalist id="hr_mats">' + mats.map(m => '<option value="' + attr(m) + '">').join("") + "</datalist></div>" +
+    '<div style="margin:8px 0"><input id="hr_val" type="number" inputmode="decimal" placeholder="сколько израсходовано" ' + CREW_INP + "></div>";
+  const myList = my.map(x =>
+    '<div class="work"><div class="t">' + esc(String(x.type || "")) + " · " +
+      (String(x.type || "") === "работа" ? esc(wname(x.code)) : esc(String(x.code || ""))) + "</div>" +
+    '<div class="m">' + esc(String(x.date || "")) + " · " + esc(String(x.value ?? "")) +
+      (String(x.status || "") === "исправлено" && x.corrected != null && x.corrected !== "" ? " → принято как " + esc(String(x.corrected)) : "") +
+      " · " + esc(String(x.status || "")) + "</div></div>").join("");
+  return '<div class="hello">Отчёт бригадиру</div>' +
+    '<div class="sub">что сделал, что израсходовал — без денег</div>' +
+    '<div class="card"><div style="display:flex;gap:8px;margin-bottom:4px">' + tab("работа", "Работа") + tab("материал", "Материал") + "</div>" +
+      form +
+      '<div style="margin:8px 0"><input id="hr_comment" placeholder="Комментарий (не обязательно)" ' + CREW_INP + "></div>" +
+      '<button class="tile pri" style="width:100%" onclick="handReport()"><span class="nm">Отправить бригадиру</span></button>' +
+    "</div>" +
+    '<div class="stat"><span class="k">Отчёт видит только бригадир. Он подтвердит или поправит — и тогда запись попадёт в учёт объекта.</span></div>' +
+    (my.length ? '<div class="sub" style="margin-top:14px">Мои отчёты</div>' + myList : "");
 },
 
 checks(){
