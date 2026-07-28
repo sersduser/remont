@@ -926,6 +926,49 @@ let tt;
 async function acceptWork(code){ if(await upd("01_Работы", code, "Статус", "Готово", {confirm:true})) render(); }
 async function disputeWork(code){ if(await upd("01_Работы", code, "Статус", "Оспорено")) render(); }
 
+/* ══════════════════════════════════════════════════════════════
+   ЛИСТЫ БРИГАДЫ [чат 012] — разовая подготовка общей базы.
+   Четыре листа контура бригады (Работники · Наряды · Табель ·
+   Отчёты_бригады) создаются через POST /remont/sheet с base:"common",
+   по одному и строго последовательно: параллельные addSheet на одну
+   таблицу конфликтуют. Шапки — ровно те, что читает GET-ветка API
+   по параметру crew; менять их отдельно от кода ноды нельзя.
+   Существующий лист сервер не пересоздаёт: ответ приходит без ok —
+   считаем «видимо, уже был» (не ошибка); упавший fetch — сбой связи,
+   его за «уже был» не выдаём. Бригада может состоять из одного
+   человека (решение 012): пустые листы — норма, а не недособранность.
+   ══════════════════════════════════════════════════════════════ */
+const CREW_SHEETS = [
+  { sheet: "Работники",      header: ["Бригадир","Имя","Telegram_ID","Телефон","Статус","Ставка_час_USD","Добавлен","Отключён","Примечание"] },
+  { sheet: "Наряды",         header: ["id","Бригадир","Работник","Дата","Объект","Занятость","Задание","Статус","Создан"] },
+  { sheet: "Табель",         header: ["id","Работник","Объект","Дата","Событие","Время","Отметил","Статус","Подтвердил","Комментарий"] },
+  { sheet: "Отчёты_бригады", header: ["id","Дата","Работник","Тип","Код","Значение","Комментарий","Статус","Стало","Решил","Время"] },
+];
+async function crewSheets(){
+  if(!confirm("Подготовить листы бригады в общей базе (4 листа)?")) return;
+  toast("Готовлю листы…", "wait");
+  const made = [], had = [], fail = [];
+  for(const s of CREW_SHEETS){
+    try{
+      const r = await fetch(API + "/sheet", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ initData: INIT, key: KEY, sheet: s.sheet, header: s.header, base: "common" })
+      });
+      const txt = (await r.text()).trim();
+      let ok = false;
+      try{ ok = !!(txt && JSON.parse(txt).ok); }catch(e){}
+      (ok ? made : had).push(s.sheet);
+    }catch(e){ fail.push(s.sheet); }
+  }
+  if(fail.length && !made.length && !had.length){
+    toast("Нет связи с сервером — листы не созданы", "err");
+  } else {
+    toast("Создано: " + made.length
+      + (had.length ? " · видимо, уже были: " + had.length : "")
+      + (fail.length ? " · сбой связи: " + fail.length : ""));
+  }
+}
+
 function toast(msg, kind){
   const t = document.getElementById("toast");
   t.textContent = msg;
@@ -1065,6 +1108,9 @@ home(){
           : (dealDelta() ? ("в договоре " + (dealDelta() > 0 ? "+" : "−") + usd(Math.abs(dealDelta())) + " $") : "состав, цена, сроки")}</div></button>
       <button class="tile" onclick="go('deal')"><span class="ic">📋</span>
         <span class="nm">Что входит<br>в договор</span></button>
+      ${['admin','owner'].includes(D.role) ? `<button class="tile" onclick="crewSheets()"><span class="ic">👷</span>
+        <span class="nm">Листы бригады</span>
+        <div class="h">разовая подготовка базы</div></button>` : ""}
     </div>`;
 },
 
