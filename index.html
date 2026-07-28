@@ -462,10 +462,32 @@ async function profBuild(){
    связи — в поле deps. По ним считается самая длинная цепочка: она и есть
    срок объекта. Работы вне этой цепочки имеют запас и на финиш не влияют.
    ══════════════════════════════════════════════════════════════ */
-function schedule(){
+/* Техпаузы [чат 012]. «Техпауза_дней» — календарное время ПОСЛЕ работы
+   (стяжка сохнет, штукатурка стоит), прежде чем могут стартовать зависимые.
+   Живёт в справочнике видов; связь работы с видом — пометка «вид X»
+   в Примечании, её ставит конструктор смет. У унаследованных работ пилота
+   пометки нет: их паузы неизвестны и считаются нулём, охват честно показан
+   на экране. Паузы не тратят человекодни — оценка «по рукам» не растёт. */
+function pauseOf(w){
+  const kinds = (D.catalog || {}).kinds;
+  if(!kinds || !w || !w.note) return 0;
+  const m = String(w.note).match(/вид\s+([A-Za-z]+-\d+)/i);
+  if(!m) return 0;
+  const k = kinds.find(x => x.code === m[1]);
+  return (k && Number(k.pause) > 0) ? Number(k.pause) : 0;
+}
+async function openTerms(){
+  try{
+    if(!D.catalog){ toast('Загружаю справочник…'); await loadCatalog(); }
+  }catch(e){ /* без справочника паузы просто нулевые */ }
+  go('terms');
+}
+
+function schedule(usePauses){
   const ws = (D.works || []).filter(w => w.code);
   const by = {}; ws.forEach(w => { by[w.code] = w; });
   const dur = w => (Number(w.dur) > 0 ? Number(w.dur) : 0.5);
+  const pz = c => usePauses ? pauseOf(by[c]) : 0;
   const depsOf = w => String(w.deps || '').split(',').map(s => s.trim())
     .filter(s => s && s !== '—' && by[s]);
 
@@ -476,7 +498,7 @@ function schedule(){
     seen[code] = 1;
     const w = by[code]; if(!w) return 0;
     const ds = depsOf(w);
-    const start = ds.length ? Math.max.apply(null, ds.map(d => calc(d, Object.assign({}, seen)))) : 0;
+    const start = ds.length ? Math.max.apply(null, ds.map(d => calc(d, Object.assign({}, seen)) + pz(d))) : 0;
     ef[code] = Math.round((start + dur(w)) * 100) / 100;
     return ef[code];
   };
@@ -492,7 +514,7 @@ function schedule(){
     seen[code] = 1;
     const ss = succ[code] || [];
     lf[code] = ss.length
-      ? Math.min.apply(null, ss.map(s => late(s, Object.assign({}, seen)) - dur(by[s])))
+      ? Math.min.apply(null, ss.map(s => late(s, Object.assign({}, seen)) - dur(by[s]))) - pz(code)
       : total;
     return lf[code];
   };
@@ -504,7 +526,8 @@ function schedule(){
 
 // Где мы во времени: сравниваем пройденное по плану с прошедшими днями
 function timeCalc(){
-  const s = schedule();
+  const s = schedule(true);
+  const s0 = schedule(false);
   const done = (D.works || []).filter(w => w.status === 'Готово' && w.code);
   const reached = done.length ? Math.max.apply(null, done.map(w => s.ef[w.code] || 0)) : 0;
   const dates = (D.works || []).map(w => String(w.updated || '').slice(0, 10)).filter(d => /^\d{4}-\d{2}-\d{2}$/.test(d)).sort();
@@ -520,7 +543,9 @@ function timeCalc(){
   const real = Math.max(Math.round(s.total * 10) / 10, byCrew);
   return { total: Math.round(s.total * 10) / 10, reached: Math.round(reached * 10) / 10, elapsed, diff,
            critical: s.critical, sched: s, startDate: dates[0] || null,
-           sumDur: Math.round(sumDur * 10) / 10, crew, byCrew, real };
+           sumDur: Math.round(sumDur * 10) / 10, crew, byCrew, real,
+           pauses: Math.round((s.total - s0.total) * 10) / 10,
+           pcov: (D.works || []).filter(w => pauseOf(w) > 0).length };
 }
 
 /* ══════════════════════════════════════════════════════════════
@@ -1100,7 +1125,7 @@ home(){
       <button class="tile" onclick="openProfile()">
         <span class="ic">📐</span><span class="nm">Профиль ремонта</span>
         <div class="h">собрать смету по помещениям</div></button>
-      <button class="tile" onclick="go('terms')">
+      <button class="tile" onclick="openTerms()">
         <span class="ic">📅</span><span class="nm">Сроки</span>
         <div class="h">критический путь и отставание</div></button>
       <button class="tile" onclick="go('checks')" style="${(D.role === 'worker' || !checkList().length) ? 'display:none' : ''}">
@@ -1333,7 +1358,7 @@ terms(){
     const w = by[code]; if(!w) return '';
     return '<div class="work"><div class="t">' + esc(w.name) + '</div>' +
       '<div class="m">' + esc(code) + ' · ' + esc(String(w.room || '').split(' (')[0]) + ' · ' +
-      (Number(w.dur) || 0.5) + ' дн · финиш на ' + (s.ef[code] || 0) + '-й день · ' + esc(w.status || '') + '</div></div>';
+      (Number(w.dur) || 0.5) + ' дн · финиш на ' + (s.ef[code] || 0) + '-й день · ' + esc(w.status || '') + (pauseOf(w) > 0 ? ' · после — пауза ' + pauseOf(w) + ' дн' : '') + '</div></div>';
   };
   const soon = (D.works || []).filter(w => w.status !== 'Готово' && w.code)
     .sort((a, b) => (s.ef[a.code] || 0) - (s.ef[b.code] || 0)).slice(0, 12);
@@ -1345,6 +1370,7 @@ terms(){
     '<div class="sub">Оценка ' + t.real + ' дн при бригаде из ' + t.crew + ' человек</div>' +
     '<div class="stat">' +
       '<div class="r"><span class="k">Технологический минимум (критический путь)</span><span class="v">' + t.total + ' дн</span></div>' +
+      (t.pauses > 0 ? ('<div class="r"><span class="k">в т.ч. технологические паузы</span><span class="v">+' + t.pauses + ' дн</span></div>') : '') +
       '<div class="r"><span class="k">Всего работы</span><span class="v">' + t.sumDur + ' чел-дн</span></div>' +
       '<div class="r"><span class="k">При бригаде ' + t.crew + ' чел.</span><span class="v">' + t.byCrew + ' дн</span></div>' +
       (t.elapsed !== null ? ('<div class="r"><span class="k">Прошло с начала работ</span><span class="v">' + t.elapsed + ' дн</span></div>') : '') +
@@ -1352,6 +1378,7 @@ terms(){
       late +
     '</div>' +
     '<div class="stat"><span class="k">Критический путь — цепочка, которая определяет срок целиком: задержка любой её работы двигает финиш день в день. Остальные работы имеют запас.</span></div>' +
+    (t.pcov ? '' : '<div class="stat"><span class="k">Технологические паузы (стяжка сохнет 28 дн, штукатурка 7 дн…) пока не влияют на расчёт: у работ текущей сметы нет привязки к видам справочника. Она появляется у работ, добавленных через «Профиль ремонта».</span></div>') +
     '<div class="sub" style="margin-top:14px">Критический путь · ' + crit.length + ' работ</div>' + crit.map(line).join('') +
     '<div class="sub" style="margin-top:14px">Ближайшие по плану</div>' + soon.map(w => line(w.code)).join('');
 },
