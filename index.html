@@ -153,6 +153,12 @@ if (tg) { tg.ready(); tg.expand(); }
 const INIT = (tg && tg.initData) || "";                              // подписанные данные Telegram
 const KEY  = new URLSearchParams(location.search).get("key") || "";  // legacy / отладка вне Telegram
 
+/* Код приглашения в бригаду [чат 012]: приходит в подписанном start_param
+   (ссылка t.me/бота?startapp=inv_КОД) или руками через ?invite / поле ввода.
+   Сервер доверяет только тому коду, который сам достаёт из initData или body —
+   здесь код нужен лишь чтобы показать его в поле и не заставлять печатать. */
+const INVITE = String((tg && tg.initDataUnsafe && tg.initDataUnsafe.start_param) || new URLSearchParams(location.search).get("invite") || "").replace(/^inv_/i, "").toUpperCase();
+
 let D = null;                       // данные с сервера
 let stack = ["home"];               // стек навигации
 let fRoom = "";                     // активный фильтр по комнате
@@ -184,9 +190,69 @@ async function load(){
     render();
     _sig = _snapshot(D);            // калибровка живого обновления
   }catch(e){
+    /* Незнакомый Telegram — возможно, это работник с приглашением [чат 012]:
+       вместо тупика показываем экран регистрации по коду. */
+    if(INIT && /не подтверждён/.test(String(e.message || ""))){ renderInvite(); return; }
     app.innerHTML = `<div class="err"><b>Не удалось загрузить.</b><br>${e.message}
       <br><br><span style="color:var(--hint);font-size:13px">Проверьте интернет и откройте ещё раз.</span></div>`;
   }
+}
+
+/* ══════════════════════════════════════════════════════════════
+   ПРИГЛАШЕНИЕ В БРИГАДУ [чат 012] — регистрация работника.
+   Двухфазный разговор с POST /remont/register: check возвращает,
+   кого нашли по коду («Вы — Петя, бригада Суботина?»), confirm=1
+   вписывает Telegram_ID в Работники и строку в 09_Доступы.
+   Ошибки сервер отдаёт пустым телом (граблина 6) — панель честно
+   говорит «не подошёл», не различая причин. Замок от двойного тапа. */
+let INV_BUSY = false, INV_CODE = "";
+const INV_INP = 'style="width:100%;padding:12px;border-radius:12px;border:1px solid #3a3a3c;background:#000;color:#fff;font-size:18px;letter-spacing:3px;text-align:center;text-transform:uppercase"';
+function renderInvite(s){
+  s = s || {};
+  const code0 = s.code !== undefined ? s.code : INVITE;
+  let body = "";
+  if(s.phase === "found"){
+    body = '<div class="stat"><span class="k">Код принят. Вы — <b>' + esc(s.name) + '</b>, бригада: <b>' + esc(s.foreman) + '</b>?</span></div>' +
+      '<button class="tile pri" style="width:100%;margin-bottom:10px" onclick="invConfirm()"><span class="nm">Да, это я — подключить</span></button>' +
+      '<button class="tile" style="width:100%" onclick="renderInvite({code:\'\'})"><span class="nm">Нет, ввести другой код</span></button>';
+  } else if(s.phase === "done"){
+    body = '<div class="stat"><span class="k">Готово, ' + esc(s.name) + '! Вы в бригаде. Открываю панель…</span></div>';
+  } else {
+    body = '<div class="stat"><span class="k">Введите код приглашения от бригадира. Если вы открыли панель по ссылке-приглашению, код уже подставлен.</span></div>' +
+      '<div style="margin:10px 0"><input id="invcode" value="' + attr(code0) + '" ' + INV_INP + ' placeholder="КОД"></div>' +
+      (s.err ? '<div class="warnbox">' + esc(s.err) + '</div>' : "") +
+      '<button class="tile pri" style="width:100%" onclick="invCheck()"><span class="nm">Проверить код</span></button>';
+  }
+  app.innerHTML = '<div class="hello">Приглашение в бригаду</div>' +
+    '<div class="sub">объект «Ремонт»</div>' + body;
+}
+async function invCheck(){
+  const code = String((document.getElementById("invcode") || {}).value || "").trim().toUpperCase();
+  if(!/^[A-Z0-9]{6,12}$/.test(code)){ renderInvite({err: "Код — буквы и цифры, обычно 8 знаков.", code}); return; }
+  if(INV_BUSY) return;
+  INV_BUSY = true;
+  try{
+    const r = await fetch(API + "/register", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ initData: INIT, code }) });
+    const t = (await r.text()).trim();
+    let j = null; try{ j = JSON.parse(t); }catch(e){}
+    if(j && j.ok && j.phase === "check"){ INV_CODE = code; renderInvite({phase: "found", name: j.name, foreman: j.foreman}); }
+    else renderInvite({err: "Код не подошёл: он мог истечь, быть использован или ваш Telegram уже подключён. Попросите у бригадира новую ссылку.", code});
+  }catch(e){ renderInvite({err: "Нет связи с сервером — попробуйте ещё раз.", code}); }
+  finally{ INV_BUSY = false; }
+}
+async function invConfirm(){
+  if(INV_BUSY) return;
+  INV_BUSY = true;
+  try{
+    const r = await fetch(API + "/register", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ initData: INIT, code: INV_CODE, confirm: "1" }) });
+    const t = (await r.text()).trim();
+    let j = null; try{ j = JSON.parse(t); }catch(e){}
+    if(j && j.ok && j.phase === "confirm"){ renderInvite({phase: "done", name: j.name}); setTimeout(() => location.reload(), 1600); }
+    else renderInvite({err: "Не получилось подключить — попробуйте ещё раз или запросите новую ссылку.", code: INV_CODE});
+  }catch(e){ renderInvite({err: "Нет связи с сервером — попробуйте ещё раз.", code: INV_CODE}); }
+  finally{ INV_BUSY = false; }
 }
 
 /* ── ЗАПИСЬ ───────────────────────────────────────────────────
@@ -1004,6 +1070,73 @@ async function crewSheets(){
   render();
 }
 
+/* ══════════════════════════════════════════════════════════════
+   БРИГАДА [чат 012] — экран бригадира: реестр, приглашения.
+   Данные контура бригады грузятся ОТДЕЛЬНЫМ запросом с параметром
+   crew при открытии экрана и живут в CREW_DATA, а не в D: поллинг
+   каждые 15 секунд перезаписывает D целиком и затёр бы их.
+   Бригада может состоять из одного человека (решение 012): пустой
+   реестр — норма, бригадир работает сам; экран прямо это говорит.
+   Ставки работников здесь не показываются — экран о людях и доступе. */
+let CREW_DATA = null, CREW_LOAD = false;
+async function openCrew(){
+  if(CREW_LOAD) return;
+  CREW_LOAD = true;
+  try{
+    toast("Загружаю бригаду…", "wait");
+    const auth = INIT ? "initData=" + encodeURIComponent(INIT) : "key=" + encodeURIComponent(KEY);
+    const r = await fetch(API + "/data?" + auth + "&crew=1", { cache: "no-store" });
+    const raw = (await r.text()).trim();
+    let j = null; try{ j = JSON.parse(raw); }catch(e){}
+    if(!j || !j.crew) throw new Error("нет данных бригады");
+    CREW_DATA = j.crew;
+    toast("Бригада загружена");
+    if(stack[stack.length - 1] === "crew") render(); else go("crew");
+  }catch(e){ toast("Не удалось загрузить бригаду", "err"); }
+  finally{ CREW_LOAD = false; }
+}
+function invGen(){
+  const A = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";   // без похожих O/0, I/1, L
+  const buf = new Uint32Array(8);
+  crypto.getRandomValues(buf);
+  return [...buf].map(x => A[x % A.length]).join("");
+}
+function invLink(code){ return "https://t.me/ss_remont_bot?startapp=inv_" + code; }
+function invShare(code){
+  const link = invLink(code);
+  const text = "Приглашение в бригаду. Откройте ссылку: " + link + "\nЕсли ссылка не открыла панель — нажмите в боте кнопку «Смета» и введите код: " + code;
+  if(navigator.clipboard && navigator.clipboard.writeText){
+    navigator.clipboard.writeText(text).then(() => toast("Приглашение скопировано — перешлите работнику"))
+      .catch(() => toast("Не удалось скопировать — выделите текст на экране", "err"));
+  } else toast("Выделите и скопируйте текст на экране", "err");
+}
+let CREW_ADD_BUSY = false;
+async function crewAdd(){
+  const name  = String((document.getElementById("cw_name")  || {}).value || "").trim();
+  const phone = String((document.getElementById("cw_phone") || {}).value || "").trim();
+  if(!name){ toast("Введите имя работника", "err"); return; }
+  if(((CREW_DATA || {}).workers || []).some(w => String(w.name || "").trim().toLowerCase() === name.toLowerCase())){
+    toast("Такое имя уже есть в бригаде", "err"); return;
+  }
+  if(CREW_ADD_BUSY) return;
+  CREW_ADD_BUSY = true;
+  try{
+    toast("Создаю приглашение…", "wait");
+    const code = invGen();
+    const r = await fetch(API + "/append", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ initData: INIT, key: KEY, sheet: "Работники", rows: [{
+        "Бригадир": D.who, "Имя": name, "Телефон": phone,
+        "Статус": "приглашён", "Добавлен": chgStamp(), "Код_приглашения": code,
+      }] }) });
+    const t = (await r.text()).trim();
+    let ok = false; try{ ok = !!(t && JSON.parse(t).ok); }catch(e){}
+    if(!ok) throw new Error("сервер не принял");
+    toast("Приглашение создано");
+    await openCrew();
+  }catch(e){ toast("Не удалось создать приглашение", "err"); }
+  finally{ CREW_ADD_BUSY = false; }
+}
+
 function toast(msg, kind){
   const t = document.getElementById("toast");
   t.textContent = msg;
@@ -1143,6 +1276,9 @@ home(){
           : (dealDelta() ? ("в договоре " + (dealDelta() > 0 ? "+" : "−") + usd(Math.abs(dealDelta())) + " $") : "состав, цена, сроки")}</div></button>
       <button class="tile" onclick="go('deal')"><span class="ic">📋</span>
         <span class="nm">Что входит<br>в договор</span></button>
+      ${(D.kind === 'foreman' || D.role === 'foreman') ? `<button class="tile" onclick="openCrew()"><span class="ic">🛠️</span>
+        <span class="nm">Бригада</span>
+        <div class="h">работники и приглашения</div></button>` : ""}
       ${(['admin','owner'].includes(D.role) && !CREW_DONE) ? `<button class="tile" onclick="crewSheets()"><span class="ic">👷</span>
         <span class="nm">Листы бригады</span>
         <div class="h">разовая подготовка базы</div></button>` : ""}
@@ -1381,6 +1517,35 @@ terms(){
     (t.pcov ? '' : '<div class="stat"><span class="k">Технологические паузы (стяжка сохнет 28 дн, штукатурка 7 дн…) пока не влияют на расчёт: у работ текущей сметы нет привязки к видам справочника. Она появляется у работ, добавленных через «Профиль ремонта».</span></div>') +
     '<div class="sub" style="margin-top:14px">Критический путь · ' + crit.length + ' работ</div>' + crit.map(line).join('') +
     '<div class="sub" style="margin-top:14px">Ближайшие по плану</div>' + soon.map(w => line(w.code)).join('');
+},
+
+crew(){
+  const c = CREW_DATA;
+  if(!c || c.role !== "foreman")
+    return '<div class="hello">Бригада</div><div class="sub">Экран доступен бригадиру</div>';
+  const ws = c.workers || [];
+  const inp = 'style="width:100%;padding:12px;border-radius:12px;border:1px solid #3a3a3c;background:#000;color:#fff;font-size:15px"';
+  const item = w => {
+    const st = String(w.status || "");
+    const inv = (st === "приглашён" && w.invite) ? w.invite : "";
+    return '<div class="work"><div class="t">' + esc(w.name) + '</div>' +
+      '<div class="m">' + esc(st || "—") + (w.phone ? ' · ' + esc(w.phone) : '') +
+        (w.added ? ' · добавлен ' + esc(String(w.added).slice(0, 10)) : '') + '</div>' +
+      (inv ? '<div class="m" style="margin-top:8px">Код приглашения: <b style="letter-spacing:2px">' + esc(inv) + '</b> (действует сутки)<br>' +
+        '<span style="word-break:break-all">' + esc(invLink(inv)) + '</span></div>' +
+        '<div class="m" style="margin-top:8px"><button onclick="invShare(\'' + attr(inv) + '\')" style="padding:10px 14px;border-radius:10px;border:0;background:#0a84ff;color:#fff;font-size:15px">Скопировать приглашение</button></div>' : '') +
+      '</div>';
+  };
+  return '' +
+    '<div class="hello">Бригада</div>' +
+    '<div class="sub">' + (ws.length ? ('Работников: ' + ws.length) : 'Пока вы работаете один — это нормально') + '</div>' +
+    '<div class="stat"><span class="k">Работник добавляется приглашением: создайте его, перешлите ссылку — человек откроет её, подтвердит себя, и система подключит его сама. Руками Telegram-ID не вводится.</span></div>' +
+    ws.map(item).join('') +
+    '<div class="card"><div class="lbl">Добавить работника</div>' +
+      '<div style="margin:8px 0"><input id="cw_name" placeholder="Имя (как зовут в бригаде)" ' + inp + '></div>' +
+      '<div style="margin:8px 0"><input id="cw_phone" placeholder="Телефон (не обязательно)" ' + inp + '></div>' +
+      '<button class="tile pri" style="width:100%" onclick="crewAdd()"><span class="nm">Создать приглашение</span></button>' +
+    '</div>';
 },
 
 checks(){
