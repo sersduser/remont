@@ -17,7 +17,7 @@
 }
 *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
 body{background:var(--bg);color:var(--txt);font:15px/1.5 -apple-system,"Segoe UI",Roboto,sans-serif;
-  padding:14px 14px 40px;overscroll-behavior-y:contain}
+  padding:calc(14px + var(--tg-safe-area-inset-top,0px) + var(--tg-content-safe-area-inset-top,0px)) 14px 40px;overscroll-behavior-y:contain}
 
 .hello{font-size:19px;font-weight:600}
 .sub{font-size:12px;color:var(--hint);margin-bottom:14px}
@@ -81,6 +81,7 @@ input[type=number]{text-align:center}
 .toast.on{opacity:1;transform:none}
 .toast.bad{background:var(--bad);color:#fff}
 .toast.wait{background:var(--sec);color:var(--hint)}
+.toast.err{background:var(--bad);color:#fff}
 
 /* ── ГОЛОСОВОЙ ВВОД: модальное окно, индикатор, результат ── */
 .vmask{position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:flex-end;
@@ -1092,6 +1093,7 @@ async function crewLoad(){
   let j = null; try{ j = JSON.parse(raw); }catch(e){}
   if(!j || !j.crew) throw new Error("нет данных бригады");
   CREW_DATA = j.crew;
+  CREW_TS = Date.now();
   return CREW_DATA;
 }
 /* Один вход для всех экранов контура: свежие данные, затем переход. */
@@ -1107,6 +1109,29 @@ async function openCrewScreen(k){
   finally{ CREW_LOAD = false; }
 }
 function openCrew(){ return openCrewScreen("crew"); }
+
+/* Живые данные бригады (кандидат прогона 014): экраны контура тихо
+   подтягивают свежее сами. Тик пропускается, когда идёт ввод или запись —
+   перерисовка не должна красть фокус и сбрасывать поля. */
+let CREW_TS = 0;
+const CREW_LIVE = ["crew", "crew_orders", "crew_time", "crew_reports", "crew_cal"];
+function crewFresh(){
+  try{
+    if(document.visibilityState !== "visible") return;
+    if(!D || !D.kind) return;
+    const scr = stack[stack.length - 1];
+    const need = (D.kind === "hand" && scr === "home") || CREW_LIVE.indexOf(scr) >= 0;
+    if(!need) return;
+    if(Date.now() - CREW_TS < 75000) return;
+    if(CREW_LOAD || HM || HM_BUSY || HR_BUSY) return;
+    const a = document.activeElement;
+    if(a && /^(INPUT|SELECT|TEXTAREA)$/.test(a.tagName)) return;
+    CREW_TS = Date.now(); /* тики не наслаиваются */
+    crewLoad().then(() => render()).catch(() => {});
+  }catch(e){}
+}
+setInterval(crewFresh, 30000);
+document.addEventListener("visibilitychange", () => { if(document.visibilityState === "visible") crewFresh(); });
 
 /* Тихая запись ячейки контура: без локального patch (данные в CREW_DATA
    правим сами по месту). Пустое тело при 200 = отказ (граблина 6).   */
@@ -1197,16 +1222,22 @@ let CW_OFF_BUSY = false;
 async function cwOff(i){
   const w = (((CREW_DATA || {}).workers) || [])[i];
   if(!w || CW_OFF_BUSY) return;
-  if(!confirm("Отключить работника «" + w.name + "»? Будущие наряды снимутся, история останется.")) return;
+  if(!confirm("Отключить работника «" + w.name + "»? Наряды вперёд снимутся (начатый сегодняшний день останется), история цела.")) return;
   CW_OFF_BUSY = true;
   try{
     toast("Отключаю…", "wait");
     await crewCell("Работники", w.name, "Статус", "отключён");
     await crewCell("Работники", w.name, "Отключён", crewToday());
     const today = crewToday();
+    /* Сегодняшний наряд снимается, только если день не начат: есть отметки
+       табеля — день считается рабочим и остаётся (уточнение прогона 014). */
+    const dayStarted = (((CREW_DATA || {}).time) || []).some(x =>
+      String(x.worker || "").trim() === String(w.name).trim() &&
+      String(x.date || "") === today && String(x.status || "") !== "отклонено");
     const future = ((CREW_DATA || {}).orders || []).filter(o =>
       String(o.worker || "").trim() === String(w.name).trim() &&
-      String(o.date || "") >= today && String(o.status || "") === "назначен");
+      String(o.status || "") === "назначен" &&
+      (String(o.date || "") > today || (String(o.date || "") === today && !dayStarted)));
     for(const o of future){ await crewCell("Наряды", o.id, "Статус", "отменён"); o.status = "отменён"; }
     w.status = "отключён"; w.off = crewToday();
     toast("Отключён" + (future.length ? " · снято нарядов: " + future.length : ""));
@@ -1396,6 +1427,11 @@ async function rpDecide(i, mode){
 
 /* ── РАБОТНИК (hand): свой день, календарь, отчёты ── */
 let HM = null, HM_BUSY = false, HR_BUSY = false, HR_TYPE = "работа";
+/* Черновики обеих вкладок отчёта: переключение вкладки не теряет ввод,
+   отправка забирает все заполненные части (кандидат прогона 014). */
+let HR_DRAFT = { "работа": { code: "", val: "", comment: "" }, "материал": { mat: "", val: "", comment: "" } };
+function hrSet(field, el){ HR_DRAFT[HR_TYPE][field] = String(el.value == null ? "" : el.value); }
+function hrTab(v){ HR_TYPE = v; render(); }
 function handMyOrders(){ return ordActive(); }   // сервер уже отдал hand только его наряды
 function handObject(){
   const today = crewToday();
@@ -1440,28 +1476,37 @@ async function handMarkGo(){
   finally{ HM_BUSY = false; }
 }
 async function handReport(){
-  const g = id => String((document.getElementById(id) || {}).value || "").trim();
-  let code = "", val = g("hr_val").replace(",", "."), comment = g("hr_comment");
-  if(HR_TYPE === "работа"){
-    code = g("hr_work");
-    if(!code){ toast("Выберите работу", "err"); return; }
-    const n = Number(val);
-    if(!(n >= 0 && n <= 100)){ toast("Готовность — число от 0 до 100", "err"); return; }
-  } else {
-    code = g("hr_mat");
-    if(!code){ toast("Напишите, какой материал", "err"); return; }
-    if(val === "" || isNaN(Number(val))){ toast("Количество — число", "err"); return; }
-  }
   if(HR_BUSY) return;
+  /* Уходят ВСЕ заполненные вкладки, а не только открытая (кандидат прогона 014). */
+  const w = HR_DRAFT["работа"], m = HR_DRAFT["материал"];
+  const wFilled = !!(w.code || String(w.val).trim());
+  const mFilled = !!(String(m.mat).trim() || String(m.val).trim());
+  if(!wFilled && !mFilled){ toast("Заполните работу или материал", "err"); return; }
+  const rows = [], errs = [];
+  if(wFilled){
+    const n = Number(String(w.val).replace(",", "."));
+    if(!w.code) errs.push("работа: выберите из списка");
+    else if(!(n >= 0 && n <= 100)) errs.push("работа: готовность — число от 0 до 100");
+    else rows.push({ t: "работа", c: w.code, v: String(n), k: String(w.comment || "").trim() });
+  }
+  if(mFilled){
+    const v = String(m.val).replace(",", ".").trim();
+    if(!String(m.mat).trim()) errs.push("материал: напишите, какой");
+    else if(v === "" || isNaN(Number(v))) errs.push("материал: количество — число");
+    else rows.push({ t: "материал", c: String(m.mat).trim(), v: v, k: String(m.comment || "").trim() });
+  }
+  if(errs.length){ toast(errs.join(" · "), "err"); return; }
   HR_BUSY = true;
   try{
     toast("Отправляю бригадиру…", "wait");
-    await crewAppend("Отчёты_бригады", [{
-      "id": crewId("RP"), "Дата": crewToday(), "Работник": D.who,
-      "Тип": HR_TYPE, "Код": code, "Значение": val, "Комментарий": comment,
+    await crewAppend("Отчёты_бригады", rows.map((r, i) => ({
+      "id": crewId("RP") + (rows.length > 1 ? "-" + (i + 1) : ""),
+      "Дата": crewToday(), "Работник": D.who,
+      "Тип": r.t, "Код": r.c, "Значение": r.v, "Комментарий": r.k,
       "Статус": "новый", "Стало": "", "Решил": "", "Время": crewNow(),
-    }]);
-    toast("Отчёт ушёл бригадиру");
+    })));
+    toast("Отчёт ушёл бригадиру: " + rows.map(r => r.t).join(" + "));
+    HR_DRAFT = { "работа": { code: "", val: "", comment: "" }, "материал": { mat: "", val: "", comment: "" } };
     await crewLoad(); render();
   }catch(e){ toast(e.message, "err"); }
   finally{ HR_BUSY = false; }
@@ -1501,6 +1546,7 @@ function handHome(){
       opt("custom", "своё время") + "</div>" +
       (HM.mode === "custom" ? '<div style="margin-bottom:10px"><input id="hm_time" type="time" value="' + now + '" ' + CREW_INP + "></div>" : "") +
       '<div style="color:var(--hint);font-size:12px;margin-bottom:10px">Задним числом — только в пределах сегодняшнего дня; раньше — через бригадира.</div>' +
+      '<div style="color:var(--warn);font-size:13px;font-weight:600;margin-bottom:10px">⏳ Ещё не записано — выбери время и нажми «Записать»</div>' +
       '<div style="display:flex;gap:8px">' +
       '<button onclick="HM=null;render()" style="flex:1;padding:12px;border-radius:10px;border:0;background:#3a3a3c;color:#fff;font-size:15px">Отмена</button>' +
       '<button onclick="handMarkGo()" style="flex:1;padding:12px;border-radius:10px;border:0;background:#0a84ff;color:#fff;font-size:15px">Записать</button>' +
@@ -1532,7 +1578,7 @@ function toast(msg, kind){
   t.textContent = msg;
   t.className = "toast on" + (kind ? " " + kind : "");
   clearTimeout(tt);
-  if(kind !== "wait") tt = setTimeout(() => t.className = "toast", 1900);
+  if(kind !== "wait") tt = setTimeout(() => t.className = "toast", kind === "err" ? 3500 : 2600);
 }
 
 /* ── НАВИГАЦИЯ (стек, ровно один уровень вглубь) ───────────── */
@@ -2135,16 +2181,21 @@ hand_rep(){
   const my = (c.reports || []).slice(-10).reverse();
   const works = (D.works || []).filter(w => String(w.status || "") !== "Снято");
   const mats = (D.materials || []).map(m => String(m.name || "")).filter(Boolean);
-  const tab = (v, lbl) => '<button onclick="HR_TYPE=\'' + v + '\';render()" style="flex:1;padding:11px;border-radius:11px;border:0;font-size:14px;background:' +
-    (HR_TYPE === v ? "#0a84ff" : "#3a3a3c") + ';color:#fff">' + lbl + "</button>";
+  const dW = HR_DRAFT["работа"], dM = HR_DRAFT["материал"];
+  const dirty = { "работа": !!(dW.code || String(dW.val).trim() || String(dW.comment || "").trim()),
+                  "материал": !!(String(dM.mat).trim() || String(dM.val).trim() || String(dM.comment || "").trim()) };
+  const tab = (v, lbl) => '<button onclick="hrTab(\'' + v + '\')" style="flex:1;padding:11px;border-radius:11px;border:0;font-size:14px;background:' +
+    (HR_TYPE === v ? "#0a84ff" : "#3a3a3c") + ';color:#fff">' + lbl + (dirty[v] && HR_TYPE !== v ? " ✎" : "") + "</button>";
   const wname = code => { const w = (D.works || []).find(v => v.code === String(code || "").trim()); return w ? w.name : String(code || ""); };
   const form = HR_TYPE === "работа" ?
-    '<div style="margin:8px 0"><select id="hr_work" ' + CREW_INP + '><option value="">— какая работа —</option>' +
-      works.map(w => '<option value="' + attr(w.code) + '">' + esc(String(w.room || "").split(" (")[0]) + " · " + esc(w.name) + (w.progress ? " (" + w.progress + " %)" : "") + "</option>").join("") + "</select></div>" +
-    '<div style="margin:8px 0"><input id="hr_val" type="number" inputmode="numeric" min="0" max="100" placeholder="готовность теперь, %" ' + CREW_INP + "></div>" :
-    '<div style="margin:8px 0"><input id="hr_mat" list="hr_mats" placeholder="какой материал" ' + CREW_INP + ">" +
+    '<div style="margin:8px 0"><select id="hr_work" onchange="hrSet(\'code\',this)" ' + CREW_INP + '><option value="">— какая работа —</option>' +
+      works.map(w => '<option value="' + attr(w.code) + '"' + (dW.code === w.code ? " selected" : "") + '>' + esc(String(w.room || "").split(" (")[0]) + " · " + esc(w.name) + (w.progress ? " (" + w.progress + " %)" : "") + "</option>").join("") + "</select></div>" +
+    '<div style="margin:8px 0"><input id="hr_val" type="number" inputmode="numeric" min="0" max="100" placeholder="готовность теперь, %" value="' + attr(dW.val) + '" oninput="hrSet(\'val\',this)" ' + CREW_INP + "></div>" +
+    '<div style="margin:8px 0"><input id="hr_comment" placeholder="Комментарий (не обязательно)" value="' + attr(dW.comment) + '" oninput="hrSet(\'comment\',this)" ' + CREW_INP + "></div>" :
+    '<div style="margin:8px 0"><input id="hr_mat" list="hr_mats" placeholder="какой материал" value="' + attr(dM.mat) + '" oninput="hrSet(\'mat\',this)" ' + CREW_INP + ">" +
       '<datalist id="hr_mats">' + mats.map(m => '<option value="' + attr(m) + '">').join("") + "</datalist></div>" +
-    '<div style="margin:8px 0"><input id="hr_val" type="number" inputmode="decimal" placeholder="сколько израсходовано" ' + CREW_INP + "></div>";
+    '<div style="margin:8px 0"><input id="hr_val" type="number" inputmode="decimal" placeholder="сколько израсходовано" value="' + attr(dM.val) + '" oninput="hrSet(\'val\',this)" ' + CREW_INP + "></div>" +
+    '<div style="margin:8px 0"><input id="hr_comment" placeholder="Комментарий (не обязательно)" value="' + attr(dM.comment) + '" oninput="hrSet(\'comment\',this)" ' + CREW_INP + "></div>";
   const myList = my.map(x =>
     '<div class="work"><div class="t">' + esc(String(x.type || "")) + " · " +
       (String(x.type || "") === "работа" ? esc(wname(x.code)) : esc(String(x.code || ""))) + "</div>" +
@@ -2155,8 +2206,8 @@ hand_rep(){
     '<div class="sub">что сделал, что израсходовал — без денег</div>' +
     '<div class="card"><div style="display:flex;gap:8px;margin-bottom:4px">' + tab("работа", "Работа") + tab("материал", "Материал") + "</div>" +
       form +
-      '<div style="margin:8px 0"><input id="hr_comment" placeholder="Комментарий (не обязательно)" ' + CREW_INP + "></div>" +
       '<button class="tile pri" style="width:100%" onclick="handReport()"><span class="nm">Отправить бригадиру</span></button>' +
+      (dirty["работа"] && dirty["материал"] ? '<div class="m" style="text-align:center;margin-top:7px;color:var(--hint)">Уйдут обе части: работа и материал</div>' : "") +
     "</div>" +
     '<div class="stat"><span class="k">Отчёт видит только бригадир. Он подтвердит или поправит — и тогда запись попадёт в учёт объекта.</span></div>' +
     (my.length ? '<div class="sub" style="margin-top:14px">Мои отчёты</div>' + myList : "");
@@ -2247,7 +2298,7 @@ money(){
     </div>
     ${S["Не_подтверждено_сум"] ? `
       <div class="warnbox"><b>${fmt(S["Не_подтверждено_сум"])} сум</b> из аванса 26.06 — без расшифровки.</div>` : ""}
-    <div class="card">
+    ${(D.payments || []).length ? `<div class="card">
       <div class="lbl">Платежи</div>
       ${(D.payments || []).map(p => `
         <div class="li">
@@ -2257,7 +2308,7 @@ money(){
                 ? ` · <span style="color:var(--warn)">${esc(p["Статус_сверки"])}</span>` : ""}</div></div>
           <div class="v">${fmt(String(p["Сумма"]).replace(/\s/g,""))} ${p["Валюта"] === "USD" ? "$" : "сум"}</div>
         </div>`).join("")}
-    </div>
+    </div>` : ""}
     ${(D.extras || []).length ? `
     <div class="card">
       <div class="lbl">Допы</div>
@@ -2434,7 +2485,7 @@ chgnew(){
   return '' +
     '<div class="hello">Заявить изменение</div>' +
     '<div class="sub">' + esc(titles[k]) + ' · решает вторая сторона</div>' +
-    '<div class="filt">' + tabs + '</div>' +
+    '<div class="filt" style="flex-wrap:wrap">' + tabs + '</div>' +
     '<div class="stat">' + body +
       field('Комментарий (необязательно)', '<input value="' + attr(CHG.comment) + '" onchange="chgSet(\'comment\',this)" placeholder="почему меняем" style="' + box + '">') +
     '</div>' +
