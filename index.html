@@ -985,7 +985,8 @@ function dealNote(){
 let CHG = { kind:'цена', code:'', room:'', section:'', name:'', unit:'', vol:'', rate:'', price:'', days:'', comment:'' };
 
 function chgOpen(){
-  CHG = { kind:'цена', code:'', room:'', section:'', name:'', unit:'', vol:'', rate:'', price:'', days:'', comment:'' };
+  const ks = chgKindsFor();
+  CHG = { kind:(ks.indexOf('цена') >= 0 ? 'цена' : ks[0]), code:'', room:'', section:'', name:'', unit:'', vol:'', rate:'', price:'', days:'', comment:'' };
   go('chgnew');
 }
 function chgSet(field, el){
@@ -993,7 +994,7 @@ function chgSet(field, el){
   const box = document.getElementById('chgPreview');
   if(box) box.innerHTML = chgPreview();
 }
-function chgPickKind(v){ CHG.kind = v; render(); }
+function chgPickKind(v){ if(chgKindsFor().indexOf(v) < 0) return; CHG.kind = v; render(); }
 function chgPickWork(el){ CHG.code = el.value; render(); }
 
 function chgWork(){ return (D.works || []).find(w => w.code === CHG.code) || null; }
@@ -1190,6 +1191,281 @@ async function chgApply(id, quiet){
   }
 }
 
+
+/* ══════════════════════════════════════════════════════════════
+   ВЫБОРОЧНАЯ СКИДКА — этап C2 [чат 019]
+   Скидка на отдельные работы — не новая сущность в данных, а ПАКЕТ
+   заявок вида «цена» с общим маркером [PK-…] в начале комментария:
+   у каждой работы своя строка в 11_Изменения (свой след «было → стало»),
+   а панель показывает их одной карточкой и решает одним нажатием.
+   Договор считается прежним способом — база + Σ дельт принятых заявок,
+   поэтому скидка автоматически видна в «Финансах» и на главном экране.
+   Два режима: процентом и «итоговой суммой за выбранное» (пропорционально,
+   с добором остатка в последнюю строку — итог обязан сойтись до цента).
+   ══════════════════════════════════════════════════════════════ */
+const DSC_MAX = 40;   /* больше строк за пакет — принятие становится слишком долгим */
+let DSC = { mode:'pct', pct:'', sum:'', pick:{}, comment:'' };
+let DSC_BUSY = false;   /* замок от повторного входа: двойной тап = второй круг [грабля 012] */
+
+/* Скидку на договорные цены предлагает та сторона, которой сервер отдаёт
+   разнесение (price_alloc_usd) — то есть заказчик. */
+const dscCan = () => ['admin','owner'].includes(D.role);
+const dscRoomName = w => String((w && w.room) || '—').split(' (')[0];
+const dscNum = s => Number(String(s == null ? '' : s).replace(/[^0-9,.\-]/g, '').replace(',', '.')) || 0;
+
+function dscOpen(){
+  DSC = { mode:'pct', pct:'', sum:'', pick:{}, comment:'' };
+  go('discount');
+}
+function dscWorks(){ return chgOpenWorks().filter(w => workPrice(w) > 0); }
+function dscPicked(){ return dscWorks().filter(w => DSC.pick[w.code]); }
+function dscToggle(code){
+  if(DSC.pick[code]) delete DSC.pick[code]; else DSC.pick[code] = 1;
+  dscRefresh();
+}
+function dscRoomPick(room, on){
+  dscWorks().filter(w => dscRoomName(w) === room).forEach(w => {
+    if(on) DSC.pick[w.code] = 1; else delete DSC.pick[w.code];
+  });
+  render();
+}
+function dscSet(field, el){
+  DSC[field] = String(el.value == null ? '' : el.value).replace(',', '.').trim();
+  dscRefresh();
+}
+function dscMode(m){ DSC.mode = m; render(); }
+function dscRefresh(){
+  const box = document.getElementById('dscPrev');
+  if(box) box.innerHTML = dscPreview();
+  const cnt = document.getElementById('dscCnt');
+  if(cnt) cnt.textContent = dscPicked().length;
+}
+
+/* Расчёт пакета. В режиме «процентом» каждая работа дешевеет ровно на процент —
+   так подпись не врёт ни на одной строке; общий итог складывается из строк.
+   В режиме «итоговой суммой» распределение пропорционально текущим ценам,
+   а копейки округления добираются последней строкой, чтобы сумма была ровно
+   заданной: иначе договор разошёлся бы с суммой работ. */
+function dscCalc(){
+  const list = dscPicked();
+  if(!list.length) return null;
+  const base = Math.round(list.reduce((s, w) => s + workPrice(w), 0) * 100) / 100;
+  if(!(base > 0)) return null;
+  const rows = [];
+  if(DSC.mode === 'pct'){
+    const p = Number(DSC.pct);
+    if(!(p > 0)) return null;
+    if(p >= 100) return { err:'Скидка 100 % — это уже не скидка, а снятие работ (вид «убрать»)' };
+    list.forEach(w => {
+      const was = workPrice(w);
+      const now = Math.round(was * (100 - p)) / 100;
+      rows.push({ code:w.code, name:w.name, room:dscRoomName(w), was:was, now:now, d:Math.round((now - was) * 100) / 100 });
+    });
+  }else{
+    const t = Number(DSC.sum);
+    if(!(t > 0)) return null;
+    if(t >= base) return { err:'Итог не ниже текущей суммы — это повышение цены, его заявляют видом «цена»' };
+    let acc = 0;
+    list.forEach((w, i) => {
+      const was = workPrice(w);
+      let now;
+      if(i === list.length - 1){ now = Math.round((t - acc) * 100) / 100; }
+      else { now = Math.round(t * was / base * 100) / 100; acc = Math.round((acc + now) * 100) / 100; }
+      rows.push({ code:w.code, name:w.name, room:dscRoomName(w), was:was, now:now, d:Math.round((now - was) * 100) / 100 });
+    });
+  }
+  const bad = rows.find(r => !(r.now > 0));
+  if(bad) return { err:'Слишком мало: на «' + bad.name + '» не остаётся цены — такие работы снимают видом «убрать»' };
+  const target = Math.round(rows.reduce((s, r) => s + r.now, 0) * 100) / 100;
+  const cut = Math.round((base - target) * 100) / 100;
+  if(!(cut > 0)) return { err:'Скидка нулевая — договор не изменится' };
+  return { rows:rows, base:base, target:target, cut:cut, pct:Math.round(cut / base * 1000) / 10 };
+}
+
+function dscPreview(){
+  const c = dscCalc();
+  if(!c) return '<span class="k" style="opacity:.6">Отметьте работы и задайте скидку — здесь появится, что именно уйдёт на согласование.</span>';
+  if(c.err) return '<span class="k" style="color:var(--bad)">' + esc(c.err) + '</span>';
+  const lines = c.rows.slice(0, 6).map(r =>
+    '<div class="r"><span class="k" style="font-size:13px;opacity:.75">' + esc(r.name) + ' · ' + esc(r.room) + '</span>' +
+    '<span class="v" style="font-size:13px">' + usd(r.was) + ' → ' + usd(r.now) + '</span></div>').join('');
+  const more = c.rows.length > 6
+    ? '<div class="r"><span class="k" style="font-size:13px;opacity:.55">и ещё ' + (c.rows.length - 6) + '…</span><span class="v"></span></div>' : '';
+  return '<div class="r"><span class="k">Работ в пакете</span><span class="v">' + c.rows.length + '</span></div>' +
+    '<div class="r"><span class="k">Было</span><span class="v">' + usd(c.base) + ' $</span></div>' +
+    '<div class="r"><span class="k">Станет</span><span class="v">' + usd(c.target) + ' $</span></div>' +
+    '<div class="r"><span class="k">Скидка</span><span class="v" style="color:var(--ok)">−' + usd(c.cut) + ' $ · ' + c.pct + ' %</span></div>' +
+    '<div class="r"><span class="k">Договор станет</span><span class="v">' + usd(Math.round((dealSum() - c.cut) * 100) / 100) + ' $</span></div>' +
+    lines + more;
+}
+
+/* Отправка пакета — один запрос /append на все строки: заявка либо ушла целиком,
+   либо не ушла вовсе. Частично заявленная скидка не имела бы смысла. */
+async function dscSubmit(){
+  if(!dscCan()){ toast('Скидку на договорные цены предлагает заказчик', 'err'); return; }
+  const c = dscCalc();
+  if(!c){ toast('Отметьте работы и задайте скидку', 'err'); return; }
+  if(c.err){ toast(c.err, 'err'); return; }
+  if(c.rows.length > DSC_MAX){ toast('За один раз не больше ' + DSC_MAX + ' работ', 'err'); return; }
+  if(DSC_BUSY) return;
+  DSC_BUSY = true;
+  const pk = 'PK-' + Date.now().toString(36).toUpperCase();
+  const head = DSC.mode === 'pct'
+    ? ('скидка ' + c.pct + ' % на ' + c.rows.length + ' работ')
+    : ('итог ' + usd(c.target) + ' $ за ' + c.rows.length + ' работ');
+  const stamp = chgStamp();
+  const rows = c.rows.map((r, i) => ({
+    'id': 'CH-' + pk.slice(3) + '-' + String(i + 1).padStart(2, '0'),
+    'Время': stamp,
+    'Инициатор': D.who,
+    'Вид': 'цена',
+    'Код_работы': r.code,
+    'Что_меняем': 'Цена работы',
+    'Было': usd(r.was) + ' USD',
+    'Стало': usd(r.now) + ' USD',
+    'Дельта_USD': r.d,
+    'Дельта_дней': 0,
+    'Статус': 'Заявлено',
+    'Решил': '',
+    'Комментарий': '[' + pk + '] ' + head + (DSC.comment ? (' · ' + DSC.comment) : ''),
+  }));
+  toast('Отправляю пакет на согласование…', 'wait');
+  try{
+    const r = await fetch(API + '/append', {
+      method:'POST', headers:{ 'Content-Type':'application/json' },
+      body: JSON.stringify({ initData:INIT, key:KEY, sheet:'11_Изменения', rows:rows })
+    });
+    const t = (await r.text()).trim();
+    if(!r.ok || !t) throw new Error('Не удалось отправить пакет');
+    toast('Скидка заявлена — ' + rows.length + ' работ ждут ответа второй стороны');
+    await load();
+    back();
+  }catch(e){ toast(e.message, 'err'); }
+  finally{ DSC_BUSY = false; }
+}
+
+/* ── Пакеты в списке изменений ───────────────────────────────── */
+
+const dscPk = c => { const m = String((c && c.comment) || '').match(/^\[(PK-[A-Z0-9]+)\]/); return m ? m[1] : ''; };
+function dscGroup(list){
+  const packs = {}, single = [], order = [];
+  (list || []).forEach(c => {
+    const p = dscPk(c);
+    if(p){ if(!packs[p]){ packs[p] = []; order.push(p); } packs[p].push(c); }
+    else single.push(c);
+  });
+  return { packs:packs, order:order, single:single };
+}
+function dscPackSum(list){
+  const was = Math.round(list.reduce((s, c) => s + dscNum(c.was), 0) * 100) / 100;
+  const cut = Math.round(list.reduce((s, c) => s + (Number(c.d_usd) || 0), 0) * 100) / 100;
+  return { was:was, cut:cut, now:Math.round((was + cut) * 100) / 100 };
+}
+function dscActs(c, mode){
+  const bt = 'flex:1;padding:12px;border:0;border-radius:10px;color:#fff;font-weight:600;font-size:15px';
+  if(mode === 'theirs') return '<div class="row" style="gap:8px;margin-top:10px">' +
+    '<button style="' + bt + ';background:var(--ok)" onclick="chgAccept(\'' + esc(c.id) + '\')">Принять</button>' +
+    '<button style="' + bt + ';background:var(--bad)" onclick="chgDispute(\'' + esc(c.id) + '\')">Оспорить</button></div>';
+  if(mode === 'mine') return '<div class="m" style="color:var(--warn);margin-top:6px">⏳ Ждёт ответа второй стороны</div>';
+  if(mode === 'apply') return '<div class="row" style="margin-top:10px">' +
+    '<button style="' + bt + ';background:#0a84ff" onclick="chgApply(\'' + esc(c.id) + '\')">Внести в смету</button></div>';
+  return '';
+}
+function dscPackCard(pk, list, mode){
+  const first = list[0] || {};
+  const head = String(first.comment || '').replace(/^\[[^\]]*\]\s*/, '') || 'скидка пакетом';
+  const s = dscPackSum(list);
+  const bt = 'flex:1;padding:12px;border:0;border-radius:10px;color:#fff;font-weight:600;font-size:15px';
+  const items = list.map(c => {
+    const w = (D.works || []).find(x => x.code === c.code);
+    return '<div class="m" style="opacity:.75">' + esc(w ? w.name : c.code) + ' · ' +
+      esc(String(c.was || '')) + ' → ' + esc(String(c.now || '')) +
+      (mode === 'done' ? (' · ' + esc(chgSt(c))) : '') + '</div>';
+  }).join('');
+  let acts = '';
+  if(mode === 'theirs') acts = '<div class="row" style="gap:8px;margin-top:10px">' +
+    '<button style="' + bt + ';background:var(--ok)" onclick="dscPackDecide(\'' + esc(pk) + '\',\'accept\')">Принять пакет</button>' +
+    '<button style="' + bt + ';background:var(--bad)" onclick="dscPackDecide(\'' + esc(pk) + '\',\'dispute\')">Оспорить пакет</button></div>';
+  if(mode === 'mine') acts = '<div class="m" style="color:var(--warn);margin-top:6px">⏳ Ждёт ответа второй стороны</div>';
+  if(mode === 'apply') acts = '<div class="row" style="margin-top:10px">' +
+    '<button style="' + bt + ';background:#0a84ff" onclick="dscPackApply(\'' + esc(pk) + '\')">Внести пакет в смету</button></div>';
+  return '<div class="work">' +
+    '<div class="t">Скидка · ' + esc(head) + '</div>' +
+    '<div class="m">' + esc(pk) + ' · заявил ' + esc(first.by || '') + ' · ' + esc(first.at || '') + '</div>' +
+    '<div class="m">было: ' + usd(s.was) + ' $ → станет: ' + usd(s.now) + ' $</div>' +
+    '<div class="m" style="color:var(--ok)">−' + usd(Math.abs(s.cut)) + ' $ к договору · работ: ' + list.length + '</div>' +
+    items + acts + '</div>';
+}
+function dscList(list, mode, card){
+  const g = dscGroup(list);
+  const packs = g.order.map(pk => dscPackCard(pk, g.packs[pk], mode)).join('');
+  const single = g.single.map(c => card(c, dscActs(c, mode))).join('');
+  return packs + single;
+}
+
+/* Решение по пакету — построчно, с прогрессом: /update правит одну ячейку за
+   запрос, а замок не даёт запустить второй круг по тем же строкам (грабля 012). */
+async function dscRun(title, items, fn){
+  if(DSC_BUSY){ toast('Дождитесь окончания предыдущего действия', 'err'); return; }
+  DSC_BUSY = true;
+  const box = document.createElement('div');
+  box.style.cssText = 'position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;padding:18px;color:#fff;font-size:16px';
+  box.innerHTML = '<div style="background:#1c1c1e;border-radius:16px;padding:20px;min-width:240px;text-align:center">' + esc(title) +
+    '<div id="dscN" style="opacity:.7;font-size:14px;margin-top:8px">0 из ' + items.length + '</div></div>';
+  document.body.appendChild(box);
+  let ok = 0, fail = 0, last = '';
+  for(const it of items){
+    try{ await fn(it); ok++; }
+    catch(e){ fail++; last = e.message || String(e); }
+    const el = box.querySelector('#dscN');
+    if(el) el.textContent = (ok + fail) + ' из ' + items.length;
+  }
+  box.remove();
+  DSC_BUSY = false;
+  await load();
+  toast(fail ? ('Прошло ' + ok + ', не удалось ' + fail + (last ? (' — ' + last) : '')) : ('Готово: ' + ok + ' из ' + items.length), fail ? 'err' : 'ok');
+}
+
+/* Применение одной принятой заявки цены — без тостов и перезагрузки:
+   в пакете это делается в цикле, а данные перечитываются один раз в конце. */
+async function chgApplyOne(c){
+  const w = (D.works || []).find(x => x.code === c.code);
+  if(!w) throw new Error('Работа ' + c.code + ' не найдена');
+  await writeCell('01_Работы', c.code, 'Цена_аллокация_USD', Math.round((workPrice(w) + (Number(c.d_usd) || 0)) * 100) / 100);
+  await writeCell('11_Изменения', c.id, 'Статус', 'Применено');
+}
+
+async function dscPackDecide(pk, how){
+  const list = chgPending().filter(c => dscPk(c) === pk);
+  if(!list.length){ toast('Пакет уже решён', 'err'); return; }
+  if(String(list[0].by || '') === String(D.who)){ toast('Свой пакет принимает вторая сторона', 'err'); return; }
+  const accept = how === 'accept';
+  const mine = dscCan();
+  await dscRun(accept ? 'Принимаю пакет…' : 'Оспариваю пакет…', list, async c => {
+    await writeCell('11_Изменения', c.id, 'Статус', accept ? 'Принято' : 'Оспорено');
+    await writeCell('11_Изменения', c.id, 'Решил', D.who);
+    if(accept && mine) await chgApplyOne(c);
+  });
+}
+
+async function dscPackApply(pk){
+  const list = chgToApply().filter(c => dscPk(c) === pk);
+  if(!list.length){ toast('Нечего вносить', 'err'); return; }
+  if(!dscCan()){ toast('В смету вносит заказчик', 'err'); return; }
+  await dscRun('Вношу пакет в смету…', list, async c => { await chgApplyOne(c); });
+}
+
+/* Виды заявок по роли. Бригадиру сервер не отдаёт разнесение цен по работам
+   (price_alloc_usd только заказчику), поэтому вид, дельту которого без него
+   не посчитать, ему не показывается: заявка ушла бы с дельтой от нуля и
+   раздула бы договор на полную цену вместо разницы. [чат 019] */
+const CH_KINDS_NO_ALLOC = ['добавить', 'срок'];
+const chgKindsFor = () => (dscCan() ? CH_KINDS : CH_KINDS_NO_ALLOC);
+function chgKindsNote(){
+  if(dscCan()) return '';
+  return '<div class="stat"><span class="k" style="font-size:13px;opacity:.75">Цену, объём и снятие работы заявляет заказчик — у вас нет его разнесения цен по работам. Вы можете предложить новую работу со своей ценой или другой срок, а на предложение заказчика ответить в «Изменениях».</span></div>';
+}
+
 async function writeCell(sheet, code, field, value){
   const r = await fetch(API + '/update', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -1290,6 +1566,7 @@ function patch(sheet, code, field, value){
     if(field === "Статус")        w.status   = value;
     if(field === "Готовность_%")  w.progress = Number(value) || 0;
     if(field === "Цена_Юрия_USD") w.price_contractor_usd = value === "" ? null : Number(value);
+    if(field === "Цена_аллокация_USD") w.price_alloc_usd = value === "" ? null : Number(value);
     if(field === "Комментарий")   w.comment  = value;
     if(w.status === "Готово") w.progress = 100;
   }
@@ -2848,20 +3125,10 @@ changes(){
     (c.solved ? '<div class="m" style="opacity:.7">решил: ' + esc(c.solved) + ' · ' + esc(c.status) + '</div>' : '') +
     (actions || '') + '</div>';
 
-  const theirs = chgTheirs().map(c => card(c,
-    '<div class="row" style="gap:8px;margin-top:10px">' +
-      '<button style="flex:1;padding:12px;border:0;border-radius:10px;background:var(--ok);color:#fff;font-weight:600;font-size:15px" onclick="chgAccept(\'' + esc(c.id) + '\')">Принять</button>' +
-      '<button style="flex:1;padding:12px;border:0;border-radius:10px;background:var(--bad);color:#fff;font-weight:600;font-size:15px" onclick="chgDispute(\'' + esc(c.id) + '\')">Оспорить</button>' +
-    '</div>')).join('');
-
-  const mine = chgMine().map(c => card(c, '<div class="m" style="color:var(--warn);margin-top:6px">⏳ Ждёт ответа второй стороны</div>')).join('');
-
-  const toApply = (['admin','owner'].includes(D.role) ? chgToApply() : []).map(c => card(c,
-    '<div class="row" style="margin-top:10px">' +
-      '<button style="flex:1;padding:12px;border:0;border-radius:10px;background:#0a84ff;color:#fff;font-weight:600;font-size:15px" onclick="chgApply(\'' + esc(c.id) + '\')">Внести в смету</button>' +
-    '</div>')).join('');
-
-  const done = chgDone().slice(-12).reverse().map(c => card(c, '')).join('');
+  const theirs  = dscList(chgTheirs(), 'theirs', card);
+  const mine    = dscList(chgMine(), 'mine', card);
+  const toApply = dscList((['admin','owner'].includes(D.role) ? chgToApply() : []), 'apply', card);
+  const done    = dscList(chgDone().slice(-12).reverse(), 'done', card);
   const dd = dealDaysDelta();
 
   return '' +
@@ -2873,7 +3140,10 @@ changes(){
       (dd ? ('<div class="r"><span class="k" style="font-size:13px;opacity:.65">срок сдвинут на ' + (dd > 0 ? '+' : '') + dd + ' дн</span><span class="v"></span></div>') : '') +
     '</div>' +
     '<div class="stat"><div class="r">' +
-      '<button onclick="chgOpen()" style="width:100%;padding:13px;border-radius:12px;border:0;background:#0a84ff;color:#fff;font-size:15px">Заявить изменение</button>' +
+      '<div style="display:flex;gap:8px;width:100%">' +
+        '<button onclick="chgOpen()" style="flex:1;padding:13px;border-radius:12px;border:0;background:#0a84ff;color:#fff;font-size:15px">Заявить изменение</button>' +
+        (dscCan() ? '<button onclick="dscOpen()" style="flex:1;padding:13px;border-radius:12px;border:0;background:#3a3a3c;color:#fff;font-size:15px">Скидка на работы</button>' : '') +
+      '</div>' +
     '</div></div>' +
     (theirs ? ('<div class="sub" style="margin-top:14px">Ждут вашего решения</div>' + theirs) : '') +
     (mine ? ('<div class="sub" style="margin-top:14px">Заявлено вами</div>' + mine) : '') +
@@ -2883,10 +3153,60 @@ changes(){
       '<div class="stat"><span class="k">Изменений пока не заявляли. Любая сторона может предложить добавить или убрать работу, поменять цену, объём или срок — вторая сторона примет или оспорит, и только принятое двигает сумму договора.</span></div>');
 },
 
+
+/* Экран выборочной скидки [чат 019]. Работы группируются по помещениям,
+   принятые в списке не появляются вовсе — их цена заморожена решением 006. */
+discount(){
+  if(!dscCan()) return '' +
+    '<div class="hello">Скидка</div>' +
+    '<div class="stat"><span class="k">Скидку на договорные цены предлагает заказчик. Когда он её заявит, вы увидите пакет в «Изменениях» и сможете принять или оспорить его одним нажатием.</span></div>';
+
+  const works = dscWorks();
+  const frozen = (D.works || []).filter(w => w.status === 'Готово').length;
+  const box = 'width:100%;padding:11px;border-radius:12px;border:1px solid #3a3a3c;background:#000;color:#fff;font-size:16px';
+  const rooms = {}, order = [];
+  works.forEach(w => { const r = dscRoomName(w); if(!rooms[r]){ rooms[r] = []; order.push(r); } rooms[r].push(w); });
+
+  const groups = order.map(r => {
+    const all = rooms[r].every(w => DSC.pick[w.code]);
+    const items = rooms[r].map(w =>
+      '<label class="r" style="align-items:flex-start;gap:8px">' +
+        '<input type="checkbox"' + (DSC.pick[w.code] ? ' checked' : '') + ' onchange="dscToggle(\'' + attr(w.code) + '\')" style="width:20px;height:20px;margin-top:2px">' +
+        '<span class="k" style="flex:1">' + esc(w.name) + '<span style="opacity:.5;font-size:12px"> · ' + esc(w.code) + '</span></span>' +
+        '<span class="v">' + usd(workPrice(w)) + ' $</span>' +
+      '</label>').join('');
+    return '<div class="sub" style="margin-top:12px;display:flex;justify-content:space-between;align-items:center;gap:8px">' +
+        '<span>' + esc(r) + '</span>' +
+        '<button onclick="dscRoomPick(\'' + attr(r) + '\',' + (all ? 'false' : 'true') + ')" style="padding:6px 10px;border:0;border-radius:8px;background:#3a3a3c;color:#fff;font-size:13px">' + (all ? 'снять все' : 'все') + '</button>' +
+      '</div><div class="stat">' + items + '</div>';
+  }).join('');
+
+  const modeBtn = (v, label) => '<button class="' + (DSC.mode === v ? 'on' : '') + '" onclick="dscMode(\'' + v + '\')">' + esc(label) + '</button>';
+  const field = (label, html) => '<div class="m" style="margin-top:10px">' + esc(label) + '<div style="margin-top:5px">' + html + '</div></div>';
+
+  return '' +
+    '<div class="hello">Скидка на выбранные работы</div>' +
+    '<div class="sub">отмечено <b id="dscCnt">' + dscPicked().length + '</b> из ' + works.length + ' · решает вторая сторона</div>' +
+    '<div class="filt" style="flex-wrap:wrap">' + modeBtn('pct', 'Процентом') + modeBtn('sum', 'Итоговой суммой') + '</div>' +
+    '<div class="stat">' +
+      (DSC.mode === 'pct'
+        ? field('Скидка, %', '<input type="number" inputmode="decimal" step="0.5" value="' + attr(DSC.pct) + '" onchange="dscSet(\'pct\',this)" placeholder="например 10" style="' + box + '">')
+        : field('Итог за отмеченные работы, USD', '<input type="number" inputmode="decimal" step="0.01" value="' + attr(DSC.sum) + '" onchange="dscSet(\'sum\',this)" placeholder="сколько станет всего" style="' + box + '">')) +
+      field('Комментарий (необязательно)', '<input value="' + attr(DSC.comment) + '" onchange="dscSet(\'comment\',this)" placeholder="почему скидка" style="' + box + '">') +
+    '</div>' +
+    '<div class="stat" id="dscPrev">' + dscPreview() + '</div>' +
+    '<div class="stat"><div class="r" style="display:flex;gap:8px">' +
+      '<button onclick="back()" style="flex:1;padding:13px;border-radius:12px;border:0;background:#3a3a3c;color:#fff;font-size:15px">Отмена</button>' +
+      '<button onclick="dscSubmit()" style="flex:1;padding:13px;border-radius:12px;border:0;background:#0a84ff;color:#fff;font-size:15px">Заявить скидку</button>' +
+    '</div></div>' +
+    (frozen ? ('<div class="stat"><span class="k" style="font-size:13px;opacity:.7">Принятых работ в списке нет: ' + frozen + ' уже приняты, их цена заморожена — скидка действует вперёд.</span></div>') : '') +
+    (works.length ? groups : '<div class="stat"><span class="k">Нет работ с договорной ценой, на которые можно дать скидку.</span></div>');
+},
+
 chgnew(){
   const k = CHG.kind;
   const titles = { 'добавить':'Добавить работу', 'убрать':'Убрать работу', 'цена':'Изменить цену', 'объём':'Изменить объём', 'срок':'Изменить срок' };
-  const tabs = CH_KINDS.map(v => '<button class="' + (k === v ? 'on' : '') + '" onclick="chgPickKind(\'' + v + '\')">' + esc(titles[v]) + '</button>').join('');
+  const tabs = chgKindsFor().map(v => '<button class="' + (k === v ? 'on' : '') + '" onclick="chgPickKind(\'' + v + '\')">' + esc(titles[v]) + '</button>').join('');
 
   const box = 'width:100%;padding:11px;border-radius:12px;border:1px solid #3a3a3c;background:#000;color:#fff;font-size:16px';
   const field = (label, html) => '<div class="m" style="margin-top:10px">' + esc(label) + '<div style="margin-top:5px">' + html + '</div></div>';
@@ -2920,7 +3240,7 @@ chgnew(){
   return '' +
     '<div class="hello">Заявить изменение</div>' +
     '<div class="sub">' + esc(titles[k]) + ' · решает вторая сторона</div>' +
-    '<div class="filt" style="flex-wrap:wrap">' + tabs + '</div>' +
+    '<div class="filt" style="flex-wrap:wrap">' + tabs + '</div>' + chgKindsNote() +
     '<div class="stat">' + body +
       field('Комментарий (необязательно)', '<input value="' + attr(CHG.comment) + '" onchange="chgSet(\'comment\',this)" placeholder="почему меняем" style="' + box + '">') +
     '</div>' +
