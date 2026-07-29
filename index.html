@@ -656,6 +656,68 @@ async function bindCheck(id){
    Сам файл хранится в Telegram: панель просит его у сервера по id записи,
    прямой ссылки на файл и токена бота в клиенте нет.
    ══════════════════════════════════════════════════════════════ */
+/* ── Смежность помещений [чат 016] ─────────────────────────────
+   Зачем: порядок работ зависит не только от технологии, но и от того,
+   как комнаты связаны между собой. Полы нельзя залить везде разом —
+   иначе к дальней комнате не подойти; порядок считаем обходом графа
+   от выхода. Связь всегда двусторонняя: помечая соседа, пишем обе строки. */
+const adjMap = () => { const m = {}; (D.adjacency || []).forEach(a => { m[a.code] = a.near || []; }); return m; };
+const adjOf  = (code) => adjMap()[code] || [];
+
+async function adjWrite(code, list){
+  const r = roomList().find(x => x.code === code);
+  const known = (D.adjacency || []).some(a => a.code === code);
+  const val = list.join(",");
+  if(known) await writeCell("12_Смежность", code, "Смежные", val);
+  else await crewAppend("12_Смежность", [{ "Код": code, "Помещение": r ? r.name : code, "Смежные": val, "Примечание": "" }]);
+}
+
+async function adjToggle(code, other){
+  const a = adjOf(code).slice(), b = adjOf(other).slice();
+  const i = a.indexOf(other);
+  if(i >= 0){ a.splice(i, 1); const j = b.indexOf(code); if(j >= 0) b.splice(j, 1); }
+  else { a.push(other); if(b.indexOf(code) < 0) b.push(code); }
+  toast("Сохраняю…", "wait");
+  try{
+    await adjWrite(code, a);
+    await adjWrite(other, b);
+    await load();
+    render();
+    toast("Связь обновлена");
+  }catch(e){ toast(e.message, "err"); }
+}
+
+function adjChips(code){
+  const near = adjOf(code);
+  return roomList().filter(r => r.code !== code).map(r => {
+    const on = near.indexOf(r.code) >= 0;
+    return '<button onclick="adjToggle(\'' + code + '\',\'' + r.code + '\')" style="margin:3px 4px 0 0;padding:6px 10px;border-radius:9px;border:1px solid ' +
+      (on ? "#0a84ff" : "#3a3a3c") + ';background:' + (on ? "#0a84ff" : "transparent") + ';color:#fff;font-size:13px">' +
+      (on ? "✓ " : "") + esc(String(r.name || r.code).split(" (")[0]) + "</button>";
+  }).join("");
+}
+
+/* Порядок заливки полов: обход от выхода вглубь, заливаем в обратном
+   порядке — дальние первыми, выход последним. Выход — коридор (или самое
+   связное помещение, если коридора нет). */
+function floorOrder(){
+  const rooms = roomList();
+  const m = adjMap();
+  const links = rooms.reduce((s, r) => s + (m[r.code] || []).length, 0);
+  if(!rooms.length || !links) return null;
+  const exit = rooms.find(r => /коридор|прихож/i.test(String(r.kind || "") + " " + String(r.name || "")))
+    || rooms.slice().sort((a, b) => (m[b.code] || []).length - (m[a.code] || []).length)[0];
+  const dist = {}; dist[exit.code] = 0;
+  const q = [exit.code];
+  while(q.length){
+    const c = q.shift();
+    (m[c] || []).forEach(n => { if(dist[n] === undefined && rooms.some(r => r.code === n)){ dist[n] = dist[c] + 1; q.push(n); } });
+  }
+  const known  = rooms.filter(r => dist[r.code] !== undefined).sort((a, b) => dist[b.code] - dist[a.code]);
+  const orphan = rooms.filter(r => dist[r.code] === undefined);
+  return { exit: exit, order: known, orphan: orphan, dist: dist };
+}
+
 const ROOM_FIELDS = [
   { col: "Пол_м2",     label: "Пол, м²",     unit: "м²" },
   { col: "Периметр_м", label: "Периметр, м", unit: "м"  },
@@ -2387,6 +2449,7 @@ object(){
       wallLine +
       (need(r.windows) ? inpFor("Окон_шт", "win_" + r.code, "сколько окон") : "") +
       (need(r.doors)   ? inpFor("Дверей_шт", "dr_" + r.code, "сколько дверей") : "") +
+      '<div class="m" style="margin-top:8px">Из чего попадаем в помещение:</div><div>' + adjChips(r.code) + "</div>" +
       "</div>";
   }).join("");
   const planBox = plan
@@ -2401,6 +2464,16 @@ object(){
     "</div>" +
     planBox +
     (gap.length ? '<div class="warnbox">Пока не заданы окна и двери, объёмы работ по откосам, подоконникам и наличникам считаются наугад. Скажите голосом: «в спальне одно окно и одна дверь».</div>' : "") +
+    (() => {
+      const f = floorOrder();
+      if(!f) return '<div class="stat"><span class="k">Отметьте у помещений, из чего в них попадают — по этой схеме считается порядок заливки полов: залить всё разом нельзя, к дальней комнате не подойти.</span></div>';
+      return '<div class="stat">' +
+        '<div class="r"><span class="k">Порядок заливки полов</span><span class="v"></span></div>' +
+        '<div class="m">' + f.order.map((r, i) => (i + 1) + ". " + esc(String(r.name || r.code).split(" (")[0])).join(" · ") + "</div>" +
+        '<div class="m" style="margin-top:6px;opacity:.75">Выход считаем через ' + esc(String(f.exit.name || f.exit.code).split(" (")[0]) +
+        " — он заливается последним." + (f.orphan.length ? (" Не связаны ни с чем: " + f.orphan.map(r => esc(String(r.name || r.code).split(" (")[0])).join(", ") + ".") : "") + "</div>" +
+      "</div>";
+    })() +
     rows;
 },
 checks(){
