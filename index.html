@@ -2093,8 +2093,10 @@ profile(){
         (miss.length ? ' · не заданы: ' + miss.join(', ') : '') + '</div></div>';
     }).join('');
     return '<div class="hello">Профиль ремонта</div>' +
-      '<div class="sub">Выберите помещение</div>' +
+      '<div class="sub">Выберите помещение или продиктуйте работы</div>' +
       '<div class="stat"><span class="k">К помещению применяются виды работ, объём считается из его размеров, цена — из прайса исполнителя. Готовые позиции добавляются в смету.</span></div>' +
+      '<div class="stat"><div class="r"><button onclick="startVoice(\'repair\')" style="flex:1;padding:12px;border-radius:12px;border:0;background:#0a84ff;color:#fff;font-size:15px">🎤 Продиктовать работы</button></div>' +
+        '<div class="r"><span class="k" style="font-size:13px;opacity:.75">Например: «в спальне потолок выровнять и покрасить, стены под обои» — помещение подставится из сказанного.</span></div></div>' +
       items;
   }
 
@@ -2132,6 +2134,7 @@ profile(){
         '<button onclick="profBuild()" style="flex:1;padding:12px;border-radius:12px;border:0;background:#0a84ff;color:#fff;font-size:15px">Добавить в смету</button>' +
         '<button onclick="PROF.room=null; PROF.picked={}; render(true)" style="flex:1;padding:12px;border-radius:12px;border:0;background:#3a3a3c;color:#fff;font-size:15px">Другое помещение</button>' +
       '</div>' +
+      '<div class="r" style="margin-top:8px"><button onclick="startVoice(\'repair\')" style="flex:1;padding:12px;border-radius:12px;border:0;background:#1c1c1e;color:#fff;font-size:15px;border:1px solid #3a3a3c">🎤 Продиктовать работы</button></div>' +
     '</div>' +
     (pool.length ? blocks : '<div class="stat"><span class="k">Справочник пуст.</span></div>');
 },
@@ -2821,6 +2824,8 @@ function renderRecUI(){
     <div class="vh">Говорите</div>
     <div class="vs">${vMode === "rooms"
       ? "Например: «в спальне пять двадцать на три двадцать, потолки два восемьдесят пять, одно окно и одна дверь»"
+      : vMode === "repair"
+      ? "Например: «в спальне потолок выровнять и покрасить, стены под обои»"
       : (D && D.kind === "hand")
       ? "Например: «пришёл 10 минут назад» или «готовность сдира потолка 50»"
       : "Например: «покраска потолка в спальне готова» или «куплено 5 мешков цемента»"}</div>
@@ -2854,6 +2859,7 @@ async function onRecStop(){
     fd.append("initData", INIT);
     fd.append("key", KEY);                       // legacy / отладка вне Telegram
     fd.append("mode", vMode);                    // сценарий разбора на сервере [чат 016]
+    fd.append("room", (typeof PROF === "object" && PROF && PROF.room) ? PROF.room : "");   // открытое помещение профиля: подставится, если его не назвали вслух [чат 017]
     const r = await fetch(`${API}/voice`, { method: "POST", body: fd });
     const raw = (await r.text()).trim();
     if(r.status === 401 || r.status === 403) throw new Error("Доступ не подтверждён.");
@@ -2877,6 +2883,7 @@ function showVError(msg){
 /* Показ распознанного. items===[] → выбраковка (ничего не поняли). */
 function showVResult(d){
   if(d && d.mode === "rooms" && Array.isArray(d.rooms)){ showVRooms(d); return; }
+  if(d && d.mode === "repair" && Array.isArray(d.rooms)){ showVRepair(d); return; }
   if(d && d.mode === "hand" && Array.isArray(d.actions)){ showVHand(d); return; }
   const items = Array.isArray(d.items) ? d.items : [];
   vItems = items.map(x => ({ ...x, _sel: true }));
@@ -3043,6 +3050,93 @@ async function applyVoiceRooms(){
   render();
   if(fail === 0) toast(added ? `Записано: ${done}, новых помещений: ${added}` : `Записано: ${done}`);
   else toast(`Записано ${done}, не удалось ${fail}`, done ? "" : "bad");
+}
+
+/* ── Голос: профиль ремонта [чат 017] ──────────────────────────
+   Сервер (mode:'repair') возвращает не строки сметы, а виды справочника,
+   сопоставленные со сказанным: что названо голосом, что достроено по
+   технологическим зависимостям вида и что уже стоит в смете помещения.
+   Записи здесь нет: голос отмечает виды в профиле, смету по-прежнему собирает
+   человек кнопкой «Добавить в смету» — переспрос вместо тихой записи (решение 006). */
+let vRep = [];
+
+function showVRepair(d){
+  const list = Array.isArray(d.rooms) ? d.rooms : [];
+  vRep = list.map(r => ({ ...r, kinds: (r.kinds || []).map(k => ({ ...k, _sel: !k.already })) }));
+  const quote = d.recognized ? `<div class="vquote">Расслышал: <b>${esc(d.recognized)}</b></div>` : "";
+  if(!list.length){
+    tg?.HapticFeedback?.notificationOccurred("warning");
+    openVSheet(`
+      <div class="vh">Не разобрал</div>
+      <div class="vs">Скажите, например: «в спальне потолок выровнять и покрасить, стены под обои».</div>
+      ${quote}
+      <div class="vrow">
+        <button class="vbtn-cancel" onclick="closeVSheet()">Закрыть</button>
+        <button class="vbtn-ok" onclick="startVoice('repair')">Сказать иначе</button>
+      </div>`);
+    return;
+  }
+  const rows = vRep.map((r, i) => {
+    const head = `<div class="vt">${esc(r.name || "помещение")}${r.isNew ? ' <span style="color:#ff9f0a">· нет в объекте</span>' : ""}</div>`;
+    if(r.isNew){
+      return `<div style="margin-bottom:10px">${head}<div class="vd" style="margin-top:4px">Такого помещения в объекте нет. Заведите его на экране «Объект» — тогда объёмы посчитаются из обмеров.</div></div>`;
+    }
+    const kl = r.kinds.map((k, j) => `
+      <div class="vitem${k._sel ? " sel" : ""}" data-i="r${i}-${j}" onclick="toggleVRep(${i},${j})">
+        <div class="vchk">✓</div>
+        <div style="flex:1;min-width:0">
+          <div class="vv">${esc(k.name)}<span style="opacity:.6"> · ${esc(k.unit || "")}</span></div>
+          <div class="vd">${esc(k.code)}${k.src === "tech" ? " · добавлено по технологии" : ""}${k.already ? ' · <span style="color:#ff9f0a">уже в смете</span>' : ""}</div>
+        </div>
+      </div>`).join("");
+    const tech = r.kinds.filter(k => k.src === "tech").length;
+    const dup  = r.kinds.filter(k => k.already).length;
+    const note = [tech ? `по технологии добавлено: ${tech}` : "", dup ? `уже в смете: ${dup} — не отмечено` : ""].filter(Boolean).join(" · ");
+    return `<div style="margin-bottom:12px">${head}${note ? `<div class="vd" style="margin:2px 0 6px">${esc(note)}</div>` : ""}${kl}
+      <div class="vrow" style="margin-top:8px"><button class="vbtn-ok" onclick="applyVoiceRepair(${i})">Отметить${vRep.length > 1 ? (": " + esc(String(r.name).split(" (")[0])) : " в профиле"}</button></div></div>`;
+  }).join("");
+  openVSheet(`
+    <div class="vh">Работы по помещениям</div>
+    <div class="vs">Отмеченное перенесу в профиль ремонта: объём посчитается из обмеров, а смета соберётся кнопкой «Добавить в смету».</div>
+    ${quote}
+    <div id="vlist">${rows}</div>
+    <div class="vrow">
+      <button class="vbtn-cancel" onclick="closeVSheet()">Закрыть</button>
+    </div>`);
+}
+
+function toggleVRep(i, j){
+  const k = vRep[i].kinds[j];
+  k._sel = !k._sel;
+  const el = document.querySelector(`.vitem[data-i="r${i}-${j}"]`);
+  if(el) el.classList.toggle("sel", k._sel);
+}
+
+/* Перенос в профиль: отмечаем виды и считаем объём из обмеров помещения.
+   В лист сейчас не пишется ничего — человек смотрит цифры и жмёт «Добавить в смету». */
+async function applyVoiceRepair(i){
+  const r = vRep[i];
+  if(!r || r.isNew) return;
+  const chosen = r.kinds.filter(k => k._sel);
+  if(!chosen.length){ toast("Ничего не отмечено", "wait"); return; }
+  const room = (D.rooms || []).find(x => x.code === r.code);
+  if(!room){ toast("Помещение не найдено в объекте", "err"); return; }
+  try{ if(!D.catalog) await loadCatalog(); }catch(e){ toast(e.message, "err"); return; }
+  PROF.room = r.code;
+  const kinds = (D.catalog || {}).kinds || [];
+  let n = 0, noVol = 0;
+  chosen.forEach(k => {
+    const kind = kinds.find(x => x.code === k.code);
+    if(!kind) return;
+    const vol = profVol(kind, room);
+    PROF.picked[k.code] = { vol: vol, manual: false };
+    n++;
+    if(!(Number(vol) > 0)) noVol++;
+  });
+  closeVSheet();
+  if(stack[stack.length - 1] !== "profile") go("profile"); else render(true);
+  if(!n) { toast("Ничего не перенесено", "err"); return; }
+  toast(noVol ? `Отмечено: ${n} · без объёма: ${noVol}` : `Отмечено: ${n}`);
 }
 
 /* ── Голос работника: отметки дня и отчёты бригадиру [чат 015] ──
