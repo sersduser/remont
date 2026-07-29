@@ -649,6 +649,149 @@ async function bindCheck(id){
 }
 
 /* ══════════════════════════════════════════════════════════════
+   ОБЪЕКТ: план БТИ и обмеры помещений [чат 016]
+   Этап B большого плана: на первой встрече пара заводит объект голосом,
+   а не заполняет таблицу. План БТИ живёт здесь картинкой и НЕ распознаётся
+   (решение маяка §7) — он нужен глазам, а размеры приезжают голосом.
+   Сам файл хранится в Telegram: панель просит его у сервера по id записи,
+   прямой ссылки на файл и токена бота в клиенте нет.
+   ══════════════════════════════════════════════════════════════ */
+const ROOM_FIELDS = [
+  { col: "Пол_м2",     label: "Пол, м²",     unit: "м²" },
+  { col: "Периметр_м", label: "Периметр, м", unit: "м"  },
+  { col: "Высота_м",   label: "Высота, м",   unit: "м"  },
+  { col: "Окон_шт",    label: "Окон",        unit: ""   },
+  { col: "Дверей_шт",  label: "Дверей",      unit: ""   },
+];
+/* Типовые площади проёма — выведены из обмеров этого объекта (стены
+   листа сходятся с периметр×высота минус проёмы). Панель их только
+   ПРЕДЛАГАЕТ: пересчёт стен всегда подтверждает человек. */
+const S_WIN = 3.1, S_DOOR = 1.7;
+
+const objDocs = () => (D.drafts || []).filter(d => /план/i.test(String(d.kind || "")));
+const objPlan = () => { const l = objDocs(); return l.length ? l[l.length - 1] : null; };
+const roomList = () => (D.rooms || []);
+const roomGap  = () => roomList().filter(r => r.windows === null || r.windows === undefined || r.doors === null || r.doors === undefined);
+
+/* Стены по обмерам: периметр × высота минус проёмы. Возвращает null,
+   пока не хватает данных, — считать «примерно» тут нельзя, число уходит
+   в объёмы работ. */
+function roomWalls(r){
+  const p = Number(r.perimeter_m), h = Number(r.height_m);
+  if(!(p > 0) || !(h > 0)) return null;
+  /* Незаданные проёмы — это не «ноль проёмов»: Number(null) даёт 0 и молча
+     завысил бы стены на площадь окон и дверей. Пока чисел нет — не считаем. */
+  const empty = v => v === null || v === undefined || v === "";
+  if(empty(r.windows) || empty(r.doors)) return null;
+  const w = Number(r.windows), d = Number(r.doors);
+  if(!(w >= 0) || !(d >= 0)) return null;
+  return Math.round((p * h - w * S_WIN - d * S_DOOR) * 100) / 100;
+}
+
+async function objShowPlan(){
+  const box = document.getElementById("objPlanBox");
+  const p = objPlan();
+  if(!box || !p) return;
+  box.innerHTML = '<div class="m">Загружаю план…</div>';
+  try{
+    const q = "draft=" + encodeURIComponent(p.id) + "&initData=" + encodeURIComponent(INIT) + "&key=" + encodeURIComponent(KEY);
+    const r = await fetch(API + "/file?" + q);
+    const t = r.headers.get("content-type") || "";
+    if(!r.ok || t.indexOf("image") !== 0) throw new Error("Сервер не отдал изображение");
+    const b = await r.blob();
+    const u = URL.createObjectURL(b);
+    box.innerHTML = '<img src="' + u + '" alt="План БТИ" style="width:100%;border-radius:12px;display:block">' +
+      '<div class="m" style="margin-top:6px">Загружен ' + esc(p.at || "") + " · " + esc(p.who || "") + "</div>";
+  }catch(e){
+    box.innerHTML = '<div class="m" style="color:#ff453a">План не открылся: ' + esc(e.message) + "</div>";
+  }
+}
+
+function objPick(){
+  const inp = document.createElement("input");
+  inp.type = "file"; inp.accept = "image/*";
+  inp.onchange = () => { if(inp.files && inp.files[0]) objUpload(inp.files[0]); };
+  inp.click();
+}
+
+/* Загрузка документа объекта. Снимок уходит в личный чат человека с ботом
+   и оттуда живёт как файл системы: своего хранилища у приложения нет,
+   а копия в чате — заодно его собственный архив. */
+async function objUpload(file){
+  if(!file){ return; }
+  if(file.size > 8 * 1024 * 1024){ toast("Снимок больше 8 МБ — сожмите", "err"); return; }
+  toast("Загружаю план…", "wait");
+  try{
+    const fd = new FormData();
+    fd.append("image", file, file.name || "plan.jpg");
+    fd.append("initData", INIT);
+    fd.append("key", KEY);
+    fd.append("kind", "план");
+    fd.append("title", "план БТИ объекта");
+    const r = await fetch(API + "/upload", { method: "POST", body: fd });
+    const t = (await r.text()).trim();
+    let ok = false; try{ ok = !!(t && JSON.parse(t).ok); }catch(e){}
+    if(!r.ok || !ok) throw new Error("Сервер не принял снимок");
+    toast("План загружен");
+    await load();
+    objShowPlan();
+  }catch(e){ toast(e.message, "err"); }
+}
+
+/* Ручной ввод недостающего числа. Голос — основной путь, поле ввода —
+   для одного числа, которое проще вписать, чем диктовать. */
+async function roomSaveNum(code, col, inputId){
+  const el = document.getElementById(inputId);
+  const raw = String(el ? el.value : "").replace(/\s/g, "").replace(",", ".");
+  if(raw === ""){ toast("Пусто", "err"); return; }
+  const n = Number(raw);
+  if(isNaN(n) || n < 0 || n > 400){ toast("Не похоже на число", "err"); return; }
+  if(el) el.disabled = true;
+  try{
+    await writeCell("06_Помещения", code, col, String(n).replace(".", ","));
+    toast("Записано");
+    await load();
+    render();
+  }catch(e){ toast(e.message, "err"); if(el) el.disabled = false; }
+}
+
+/* Пересчёт стен и потолка по обмерам: предлагается кнопкой и никогда
+   не делается молча — эти числа уже участвуют в объёмах работ. */
+function roomApplyWalls(code){
+  const r = roomList().find(x => x.code === code);
+  if(!r) return;
+  const w = roomWalls(r);
+  if(w === null){ toast("Не хватает данных для расчёта", "err"); return; }
+  const ceil = Number(r.floor_m2);
+  const rows = ["Стены: " + fmt(r.wall_m2 || 0) + " → <b>" + fmt(w) + "</b> м²"];
+  const alsoCeil = ceil > 0 && Math.abs(ceil - Number(r.ceiling_m2 || 0)) > 0.005;
+  if(alsoCeil) rows.push("Потолок: " + fmt(r.ceiling_m2 || 0) + " → <b>" + fmt(ceil) + "</b> м²");
+  const box = document.createElement("div");
+  box.style.cssText = "position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;padding:18px";
+  box.innerHTML =
+    '<div style="background:#1c1c1e;color:#fff;border-radius:16px;padding:18px;max-width:420px;width:100%;font-size:15px">' +
+      '<div style="font-weight:700;margin-bottom:8px">' + esc(r.name) + "</div>" +
+      '<div style="opacity:.75;font-size:14px;margin-bottom:12px">' + rows.join("<br>") +
+      "<br><span style=\"opacity:.7\">Периметр × высота минус проёмы (окно " + fmt(S_WIN) + " м², дверь " + fmt(S_DOOR) + " м²).</span></div>" +
+      '<div style="display:flex;gap:8px">' +
+        '<button id="rwNo" style="flex:1;padding:13px;border-radius:12px;border:0;background:#3a3a3c;color:#fff;font-size:15px">Отмена</button>' +
+        '<button id="rwYes" style="flex:1;padding:13px;border-radius:12px;border:0;background:#0a84ff;color:#fff;font-size:15px">Записать</button>' +
+      "</div></div>";
+  document.body.appendChild(box);
+  box.querySelector("#rwNo").onclick = () => box.remove();
+  box.querySelector("#rwYes").onclick = async () => {
+    box.remove();
+    try{
+      await writeCell("06_Помещения", code, "Стены_м2", String(w).replace(".", ","));
+      if(alsoCeil) await writeCell("06_Помещения", code, "Потолок_м2", String(ceil).replace(".", ","));
+      toast("Обмеры пересчитаны");
+      await load();
+      render();
+    }catch(e){ toast(e.message, "err"); }
+  };
+}
+
+/* ══════════════════════════════════════════════════════════════
    ИЗМЕНЕНИЯ СОСТАВА РАБОТ — подвижный договор [чат 008]
    Решения чата 006: заявляют обе стороны · состав и цена согласуются
    одним действием · цена уже принятых работ замораживается.
@@ -1589,6 +1732,7 @@ function back(){ if(stack.length > 1){ stack.pop(); render(true); } }
 function render(toTop){
   const k = stack[stack.length - 1];
   app.innerHTML = (SCREENS[k] || SCREENS.home)();
+  if(k === "object" && objPlan()) setTimeout(objShowPlan, 0);   // картинка плана грузится отдельным запросом [чат 016]
   if(toTop) window.scrollTo(0, 0);
   if(tg){
     if(stack.length > 1){ tg.BackButton.show(); tg.BackButton.onClick(back); }
@@ -1693,6 +1837,9 @@ home(){
       <button class="tile" onclick="openBook()">
         <span class="ic">📕</span><span class="nm">Прайс исполнителя</span>
         <div class="h">цены по видам работ</div></button>
+      <button class="tile" onclick="go('object')" style="${(D.kind === 'admin' || D.kind === 'owner') ? '' : 'display:none'}">
+        <span class="ic">🏠</span><span class="nm">Объект</span>
+        <div class="h">план БТИ и обмеры${roomGap().length ? ' · пробелы' : ''}</div></button>
       <button class="tile" onclick="openProfile()">
         <span class="ic">📐</span><span class="nm">Профиль ремонта</span>
         <div class="h">собрать смету по помещениям</div></button>
@@ -2214,6 +2361,48 @@ hand_rep(){
     (my.length ? '<div class="sub" style="margin-top:14px">Мои отчёты</div>' + myList : "");
 },
 
+object(){
+  const rooms = roomList();
+  const plan  = objPlan();
+  const gap   = roomGap();
+  const rows  = rooms.map(r => {
+    const w    = roomWalls(r);
+    const need = (v) => (v === null || v === undefined || v === "");
+    const numOrDash = (v, u) => need(v) ? '<span style="color:#ff9f0a">не задано</span>' : (fmt(v) + (u ? " " + u : ""));
+    const inpFor = (col, id, ph) =>
+      '<div style="display:flex;gap:8px;align-items:center;margin-top:6px">' +
+        '<input id="' + id + '" type="number" inputmode="decimal" placeholder="' + ph + '" style="flex:1;padding:9px;border-radius:10px;border:1px solid #3a3a3c;background:#000;color:#fff;font-size:15px">' +
+        '<button onclick="roomSaveNum(\'' + r.code + '\',\'' + col + '\',\'' + id + '\')" style="padding:9px 13px;border-radius:10px;border:0;background:#0a84ff;color:#fff;font-size:14px">Записать</button>' +
+      "</div>";
+    const wallLine = (w !== null && Math.abs(w - Number(r.wall_m2 || 0)) > 0.05)
+      ? '<div class="m" style="margin-top:6px">По обмерам стены выходят <b>' + fmt(w) + '</b> м² (сейчас ' + fmt(r.wall_m2 || 0) + ') ' +
+        '<button onclick="roomApplyWalls(\'' + r.code + '\')" style="margin-left:6px;padding:6px 10px;border-radius:9px;border:0;background:#3a3a3c;color:#fff;font-size:13px">Пересчитать</button></div>'
+      : "";
+    return '<div class="work">' +
+      '<div class="t">' + esc(r.name || r.code) + '</div>' +
+      '<div class="m">' + esc(r.kind || "—") + " · пол " + numOrDash(r.floor_m2, "м²") +
+        " · периметр " + numOrDash(r.perimeter_m, "м") + " · высота " + numOrDash(r.height_m, "м") + "</div>" +
+      '<div class="m" style="margin-top:4px">стены ' + numOrDash(r.wall_m2, "м²") + " · потолок " + numOrDash(r.ceiling_m2, "м²") +
+        " · окон " + numOrDash(r.windows, "") + " · дверей " + numOrDash(r.doors, "") + "</div>" +
+      wallLine +
+      (need(r.windows) ? inpFor("Окон_шт", "win_" + r.code, "сколько окон") : "") +
+      (need(r.doors)   ? inpFor("Дверей_шт", "dr_" + r.code, "сколько дверей") : "") +
+      "</div>";
+  }).join("");
+  const planBox = plan
+    ? '<div id="objPlanBox" class="stat"><div class="m">План БТИ загружен — открываю…</div></div>'
+    : '<div class="stat"><span class="k">План БТИ ещё не загружен. Сфотографируйте его — он нужен глазам, размеры приедут голосом.</span></div>';
+  return "" +
+    '<div class="hello">Объект</div>' +
+    '<div class="sub">' + rooms.length + " помещений" + (gap.length ? (" · в " + gap.length + " не заданы проёмы") : " · обмеры полны") + "</div>" +
+    '<div class="grid">' +
+      '<button class="tile pri" onclick="startVoice(\'rooms\')"><span class="ic">🎤</span><span class="nm">Продиктовать<br>размеры</span><div class="h">пол, потолок, окна, двери</div></button>' +
+      '<button class="tile" onclick="objPick()"><span class="ic">🗺️</span><span class="nm">' + (plan ? "Заменить план" : "Загрузить план") + '</span><div class="h">фото плана БТИ</div></button>' +
+    "</div>" +
+    planBox +
+    (gap.length ? '<div class="warnbox">Пока не заданы окна и двери, объёмы работ по откосам, подоконникам и наличникам считаются наугад. Скажите голосом: «в спальне одно окно и одна дверь».</div>' : "") +
+    rows;
+},
 checks(){
   const list = checkList();
   const mats = (D.materials || []).map(m => m.name).filter(Boolean);
@@ -2517,13 +2706,15 @@ chgnew(){
    каналами: Табель и Отчёты_бригады через crewAppend [чат 015].
    ══════════════════════════════════════════════════════════════ */
 let mediaRec = null, chunks = [], vTimer = null, vSec = 0, vStream = null, vItems = [];
+let vMode = "";   // сценарий разбора: "" — правки учёта, "rooms" — обмеры помещений [чат 016]
 const vmask  = document.getElementById("vmask");
 const vsheet = document.getElementById("vsheet");
 
 function openVSheet(html){ vsheet.innerHTML = html; vmask.classList.add("on"); }
 function closeVSheet(){ vmask.classList.remove("on"); }
 
-async function startVoice(){
+async function startVoice(mode){
+  vMode = String(mode || "");
   if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || typeof MediaRecorder === "undefined"){
     toast("Запись голоса недоступна в этом клиенте", "bad"); return;
   }
@@ -2555,7 +2746,9 @@ async function startVoice(){
 function renderRecUI(){
   openVSheet(`
     <div class="vh">Говорите</div>
-    <div class="vs">${(D && D.kind === "hand")
+    <div class="vs">${vMode === "rooms"
+      ? "Например: «в спальне пять двадцать на три двадцать, потолки два восемьдесят пять, одно окно и одна дверь»"
+      : (D && D.kind === "hand")
       ? "Например: «пришёл 10 минут назад» или «готовность сдира потолка 50»"
       : "Например: «покраска потолка в спальне готова» или «куплено 5 мешков цемента»"}</div>
     <div class="vrec">
@@ -2587,6 +2780,7 @@ async function onRecStop(){
     fd.append("audio", blob, "voice.webm");
     fd.append("initData", INIT);
     fd.append("key", KEY);                       // legacy / отладка вне Telegram
+    fd.append("mode", vMode);                    // сценарий разбора на сервере [чат 016]
     const r = await fetch(`${API}/voice`, { method: "POST", body: fd });
     const raw = (await r.text()).trim();
     if(r.status === 401 || r.status === 403) throw new Error("Доступ не подтверждён.");
@@ -2603,12 +2797,13 @@ function showVError(msg){
     <div class="vs">${esc(msg)}</div>
     <div class="vrow">
       <button class="vbtn-cancel" onclick="closeVSheet()">Закрыть</button>
-      <button class="vbtn-ok" onclick="startVoice()">Записать заново</button>
+      <button class="vbtn-ok" onclick="startVoice(vMode)">Записать заново</button>
     </div>`);
 }
 
 /* Показ распознанного. items===[] → выбраковка (ничего не поняли). */
 function showVResult(d){
+  if(d && d.mode === "rooms" && Array.isArray(d.rooms)){ showVRooms(d); return; }
   if(d && d.mode === "hand" && Array.isArray(d.actions)){ showVHand(d); return; }
   const items = Array.isArray(d.items) ? d.items : [];
   vItems = items.map(x => ({ ...x, _sel: true }));
@@ -2674,6 +2869,107 @@ async function applyVoice(){
   closeVSheet();
   if(fail === 0) toast(done > 1 ? `Записано: ${done}` : "Записано");
   else toast(`Записано ${done}, не удалось ${fail}`, fail && !done ? "bad" : "");
+}
+
+/* ── Голос: профиль объекта [чат 016] ──────────────────────────
+   Сервер (mode:'rooms') возвращает не правки листа, а разбор сказанного,
+   сопоставленный с 06_Помещения: по каждому полю видно «было → станет».
+   Поле, у которого значение уже стояло, помечено конфликтом и по умолчанию
+   НЕ отмечено: голос, расходящийся с введённым, вызывает переспрос,
+   а не тихую перезапись (решение 006). */
+let vRooms = [];
+const RU2LAT = { а:"A", б:"B", в:"V", г:"G", д:"D", е:"E", ж:"J", з:"Z", и:"I", й:"I", к:"K", л:"L", м:"M", н:"N", о:"O", п:"P", р:"R", с:"S", т:"T", у:"U", ф:"F", х:"H", ц:"C", ч:"C", ш:"S", щ:"S", ы:"Y", э:"E", ю:"U", я:"Y" };
+function roomNewCode(name){
+  const s = String(name || "").toLowerCase().replace(/[^a-zа-яё ]/gi, " ").trim();
+  const w = s.split(/\s+/).filter(Boolean);
+  let base = "";
+  if(w.length >= 2) base = (RU2LAT[w[0][0]] || w[0][0].toUpperCase()) + (RU2LAT[w[1][0]] || w[1][0].toUpperCase());
+  else if(w.length === 1) base = (RU2LAT[w[0][0]] || w[0][0].toUpperCase()) + (RU2LAT[w[0][1]] || (w[0][1] || "X").toUpperCase());
+  else base = "RM";
+  const busy = new Set(roomList().map(r => String(r.code || "").toUpperCase()));
+  if(!busy.has(base)) return base;
+  for(let i = 2; i < 30; i++){ const c = base.slice(0, 1) + i; if(!busy.has(c)) return c; }
+  return base + "X";
+}
+
+function showVRooms(d){
+  const list = Array.isArray(d.rooms) ? d.rooms : [];
+  vRooms = list.map(r => ({ ...r, fields: (r.fields || []).map(f => ({ ...f, _sel: !f.conflict })) }));
+  const quote = d.recognized ? `<div class="vquote">Расслышал: <b>${esc(d.recognized)}</b></div>` : "";
+  if(!list.length){
+    tg?.HapticFeedback?.notificationOccurred("warning");
+    openVSheet(`
+      <div class="vh">Не разобрал</div>
+      <div class="vs">Скажите, например: «в спальне пять двадцать на три двадцать, потолки два восемьдесят пять, одно окно и одна дверь».</div>
+      ${quote}
+      <div class="vrow">
+        <button class="vbtn-cancel" onclick="closeVSheet()">Закрыть</button>
+        <button class="vbtn-ok" onclick="startVoice('rooms')">Сказать иначе</button>
+      </div>`);
+    return;
+  }
+  const conflicts = vRooms.reduce((s, r) => s + r.fields.filter(f => f.conflict).length, 0);
+  const rows = vRooms.map((r, i) => {
+    const head = `<div class="vt">${esc(r.name || "помещение")}${r.isNew ? ' <span style="color:#ff9f0a">· новое</span>' : ""}</div>`;
+    const fl = r.fields.map((f, j) => `
+      <div class="vitem${f._sel ? " sel" : ""}" data-i="${i}-${j}" onclick="toggleVRoom(${i},${j})">
+        <div class="vchk">✓</div>
+        <div style="flex:1;min-width:0">
+          <div class="vv">${esc(f.label)}: <b>${esc(String(f.now))}</b>${f.conflict ? ` <span style="color:#ff9f0a">(было ${esc(String(f.was))} — заменить?)</span>` : ""}</div>
+        </div>
+      </div>`).join("");
+    return `<div style="margin-bottom:10px">${head}${fl}</div>`;
+  }).join("");
+  openVSheet(`
+    <div class="vh">Обмеры помещений</div>
+    <div class="vs">${conflicts ? "Отмеченное запишу. Значения, которые уже стояли, не отмечены — подтвердите замену вручную." : "Проверьте и подтвердите — запишу в профиль объекта."}</div>
+    ${quote}
+    <div id="vlist">${rows}</div>
+    <div class="vrow">
+      <button class="vbtn-cancel" onclick="closeVSheet()">Отмена</button>
+      <button class="vbtn-ok" id="vrapply" onclick="applyVoiceRooms()">Записать отмеченное</button>
+    </div>`);
+}
+
+function toggleVRoom(i, j){
+  const f = vRooms[i].fields[j];
+  f._sel = !f._sel;
+  const el = document.querySelector(`.vitem[data-i="${i}-${j}"]`);
+  if(el) el.classList.toggle("sel", f._sel);
+}
+
+/* Запись: существующее помещение правится по ячейкам, новое сначала
+   заводится строкой (код + название), а числа доезжают тем же /update —
+   append кладёт значения как есть, а числу положено быть числом. */
+async function applyVoiceRooms(){
+  const btn = document.getElementById("vrapply");
+  const chosen = vRooms.map(r => ({ ...r, fields: r.fields.filter(f => f._sel) })).filter(r => r.fields.length || r.isNew);
+  if(!chosen.length){ toast("Ничего не отмечено", "wait"); return; }
+  if(btn){ btn.disabled = true; btn.textContent = "Записываю…"; }
+  let done = 0, fail = 0, added = 0;
+  for(const r of chosen){
+    let code = r.code;
+    if(!code){
+      try{
+        code = roomNewCode(r.name);
+        const kindF = r.fields.find(f => f.col === "Тип_помещения");
+        await crewAppend("06_Помещения", [{ "Код": code, "Помещение": r.name, "Тип_помещения": kindF ? String(kindF.now) : "прочее" }]);
+        added++;
+      }catch(e){ fail += r.fields.length; continue; }
+    }
+    for(const f of r.fields){
+      if(f.col === "Тип_помещения" && added && !r.code) { done++; continue; }
+      try{
+        await writeCell("06_Помещения", code, f.col, String(f.now).replace(".", ","));
+        done++;
+      }catch(e){ fail++; }
+    }
+  }
+  closeVSheet();
+  await load();
+  render();
+  if(fail === 0) toast(added ? `Записано: ${done}, новых помещений: ${added}` : `Записано: ${done}`);
+  else toast(`Записано ${done}, не удалось ${fail}`, done ? "" : "bad");
 }
 
 /* ── Голос работника: отметки дня и отчёты бригадиру [чат 015] ──
