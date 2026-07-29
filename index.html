@@ -1557,6 +1557,7 @@ function handHome(){
     '<div class="grid">' +
     btn("пришёл", "🏁", "Пришёл") + btn("обед начало", "🍲", "Обед") +
     btn("обед конец", "🔁", "Вернулся") + btn("ушёл", "🏠", "Ушёл") +
+    '<button class="tile pri" onclick="startVoice()"><span class="ic">🎤</span><span class="nm">Голосом</span><div class="h">пришёл · готовность · расход</div></button>' +
     '<button class="tile" onclick="go(\'crew_cal\')"><span class="ic">📅</span><span class="nm">Мой календарь</span></button>' +
     '<button class="tile" onclick="go(\'hand_rep\')"><span class="ic">📝</span><span class="nm">Отчёт бригадиру</span><div class="h">работа или материал</div></button>' +
     '<button class="tile" onclick="go(\'works\')"><span class="ic">🔨</span><span class="nm">Работы</span><div class="h">без цен</div></button>' +
@@ -2509,6 +2510,11 @@ chgnew(){
      items.length === 0  → ничего внятного не распознано (выбраковка)
      items.length === 1  → одно подтверждение
      items.length  >  1  → мультивыбор «N из M»
+   Для работника (kind=hand) сервер отвечает { ok, recognized,
+     mode:'hand', actions:[ {kind:'time',event,shift_min,at} |
+     {kind:'work',code,name,room,percent,comment} |
+     {kind:'material',name,qty,comment} ] } — запись идёт прежними
+   каналами: Табель и Отчёты_бригады через crewAppend [чат 015].
    ══════════════════════════════════════════════════════════════ */
 let mediaRec = null, chunks = [], vTimer = null, vSec = 0, vStream = null, vItems = [];
 const vmask  = document.getElementById("vmask");
@@ -2549,7 +2555,9 @@ async function startVoice(){
 function renderRecUI(){
   openVSheet(`
     <div class="vh">Говорите</div>
-    <div class="vs">Например: «покраска потолка в спальне готова» или «куплено 5 мешков цемента»</div>
+    <div class="vs">${(D && D.kind === "hand")
+      ? "Например: «пришёл 10 минут назад» или «готовность сдира потолка 50»"
+      : "Например: «покраска потолка в спальне готова» или «куплено 5 мешков цемента»"}</div>
     <div class="vrec">
       <div class="vmic rec">🎙️</div>
       <div class="vtime" id="vtime">0:00</div>
@@ -2601,6 +2609,7 @@ function showVError(msg){
 
 /* Показ распознанного. items===[] → выбраковка (ничего не поняли). */
 function showVResult(d){
+  if(d && d.mode === "hand" && Array.isArray(d.actions)){ showVHand(d); return; }
   const items = Array.isArray(d.items) ? d.items : [];
   vItems = items.map(x => ({ ...x, _sel: true }));
 
@@ -2665,6 +2674,84 @@ async function applyVoice(){
   closeVSheet();
   if(fail === 0) toast(done > 1 ? `Записано: ${done}` : "Записано");
   else toast(`Записано ${done}, не удалось ${fail}`, fail && !done ? "bad" : "");
+}
+
+/* ── Голос работника: отметки дня и отчёты бригадиру [чат 015] ──
+   Сервер (mode:'hand') возвращает действия, а не правки листов; запись —
+   прежними каналами (crewAppend в Табель и Отчёты_бригады), права те же. */
+let vActs = [];
+function handActTime(a){
+  const now = crewNow();
+  if(a.at && /^\d{2}:\d{2}$/.test(a.at)) return a.at > now ? now : a.at;
+  const mins = Math.max(0, Number(now.slice(0, 2)) * 60 + Number(now.slice(3, 5)) - (a.shift_min || 0));
+  const p = n => String(n).padStart(2, "0");
+  return p(Math.floor(mins / 60)) + ":" + p(mins % 60);
+}
+function showVHand(d){
+  const acts = d.actions || [];
+  vActs = acts.map(a => ({ ...a, _sel: true }));
+  if(!acts.length){
+    tg?.HapticFeedback?.notificationOccurred("warning");
+    openVSheet(`
+      <div class="vh">Не разобрал</div>
+      <div class="vs">Скажите, например: «пришёл 10 минут назад», «готовность сдира потолка 50», «израсходовал 2 литра грунтовки».</div>
+      ${d.recognized ? `<div class="vquote">Расслышал: <b>${esc(d.recognized)}</b></div>` : ""}
+      <div class="vrow">
+        <button class="vbtn-cancel" onclick="closeVSheet()">Закрыть</button>
+        <button class="vbtn-ok" onclick="startVoice()">Сказать иначе</button>
+      </div>`);
+    return;
+  }
+  const today = crewToday();
+  const dup = a => (((CREW_DATA || {}).time) || []).some(x => String(x.date || "") === today && String(x.event || "") === a.event && String(x.status || "") !== "отклонено");
+  const line = a => {
+    if(a.kind === "time") return { t: "⏱ " + a.event + " — " + handActTime(a), d: (a.shift_min ? "сдвиг −" + a.shift_min + " мин · " : "") + (dup(a) ? "⚠ такая отметка сегодня уже есть" : "уйдёт бригадиру на подтверждение") };
+    if(a.kind === "work") return { t: "🔨 " + (a.name || a.code) + " → " + a.percent + " %", d: (a.room ? a.room + " · " : "") + "отчёт бригадиру" };
+    return { t: "🧱 " + a.name + " → " + a.qty, d: "расход материала · отчёт бригадиру" };
+  };
+  const rows = vActs.map((a, i) => { const l = line(a); return `
+    <div class="vitem sel" data-i="${i}" onclick="toggleVAct(${i})">
+      <div class="vchk">✓</div>
+      <div style="flex:1;min-width:0">
+        <div class="vt">${esc(l.t)}</div>
+        <div class="vv">${esc(l.d)}</div>
+      </div>
+    </div>`; }).join("");
+  openVSheet(`
+    <div class="vh">${acts.length > 1 ? "Проверьте — распознано несколько" : "Проверьте и подтвердите"}</div>
+    ${d.recognized ? `<div class="vquote">Расслышал: <b>${esc(d.recognized)}</b></div>` : ""}
+    <div id="vlist">${rows}</div>
+    <div class="vrow">
+      <button class="vbtn-cancel" onclick="closeVSheet()">Отмена</button>
+      <button class="vbtn-ok" id="vapply" onclick="applyVoiceHand()">${acts.length > 1 ? "Записать выбранные" : "Да, записать"}</button>
+    </div>`);
+}
+function toggleVAct(i){
+  vActs[i]._sel = !vActs[i]._sel;
+  const el = document.querySelector(`.vitem[data-i="${i}"]`);
+  if(el) el.classList.toggle("sel", vActs[i]._sel);
+}
+async function applyVoiceHand(){
+  const chosen = vActs.filter(a => a._sel);
+  if(!chosen.length){ toast("Ничего не отмечено", "wait"); return; }
+  const btn = document.getElementById("vapply");
+  if(btn){ btn.disabled = true; btn.textContent = "Записываю…"; }
+  const today = crewToday(), tbl = [], rep = [];
+  for(const a of chosen){
+    if(a.kind === "time") tbl.push({ "id": crewId("TB") + (tbl.length ? "-" + tbl.length : ""), "Работник": D.who, "Объект": handObject(), "Дата": today,
+      "Событие": a.event, "Время": handActTime(a), "Отметил": D.who + " (голос)", "Статус": "заявлено", "Подтвердил": "", "Комментарий": "" });
+    else if(a.kind === "work") rep.push({ "id": crewId("RP") + (rep.length ? "-" + rep.length : ""), "Дата": today, "Работник": D.who,
+      "Тип": "работа", "Код": a.code, "Значение": String(a.percent), "Комментарий": a.comment || "голос", "Статус": "новый", "Стало": "", "Решил": "", "Время": crewNow() });
+    else rep.push({ "id": crewId("RP") + (rep.length ? "-" + rep.length : ""), "Дата": today, "Работник": D.who,
+      "Тип": "материал", "Код": a.name, "Значение": String(a.qty), "Комментарий": a.comment || "голос", "Статус": "новый", "Стало": "", "Решил": "", "Время": crewNow() });
+  }
+  try{
+    if(tbl.length) await crewAppend("Табель", tbl);
+    if(rep.length) await crewAppend("Отчёты_бригады", rep);
+    closeVSheet();
+    toast("Записано: " + chosen.length + " — уйдёт бригадиру на подтверждение");
+    await crewLoad(); render();
+  }catch(e){ closeVSheet(); toast(e.message, "err"); }
 }
 
 function fmtTime(s){ const m = Math.floor(s / 60); const ss = String(s % 60).padStart(2, "0"); return `${m}:${ss}`; }
