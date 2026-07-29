@@ -1466,6 +1466,129 @@ function chgKindsNote(){
   return '<div class="stat"><span class="k" style="font-size:13px;opacity:.75">Цену, объём и снятие работы заявляет заказчик — у вас нет его разнесения цен по работам. Вы можете предложить новую работу со своей ценой или другой срок, а на предложение заказчика ответить в «Изменениях».</span></div>';
 }
 
+
+/* ══════════════════════════════════════════════════════════════
+   СТАРТОВЫЕ ОСТАТКИ МАТЕРИАЛОВ — этап C3 [чат 019]
+   На встрече пара вводит материалы по памяти. Человек помнит не историю
+   закупа, а то, что лежит на объекте, поэтому основной режим — «остаток
+   по факту»: он пишется в колонку «Остаток», и сервер считает её главнее
+   вычитания «куплено − ушло» (маяк §7: принимается по факту остатков,
+   без анализа процесса и адекватности расходов). Второй режим — «куплено
+   и ушло» — для тех строк, где память полная.
+   Записи уходят одним /append: строка либо появилась целиком, либо нет.
+   ══════════════════════════════════════════════════════════════ */
+const MAT_MAX = 60;
+const MAT_UNITS = ['мешок','шт','м','м2','м3','л','кг','лист','рулон','упак','компл'];
+const matRow = () => ({ name:'', unit:'', rest:'', in:'', out:'', price:'', who:'' });
+let MAT = { mode:'rest', rows:[matRow()] };
+let MAT_BUSY = false;
+
+/* Материалы правит тот, кому сервер разрешает запись в 03_Материалы:
+   заказчик, владелец и бригадир. У рядового работника своего экрана нет. */
+const matCanEdit = () => ['admin','owner','foreman'].includes(D.kind) || ['admin','owner','foreman'].includes(D.role);
+const matNorm = s => String(s == null ? '' : s).trim().toLowerCase();
+const matNumOk = v => v !== '' && v != null && Number(v) >= 0 && !isNaN(Number(v));
+
+function matOpen(){ MAT = { mode:'rest', rows:[matRow()] }; go('matnew'); }
+function matMode(m){ MAT.mode = m; render(); }
+function matAdd(){ if(MAT.rows.length < MAT_MAX){ MAT.rows.push(matRow()); render(); } else toast('Больше ' + MAT_MAX + ' строк за раз не берём', 'err'); }
+function matDel(i){ MAT.rows.splice(i, 1); if(!MAT.rows.length) MAT.rows.push(matRow()); render(); }
+function matSet(i, field, el){
+  MAT.rows[i][field] = String(el.value == null ? '' : el.value).replace(',', '.').trim();
+  const box = document.getElementById('matPrev');
+  if(box) box.innerHTML = matPreview();
+}
+
+/* Разбор введённого. Дубль имени — не мелочь: правки материалов ищут строку
+   по названию, и второй «Ротбанд» сделал бы правку неоднозначной. */
+function matCalc(){
+  const have = (D.materials || []).map(m => matNorm(m.name));
+  const seen = {}, rows = [], bad = [];
+  MAT.rows.forEach((r, i) => {
+    const nm = String(r.name || '').trim();
+    if(!nm && !r.rest && !r.in && !r.out) return;            /* пустая строка — просто пропуск */
+    if(!nm){ bad.push({ i:i, why:'без названия' }); return; }
+    const key = matNorm(nm);
+    if(have.includes(key)){ bad.push({ i:i, why:'такой материал уже есть в списке' }); return; }
+    if(seen[key]){ bad.push({ i:i, why:'повторяется в этой же форме' }); return; }
+    seen[key] = 1;
+    if(MAT.mode === 'rest'){
+      if(!matNumOk(r.rest)){ bad.push({ i:i, why:'не указан остаток' }); return; }
+    }else{
+      if(!matNumOk(r.in)){ bad.push({ i:i, why:'не указано «куплено»' }); return; }
+      if(r.out !== '' && !matNumOk(r.out)){ bad.push({ i:i, why:'«ушло» не число' }); return; }
+    }
+    if(r.price !== '' && !matNumOk(r.price)){ bad.push({ i:i, why:'цена не число' }); return; }
+    rows.push({
+      name: nm, unit: String(r.unit || '').trim(), who: String(r.who || '').trim(),
+      rest: MAT.mode === 'rest' ? Number(r.rest) : null,
+      in:   MAT.mode === 'rest' ? null : Number(r.in),
+      out:  MAT.mode === 'rest' ? null : (r.out === '' ? null : Number(r.out)),
+      price: r.price === '' ? null : Number(r.price),
+    });
+  });
+  const rate = Number((D.settings || {})['Курс_сум_за_USD']) || 0;
+  const sumUzs = Math.round(rows.reduce((s, r) => {
+    const qty = MAT.mode === 'rest' ? r.rest : r.in;
+    return s + ((r.price != null && qty != null) ? r.price * qty : 0);
+  }, 0));
+  return { rows:rows, bad:bad, sumUzs:sumUzs, sumUsd: rate > 0 ? Math.round(sumUzs / rate * 100) / 100 : null };
+}
+
+function matPreview(){
+  const c = matCalc();
+  const bad = c.bad.map(b => '<div class="r"><span class="k" style="font-size:13px;color:var(--bad)">строка ' + (b.i + 1) + ': ' + esc(b.why) + '</span><span class="v"></span></div>').join('');
+  if(!c.rows.length) return (bad || '<span class="k" style="opacity:.6">Впишите материалы — здесь появится, что уйдёт в таблицу.</span>');
+  return '<div class="r"><span class="k">Строк к записи</span><span class="v">' + c.rows.length + '</span></div>' +
+    (c.sumUzs ? ('<div class="r"><span class="k">Закуп на сумму</span><span class="v">' + fmt(c.sumUzs) + ' сум' + (c.sumUsd ? (' ≈ ' + usd(c.sumUsd) + ' $') : '') + '</span></div>') : '') +
+    c.rows.slice(0, 8).map(r => '<div class="r"><span class="k" style="font-size:13px;opacity:.75">' + esc(r.name) + '</span><span class="v" style="font-size:13px">' +
+      (MAT.mode === 'rest' ? ('остаток ' + r.rest) : ('куплено ' + r.in + (r.out != null ? (' · ушло ' + r.out) : ''))) + ' ' + esc(r.unit) + '</span></div>').join('') +
+    bad;
+}
+
+async function matSubmit(){
+  if(!matCanEdit()){ toast('Материалы вводит заказчик или бригадир', 'err'); return; }
+  const c = matCalc();
+  if(!c.rows.length){ toast(c.bad.length ? 'Поправьте отмеченные строки' : 'Нечего записывать', 'err'); return; }
+  if(MAT_BUSY) return;
+  MAT_BUSY = true;
+  const src = 'старт по памяти · ' + D.who + ' · ' + chgStamp().slice(0, 10);
+  const rows = c.rows.map(r => {
+    const o = { 'Материал': r.name, 'Ед': r.unit, 'Источник': src };
+    if(r.who) o['Кто_купил'] = r.who;
+    if(r.price != null) o['Цена_за_ед_сум'] = r.price;
+    if(MAT.mode === 'rest'){
+      o['Остаток'] = r.rest;                                  /* закуп неизвестен — врать «куплено» нельзя */
+    }else{
+      o['Куплено'] = r.in;
+      if(r.out != null) o['Израсходовано'] = r.out;
+      if(r.price != null) o['Сумма_сум'] = Math.round(r.price * r.in);
+    }
+    return o;
+  });
+  toast('Записываю материалы…', 'wait');
+  try{
+    const r = await fetch(API + '/append', {
+      method:'POST', headers:{ 'Content-Type':'application/json' },
+      body: JSON.stringify({ initData:INIT, key:KEY, sheet:'03_Материалы', rows:rows })
+    });
+    const t = (await r.text()).trim();
+    if(!r.ok || !t) throw new Error('Не удалось записать материалы');
+    toast('Записано материалов: ' + rows.length);
+    await load();
+    back();
+  }catch(e){ toast(e.message, 'err'); }
+  finally{ MAT_BUSY = false; }
+}
+
+/* Правка остатка у существующей строки: пишем именно «Остаток» — это и есть
+   «принято по факту», а история закупа остаётся как была. */
+async function matRest(name, el){
+  const v = String(el.value == null ? '' : el.value).replace(',', '.').trim();
+  if(v !== '' && !matNumOk(v)){ toast('Остаток — число или пусто', 'err'); return; }
+  await upd('03_Материалы', name, 'Остаток', v);
+}
+
 async function writeCell(sheet, code, field, value){
   const r = await fetch(API + '/update', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -3032,34 +3155,41 @@ money(){
 },
 
 buy(){
-  const worker = D.role === "worker";
+  const canEdit = matCanEdit();
   const out  = D.materials.filter(m => (m.rest ?? 0) <= 0 && (m.out ?? 0) > 0);
   const have = D.materials.filter(m => (m.rest ?? 0) > 0);
   const rest = D.materials.filter(m => !out.includes(m) && !have.includes(m));
+  const box = 'width:100%;padding:9px;border-radius:10px;border:1px solid #3a3a3c;background:#000;color:#fff;font-size:15px';
 
-  const line = m => worker ? `
-    <div class="work">
-      <div class="t">${esc(m.name)}</div>
-      <div class="m">${esc(m.src)}</div>
-      <div class="row"><label>Куплено, ${esc(m.unit)}</label>
-        <input type="number" min="0" value="${m.in ?? ""}" placeholder="—"
-          onchange="upd('03_Материалы', this.dataset.c, 'Куплено', this.value)" data-c="${attr(m.name)}"></div>
-      <div class="row"><label>Ушло, ${esc(m.unit)}</label>
-        <input type="number" min="0" value="${m.out ?? ""}" placeholder="—"
-          onchange="upd('03_Материалы', this.dataset.c, 'Израсходовано', this.value)" data-c="${attr(m.name)}"></div>
-    </div>` : `
-    <div class="li"><div class="n">${esc(m.name)}<div class="d">${esc(m.src)}</div></div>
-      <div class="v" style="${(m.rest ?? 0) <= 0 ? "color:var(--bad)" : ""}">${m.rest ?? 0} ${m.unit}</div></div>`;
+  /* Строка материала. Правящей стороне даём и «остаток по факту» (главное поле
+     встречи), и историю закупа; остальным — только цифру остатка. [чат 019] */
+  const line = m => canEdit ? '<div class="work">' +
+      '<div class="t">' + esc(m.name) + '</div>' +
+      '<div class="m">' + esc(m.src || '') + (m.rest_manual ? ' · остаток задан по факту' : '') + '</div>' +
+      '<div class="row"><label>Остаток по факту, ' + esc(m.unit || '') + '</label>' +
+        '<input type="number" min="0" step="0.01" value="' + (m.rest_manual ? attr(m.rest) : '') + '" placeholder="' + (m.rest_manual ? '' : String(m.rest ?? '')) + '" ' +
+        'onchange="matRest(this.dataset.c, this)" data-c="' + attr(m.name) + '" style="' + box + '"></div>' +
+      '<div class="row"><label>Куплено, ' + esc(m.unit || '') + '</label>' +
+        '<input type="number" min="0" step="0.01" value="' + (m.in ?? '') + '" placeholder="—" ' +
+        'onchange="upd(\'03_Материалы\', this.dataset.c, \'Куплено\', this.value)" data-c="' + attr(m.name) + '" style="' + box + '"></div>' +
+      '<div class="row"><label>Ушло, ' + esc(m.unit || '') + '</label>' +
+        '<input type="number" min="0" step="0.01" value="' + (m.out ?? '') + '" placeholder="—" ' +
+        'onchange="upd(\'03_Материалы\', this.dataset.c, \'Израсходовано\', this.value)" data-c="' + attr(m.name) + '" style="' + box + '"></div>' +
+    '</div>'
+    : '<div class="li"><div class="n">' + esc(m.name) + '<div class="d">' + esc(m.src || '') + (m.rest_manual ? ' · по факту' : '') + '</div></div>' +
+      '<div class="v" style="' + ((m.rest ?? 0) <= 0 ? 'color:var(--bad)' : '') + '">' + (m.rest ?? 0) + ' ' + esc(m.unit || '') + '</div></div>';
 
-  return `
-    <div class="hello">Материалы</div>
-    <div class="sub">${worker ? "впишите, что купили и что ушло" : "остатки на объекте"}</div>
-    ${out.length ? `<div class="card"><div class="lbl" style="color:var(--bad)">Кончилось</div>
-      ${out.map(line).join("")}</div>` : ""}
-    ${have.length ? `<div class="card"><div class="lbl">Есть на объекте</div>
-      ${have.map(line).join("")}</div>` : ""}
-    ${rest.length ? `<div class="card"><div class="lbl">Без учёта</div>
-      ${rest.map(line).join("")}</div>` : ""}`;
+  return '' +
+    '<div class="hello">Материалы</div>' +
+    '<div class="sub">' + (canEdit ? 'остаток на объекте — то, что принимается по факту' : 'остатки на объекте') + '</div>' +
+    (canEdit ? ('<div class="stat"><div class="r">' +
+      '<button onclick="matOpen()" style="width:100%;padding:13px;border-radius:12px;border:0;background:#0a84ff;color:#fff;font-size:15px">Внести остатки по памяти</button>' +
+    '</div></div>') : '') +
+    (out.length ? ('<div class="card"><div class="lbl" style="color:var(--bad)">Кончилось</div>' + out.map(line).join('') + '</div>') : '') +
+    (have.length ? ('<div class="card"><div class="lbl">Есть на объекте</div>' + have.map(line).join('') + '</div>') : '') +
+    (rest.length ? ('<div class="card"><div class="lbl">Без учёта</div>' + rest.map(line).join('') + '</div>') : '') +
+    ((out.length || have.length || rest.length) ? '' :
+      '<div class="stat"><span class="k">Материалов пока нет. Внесите то, что уже куплено и лежит на объекте, — по памяти, без чеков: остаток принимается по факту.</span></div>');
 },
 
 deal(){
@@ -3156,6 +3286,48 @@ changes(){
 
 /* Экран выборочной скидки [чат 019]. Работы группируются по помещениям,
    принятые в списке не появляются вовсе — их цена заморожена решением 006. */
+
+/* Экран ввода материалов по памяти [чат 019]. */
+matnew(){
+  if(!matCanEdit()) return '<div class="hello">Материалы по памяти</div>' +
+    '<div class="stat"><span class="k">Вводить остатки может заказчик или бригадир.</span></div>';
+  const box = 'width:100%;padding:10px;border-radius:10px;border:1px solid #3a3a3c;background:#000;color:#fff;font-size:16px';
+  const units = MAT_UNITS.map(u => '<option value="' + attr(u) + '"></option>').join('');
+  const modeBtn = (v, label) => '<button class="' + (MAT.mode === v ? 'on' : '') + '" onclick="matMode(\'' + v + '\')">' + esc(label) + '</button>';
+  const num = (i, f, ph) => '<input type="number" inputmode="decimal" step="0.01" min="0" value="' + attr(MAT.rows[i][f]) + '" onchange="matSet(' + i + ',\'' + f + '\',this)" placeholder="' + esc(ph) + '" style="' + box + '">';
+
+  const rows = MAT.rows.map((r, i) => '<div class="work">' +
+    '<div class="row" style="gap:8px;align-items:center">' +
+      '<input value="' + attr(r.name) + '" onchange="matSet(' + i + ',\'name\',this)" placeholder="материал" style="' + box + ';flex:2">' +
+      '<input list="matUnits" value="' + attr(r.unit) + '" onchange="matSet(' + i + ',\'unit\',this)" placeholder="ед" style="' + box + ';flex:1">' +
+    '</div>' +
+    '<div class="row" style="gap:8px;margin-top:8px">' +
+      (MAT.mode === 'rest'
+        ? ('<div style="flex:1">' + num(i, 'rest', 'остаток') + '</div>')
+        : ('<div style="flex:1">' + num(i, 'in', 'куплено') + '</div><div style="flex:1">' + num(i, 'out', 'ушло') + '</div>')) +
+      '<div style="flex:1">' + num(i, 'price', 'цена за ед., сум') + '</div>' +
+    '</div>' +
+    '<div class="row" style="gap:8px;margin-top:8px">' +
+      '<input value="' + attr(r.who) + '" onchange="matSet(' + i + ',\'who\',this)" placeholder="кто купил (необязательно)" style="' + box + ';flex:2">' +
+      '<button onclick="matDel(' + i + ')" style="flex:0 0 auto;padding:10px 14px;border:0;border-radius:10px;background:#3a3a3c;color:#fff;font-size:14px">убрать</button>' +
+    '</div></div>').join('');
+
+  return '' +
+    '<datalist id="matUnits">' + units + '</datalist>' +
+    '<div class="hello">Материалы по памяти</div>' +
+    '<div class="sub">остаток на объекте важнее истории закупа — он и принимается по факту</div>' +
+    '<div class="filt" style="flex-wrap:wrap">' + modeBtn('rest', 'Остаток по факту') + modeBtn('inout', 'Куплено и ушло') + '</div>' +
+    rows +
+    '<div class="stat"><div class="r">' +
+      '<button onclick="matAdd()" style="width:100%;padding:12px;border-radius:12px;border:0;background:#3a3a3c;color:#fff;font-size:15px">+ ещё материал</button>' +
+    '</div></div>' +
+    '<div class="stat" id="matPrev">' + matPreview() + '</div>' +
+    '<div class="stat"><div class="r" style="display:flex;gap:8px">' +
+      '<button onclick="back()" style="flex:1;padding:13px;border-radius:12px;border:0;background:#3a3a3c;color:#fff;font-size:15px">Отмена</button>' +
+      '<button onclick="matSubmit()" style="flex:1;padding:13px;border-radius:12px;border:0;background:#0a84ff;color:#fff;font-size:15px">Записать</button>' +
+    '</div></div>';
+},
+
 discount(){
   if(!dscCan()) return '' +
     '<div class="hello">Скидка</div>' +
