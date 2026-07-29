@@ -387,19 +387,28 @@ async function savePrice(el){
    К помещению применяются виды работ; объём считается из его размеров
    по колонке «База_объёма» справочника, цена — из прайса исполнителя.
    Итог дописывается строками в 01_Работы через POST /remont/append.
+   [чат 017] Выбор копится СРАЗУ ПО НЕСКОЛЬКИМ помещениям (PROF.plan):
+   на встрече пара проходит квартиру подряд, а смета собирается одним
+   действием в конце — возврата к таблице между комнатами быть не должно.
    ══════════════════════════════════════════════════════════════ */
-let PROF = { room: null, picked: {} };   // выбранное помещение и отмеченные виды
+let PROF = { room: null, plan: {} };   // текущее помещение и план по всем помещениям: plan[код помещения][код вида] = {vol, manual}
 
 async function openProfile(){
   try{
     if(!D.catalog) toast('Загружаю справочник…');
     await loadCatalog();
-    PROF = { room: null, picked: {} };
+    PROF = { room: null, plan: {} };
     go('profile');
   }catch(e){ toast(e.message, 'err'); }
 }
 
 function profRoom(){ return (D.rooms || []).find(r => r.code === PROF.room) || null; }
+function profPicked(code){                      // выбор одного помещения (по умолчанию — текущего)
+  const rc = code || PROF.room;
+  if(!rc) return {};
+  if(!PROF.plan[rc]) PROF.plan[rc] = {};
+  return PROF.plan[rc];
+}
 
 // Сколько единиц работы даёт помещение по базе объёма из справочника
 function profVol(kind, room){
@@ -432,11 +441,29 @@ function profPrice(code){
   return (k && Number(k.base_usd) > 0) ? Number(k.base_usd) : 0;   // прайс пуст — ориентир из справочника
 }
 
+/* Виды, уже стоящие в смете помещения: связь работы с видом несёт пометка
+   «вид X» в Примечании [чат 013]. Показываем её, чтобы конструктор не плодил
+   вторую такую же строку молча — то же правило переспроса, что у голоса. */
+function profInEstimate(roomCode){
+  const room = (D.rooms || []).find(r => r.code === roomCode);
+  const out = {};
+  if(!room) return out;
+  (D.works || []).forEach(w => {
+    const wc = String(w.code || '');
+    const mine = wc.split('-')[0] === roomCode || String(w.room || '').split(' (')[0] === String(room.name || '').split(' (')[0];
+    if(!mine) return;
+    const m = String(w.note || '').match(/вид\s+([A-Za-z]+-\d+)/i);
+    if(m) out[m[1].toUpperCase()] = true;
+  });
+  return out;
+}
+
 function profToggle(code){
-  if(PROF.picked[code]) delete PROF.picked[code];
+  const picked = profPicked();
+  if(picked[code]) delete picked[code];
   else {
     const kind = ((D.catalog || {}).kinds || []).find(x => x.code === code);
-    PROF.picked[code] = { vol: profVol(kind, profRoom()), manual: false };
+    picked[code] = { vol: profVol(kind, profRoom()), manual: false };
   }
   render();
 }
@@ -444,74 +471,96 @@ function profToggle(code){
 function profSetVol(el){
   const code = el.getAttribute('data-code');
   const v = String(el.value ?? '').trim().replace(',', '.');
-  if(!PROF.picked[code]) return;
-  PROF.picked[code].vol = v === '' ? null : Number(v);
-  PROF.picked[code].manual = true;
+  const picked = profPicked();
+  if(!picked[code]) return;
+  picked[code].vol = v === '' ? null : Number(v);
+  picked[code].manual = true;
   const box = document.getElementById('profSum');
   if(box) box.textContent = profTotalText();
 }
 
-function profTotal(){
+function profTotal(roomCode){                    // итог одного помещения
+  const picked = (PROF.plan[roomCode || PROF.room] || {});
   let n = 0, sum = 0, blank = 0;
-  for(const code of Object.keys(PROF.picked)){
-    const it = PROF.picked[code];
+  for(const code of Object.keys(picked)){
+    const it = picked[code];
     n++;
     if(it.vol === null || !(Number(it.vol) > 0)) { blank++; continue; }
     sum += Number(it.vol) * profPrice(code);
   }
   return { n, sum: Math.round(sum * 100) / 100, blank };
 }
+function profTotalAll(){                         // итог по всему плану
+  let n = 0, sum = 0, blank = 0, rooms = 0;
+  Object.keys(PROF.plan).forEach(rc => {
+    const t = profTotal(rc);
+    if(!t.n) return;
+    rooms++; n += t.n; sum += t.sum; blank += t.blank;
+  });
+  return { rooms, n, sum: Math.round(sum * 100) / 100, blank };
+}
 function profTotalText(){
   const t = profTotal();
   return t.n ? ('Выбрано ' + t.n + ' · на ' + fmt(t.sum) + ' USD' + (t.blank ? (' · без объёма: ' + t.blank) : '')) : 'Ничего не выбрано';
 }
+function profTotalAllText(){
+  const t = profTotalAll();
+  if(!t.n) return 'План пуст';
+  return 'В плане ' + t.n + ' работ в ' + t.rooms + ' помещ. · ' + fmt(t.sum) + ' USD' + (t.blank ? (' · без объёма: ' + t.blank) : '');
+}
 
-// Сборка сметы: выбранные виды превращаются в строки листа 01_Работы [чат 007]
+// Сборка сметы: выбранное по ВСЕМ помещениям плана превращается в строки листа 01_Работы [чат 007 · многокомнатно 017]
 async function profBuild(){
-  const room = profRoom();
-  if(!room) { toast('Сначала выберите помещение'); return; }
-  const codes = Object.keys(PROF.picked);
-  if(!codes.length) { toast('Ничего не выбрано'); return; }
-  const noVol = codes.filter(c => !(Number((PROF.picked[c]||{}).vol) > 0));
-  if(noVol.length){ toast('Без объёма: ' + noVol.length + ' — заполните или снимите'); return; }
-
   const kinds = (D.catalog || {}).kinds || [];
   const kindOf = c => kinds.find(k => k.code === c) || {};
+  const roomCodes = Object.keys(PROF.plan).filter(rc => Object.keys(PROF.plan[rc] || {}).length);
+  if(!roomCodes.length) { toast('Ничего не выбрано'); return; }
 
-  // Новые коды строк: продолжаем нумерацию помещения, чтобы не столкнуться с существующими
-  const used = (D.works || []).filter(w => String(w.code || '').indexOf(room.code + '-') === 0)
-    .map(w => parseInt(String(w.code).split('-')[1], 10) || 0);
-  let next = (used.length ? Math.max.apply(null, used) : 0) + 1;
-  const newCode = {};
-  codes.forEach(c => { newCode[c] = room.code + '-' + String(next++).padStart(2, '0'); });
+  let noVol = 0;
+  roomCodes.forEach(rc => { noVol += profTotal(rc).blank; });
+  if(noVol){ toast('Без объёма: ' + noVol + ' — заполните или снимите', 'err'); return; }
 
-  const rows = codes.map(c => {
-    const k = kindOf(c);
-    const vol = Number(PROF.picked[c].vol);
-    const rate = profPrice(c);
-    // Типовые зависимости вида превращаются в ссылки на строки этого же помещения —
-    // те предшественники, которые здесь не выбраны, просто опускаются.
-    const deps = String(k.deps || '').split(',').map(x => x.trim()).filter(x => x && newCode[x]).map(x => newCode[x]);
-    return {
-      'Код': newCode[c],
-      'Помещение': room.name,
-      'Раздел': k.section || '',
-      'Работа': k.name || c,
-      'Ед': k.unit || '',
-      'Объём': vol,
-      'Ставка_USD': rate || '',
-      'Категория': 'База',
-      'Цена_аллокация_USD': rate ? Math.round(vol * rate * 100) / 100 : '',
-      'Статус': 'Не начато',
-      'Готовность_%': 0,
-      'Источник': 'профиль ремонта',
-      'Примечание': 'вид ' + c,
-      'Зависит_от': deps.length ? deps.join(', ') : '—',
-    };
+  const rows = [];
+  const names = [];
+  roomCodes.forEach(rc => {
+    const room = (D.rooms || []).find(r => r.code === rc);
+    if(!room) return;
+    names.push(String(room.name || rc).split(' (')[0]);
+    const codes = Object.keys(PROF.plan[rc]);
+    // Новые коды строк: продолжаем нумерацию помещения, чтобы не столкнуться с существующими
+    const used = (D.works || []).filter(w => String(w.code || '').indexOf(rc + '-') === 0)
+      .map(w => parseInt(String(w.code).split('-')[1], 10) || 0);
+    let next = (used.length ? Math.max.apply(null, used) : 0) + 1;
+    const newCode = {};
+    codes.forEach(c => { newCode[c] = rc + '-' + String(next++).padStart(2, '0'); });
+    codes.forEach(c => {
+      const k = kindOf(c);
+      const vol = Number(PROF.plan[rc][c].vol);
+      const rate = profPrice(c);
+      // Типовые зависимости вида превращаются в ссылки на строки этого же помещения —
+      // те предшественники, которые здесь не выбраны, просто опускаются.
+      const deps = String(k.deps || '').split(',').map(x => x.trim()).filter(x => x && newCode[x]).map(x => newCode[x]);
+      rows.push({
+        'Код': newCode[c],
+        'Помещение': room.name,
+        'Раздел': k.section || '',
+        'Работа': k.name || c,
+        'Ед': k.unit || '',
+        'Объём': vol,
+        'Ставка_USD': rate || '',
+        'Категория': 'База',
+        'Цена_аллокация_USD': rate ? Math.round(vol * rate * 100) / 100 : '',
+        'Статус': 'Не начато',
+        'Готовность_%': 0,
+        'Источник': 'профиль ремонта',
+        'Примечание': 'вид ' + c,
+        'Зависит_от': deps.length ? deps.join(', ') : '—',
+      });
+    });
   });
 
-  const t = profTotal();
-  if(!confirm('Добавить ' + rows.length + ' работ в смету на ' + fmt(t.sum) + ' USD? Помещение: ' + room.name)) return;
+  const t = profTotalAll();
+  if(!confirm('Добавить ' + rows.length + ' работ в смету на ' + fmt(t.sum) + ' USD?\nПомещения: ' + names.join(', '))) return;
 
   try{
     const r = await fetch(API + '/append', {
@@ -520,9 +569,10 @@ async function profBuild(){
     });
     const txt = (await r.text()).trim();
     if(!r.ok || !txt) throw new Error('Не удалось добавить работы');
-    toast('Добавлено работ: ' + rows.length);
-    PROF.picked = {};
+    toast('Добавлено работ: ' + rows.length + ' в ' + names.length + ' помещ.');
+    PROF = { room: null, plan: {} };
     await load();
+    render(true);
   }catch(e){ toast(e.message, 'err'); }
 }
 
@@ -2083,44 +2133,58 @@ profile(){
   const cat  = D.catalog || { kinds: [], price: [] };
 
   if(!room){
+    const all = profTotalAll();
     const items = (D.rooms || []).map(r => {
+      const t = profTotal(r.code);
+      /* Пустое поле листа — не «ноль проёмов»: Number(null) даёт 0, и подсказка
+         «не заданы» молчала с чата 007. Пустоту проверяем до приведения к числу [чат 017]. */
+      const empty = v => v === null || v === undefined || v === '' || !(Number(v) >= 0);
       const miss = [];
-      if(!(Number(r.windows) >= 0)) miss.push('окна');
-      if(!(Number(r.doors) >= 0)) miss.push('двери');
-      return '<div class="work" onclick="PROF.room=\'' + esc(r.code) + '\'; render(true)" style="cursor:pointer">' +
-        '<div class="t">' + esc(r.name) + '</div>' +
-        '<div class="m">пол ' + fmt(r.floor_m2) + ' · стены ' + fmt(r.wall_m2) + ' · потолок ' + fmt(r.ceiling_m2) + ' · периметр ' + fmt(r.perimeter_m) +
+      if(empty(r.windows)) miss.push('окна');
+      if(empty(r.doors)) miss.push('двери');
+      return '<div class="work" onclick="PROF.room=\'' + esc(r.code) + '\'; render(true)" style="cursor:pointer' + (t.n ? ';border-left:3px solid #30d158;padding-left:9px' : '') + '">' +
+        '<div class="t">' + (t.n ? '✅ ' : '') + esc(r.name) + '</div>' +
+        '<div class="m">' + (t.n ? ('в плане ' + t.n + ' работ · ' + fmt(t.sum) + ' USD' + (t.blank ? (' · без объёма: ' + t.blank) : '') + ' · ') : '') +
+        'пол ' + fmt(r.floor_m2) + ' · стены ' + fmt(r.wall_m2) + ' · потолок ' + fmt(r.ceiling_m2) + ' · периметр ' + fmt(r.perimeter_m) +
         (miss.length ? ' · не заданы: ' + miss.join(', ') : '') + '</div></div>';
     }).join('');
     return '<div class="hello">Профиль ремонта</div>' +
-      '<div class="sub">Выберите помещение или продиктуйте работы</div>' +
-      '<div class="stat"><span class="k">К помещению применяются виды работ, объём считается из его размеров, цена — из прайса исполнителя. Готовые позиции добавляются в смету.</span></div>' +
+      '<div class="sub">' + (all.n ? esc(profTotalAllText()) : 'Выберите помещение или продиктуйте работы') + '</div>' +
+      '<div class="stat"><span class="k">К помещению применяются виды работ, объём считается из его размеров, цена — из прайса исполнителя. Пройдите помещения подряд — смета соберётся одним действием в конце.</span></div>' +
       '<div class="stat"><div class="r"><button onclick="startVoice(\'repair\')" style="flex:1;padding:12px;border-radius:12px;border:0;background:#0a84ff;color:#fff;font-size:15px">🎤 Продиктовать работы</button></div>' +
         '<div class="r"><span class="k" style="font-size:13px;opacity:.75">Например: «в спальне потолок выровнять и покрасить, стены под обои» — помещение подставится из сказанного.</span></div></div>' +
+      (all.n ? ('<div class="stat"><div class="r" style="display:flex;gap:8px">' +
+        '<button onclick="profBuild()" style="flex:2;padding:13px;border-radius:12px;border:0;background:#30d158;color:#000;font-size:15px;font-weight:600">Собрать смету: ' + all.n + ' работ · ' + fmt(all.sum) + ' USD</button>' +
+        '<button onclick="if(confirm(\'Очистить план?\')){ PROF.plan = {}; render(true); }" style="flex:1;padding:13px;border-radius:12px;border:0;background:#3a3a3c;color:#fff;font-size:15px">Очистить</button>' +
+      '</div>' + (all.blank ? '<div class="r"><span class="k" style="font-size:13px;color:#ff9f0a">Без объёма: ' + all.blank + ' — заполните или снимите, иначе смету не собрать.</span></div>' : '') + '</div>') : '') +
       items;
   }
 
   const inPrice = (cat.price || []).filter(p => p.active !== false).map(p => p.code); // [чат 011] только активный прайс
   const pool = (cat.kinds || []).filter(k => k.active !== false && k.area !== 'объектная' && (inPrice.length ? inPrice.indexOf(k.code) >= 0 : true)); // [чат 011] объектные строки сметы в профиль не попадают
+  const picked = profPicked();
+  const already = profInEstimate(room.code);   // [чат 017] что по этому помещению уже стоит в смете
   const groups = {};
   pool.forEach(k => { const g = k.section || 'Прочее'; (groups[g] = groups[g] || []).push(k); });
 
   const blocks = Object.keys(groups).sort((a,b) => a.localeCompare(b,'ru')).map(g => {
     const items = groups[g].map(k => {
-      const on = !!PROF.picked[k.code];
+      const on = !!picked[k.code];
       const auto = profVol(k, room);
-      const vol = on ? PROF.picked[k.code].vol : auto;
+      const vol = on ? picked[k.code].vol : auto;
       const rate = profPrice(k.code);
       const sum = (Number(vol) > 0 && rate) ? Math.round(Number(vol) * rate * 100) / 100 : 0;
+      const dup = !!already[String(k.code).toUpperCase()];
       return '<div class="work" style="' + (on ? 'border-left:3px solid #30d158;padding-left:9px' : '') + '">' +
         '<div class="t" onclick="profToggle(\'' + esc(k.code) + '\')" style="cursor:pointer">' + (on ? '✅ ' : '⬜ ') + esc(k.name) + '</div>' +
         '<div class="m">' + esc(k.code) + ' · ' + esc(k.unit || '') + ' · ' + (rate ? (fmt(rate) + ' USD за единицу') : 'цена не задана') +
-          (auto === null ? ' · объём вводится вручную' : '') + '</div>' +
+          (auto === null ? ' · объём вводится вручную' : '') +
+          (dup ? ' · <span style="color:#ff9f0a">уже в смете</span>' : '') + '</div>' +
         (on ? ('<div class="m" style="margin-top:6px">объём: ' +
           '<input type="number" step="0.01" inputmode="decimal" data-code="' + esc(k.code) + '" value="' + (vol === null ? '' : vol) + '"' +
           ' onchange="profSetVol(this)" style="width:100px;padding:6px;border-radius:8px;border:1px solid #3a3a3c;background:#000;color:#fff"> ' + esc(k.unit || '') +
           (sum ? ('  →  ' + fmt(sum) + ' USD') : '') +
-          (PROF.picked[k.code].manual ? ' · изменено вручную' : '') + '</div>') : '') +
+          (picked[k.code].manual ? ' · изменено вручную' : '') + '</div>') : '') +
         '</div>';
     }).join('');
     return '<div class="sub" style="margin-top:14px">' + esc(g) + '</div>' + items;
@@ -2131,10 +2195,10 @@ profile(){
     '<div class="sub" id="profSum">' + profTotalText() + '</div>' +
     '<div class="stat">' +
       '<div class="r" style="display:flex;gap:8px">' +
-        '<button onclick="profBuild()" style="flex:1;padding:12px;border-radius:12px;border:0;background:#0a84ff;color:#fff;font-size:15px">Добавить в смету</button>' +
-        '<button onclick="PROF.room=null; PROF.picked={}; render(true)" style="flex:1;padding:12px;border-radius:12px;border:0;background:#3a3a3c;color:#fff;font-size:15px">Другое помещение</button>' +
+        '<button onclick="PROF.room=null; render(true)" style="flex:1;padding:12px;border-radius:12px;border:0;background:#0a84ff;color:#fff;font-size:15px">Готово · к списку помещений</button>' +
       '</div>' +
       '<div class="r" style="margin-top:8px"><button onclick="startVoice(\'repair\')" style="flex:1;padding:12px;border-radius:12px;border:0;background:#1c1c1e;color:#fff;font-size:15px;border:1px solid #3a3a3c">🎤 Продиктовать работы</button></div>' +
+      '<div class="r"><span class="k" style="font-size:13px;opacity:.75">Выбор сохраняется: пройдите остальные помещения, смета соберётся одной кнопкой на общем экране.</span></div>' +
     '</div>' +
     (pool.length ? blocks : '<div class="stat"><span class="k">Справочник пуст.</span></div>');
 },
@@ -3093,7 +3157,7 @@ function showVRepair(d){
     const dup  = r.kinds.filter(k => k.already).length;
     const note = [tech ? `по технологии добавлено: ${tech}` : "", dup ? `уже в смете: ${dup} — не отмечено` : ""].filter(Boolean).join(" · ");
     return `<div style="margin-bottom:12px">${head}${note ? `<div class="vd" style="margin:2px 0 6px">${esc(note)}</div>` : ""}${kl}
-      <div class="vrow" style="margin-top:8px"><button class="vbtn-ok" onclick="applyVoiceRepair(${i})">Отметить${vRep.length > 1 ? (": " + esc(String(r.name).split(" (")[0])) : " в профиле"}</button></div></div>`;
+      </div>`;
   }).join("");
   openVSheet(`
     <div class="vh">Работы по помещениям</div>
@@ -3101,7 +3165,8 @@ function showVRepair(d){
     ${quote}
     <div id="vlist">${rows}</div>
     <div class="vrow">
-      <button class="vbtn-cancel" onclick="closeVSheet()">Закрыть</button>
+      <button class="vbtn-cancel" onclick="closeVSheet()">Отмена</button>
+      <button class="vbtn-ok" onclick="applyVoiceRepair()">Отметить в профиле</button>
     </div>`);
 }
 
@@ -3114,30 +3179,35 @@ function toggleVRep(i, j){
 
 /* Перенос в профиль: отмечаем виды и считаем объём из обмеров помещения.
    В лист сейчас не пишется ничего — человек смотрит цифры и жмёт «Добавить в смету». */
-async function applyVoiceRepair(i){
-  const r = vRep[i];
-  if(!r || r.isNew) return;
-  const chosen = r.kinds.filter(k => k._sel);
-  if(!chosen.length){ toast("Ничего не отмечено", "wait"); return; }
-  const room = (D.rooms || []).find(x => x.code === r.code);
-  if(!room){ toast("Помещение не найдено в объекте", "err"); return; }
+async function applyVoiceRepair(){
+  const ready = vRep.filter(r => !r.isNew && r.kinds.some(k => k._sel));
+  if(!ready.length){ toast("Ничего не отмечено", "wait"); return; }
   try{ if(!D.catalog) await loadCatalog(); }catch(e){ toast(e.message, "err"); return; }
-  PROF.room = r.code;
   const kinds = (D.catalog || {}).kinds || [];
-  let n = 0, noVol = 0;
-  chosen.forEach(k => {
-    const kind = kinds.find(x => x.code === k.code);
-    if(!kind) return;
-    const vol = profVol(kind, room);
-    PROF.picked[k.code] = { vol: vol, manual: false };
-    n++;
-    if(!(Number(vol) > 0)) noVol++;
-  });
+  let n = 0, noVol = 0, rooms = 0, last = null;
+  for(const r of ready){
+    const room = (D.rooms || []).find(x => x.code === r.code);
+    if(!room) continue;
+    const picked = profPicked(r.code);
+    let added = 0;
+    r.kinds.filter(k => k._sel).forEach(k => {
+      const kind = kinds.find(x => x.code === k.code);
+      if(!kind) return;
+      const vol = profVol(kind, room);
+      picked[k.code] = { vol: vol, manual: false };
+      added++; n++;
+      if(!(Number(vol) > 0)) noVol++;
+    });
+    if(added){ rooms++; last = r.code; }
+  }
   closeVSheet();
+  // одно помещение — открываем его сразу; несколько — общий экран со сводкой плана
+  PROF.room = (rooms === 1) ? last : null;
   if(stack[stack.length - 1] !== "profile") go("profile"); else render(true);
   if(!n) { toast("Ничего не перенесено", "err"); return; }
-  toast(noVol ? `Отмечено: ${n} · без объёма: ${noVol}` : `Отмечено: ${n}`);
+  toast("Отмечено: " + n + (rooms > 1 ? (" в " + rooms + " помещ.") : "") + (noVol ? (" · без объёма: " + noVol) : ""));
 }
+
 
 /* ── Голос работника: отметки дня и отчёты бригадиру [чат 015] ──
    Сервер (mode:'hand') возвращает действия, а не правки листов; запись —
