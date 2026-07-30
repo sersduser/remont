@@ -4628,7 +4628,17 @@ function langSet(v){
   const b = document.getElementById("langbtn");
   if(b){ b.textContent = LANG === "uz" ? "RU" : "UZ"; b.setAttribute("aria-label", LANG === "uz" ? "Русский" : "O'zbekcha"); }
   if(LANG === "uz"){ uzWatch(); uzApply(document.body); }
-  else { if(UZ_OBS){ UZ_OBS.disconnect(); UZ_OBS = null; } try{ render(); }catch(e){} }
+  else {
+    if(UZ_OBS){ UZ_OBS.disconnect(); UZ_OBS = null; }
+    /* Экран ошибки доступа и экран приглашения рисуются не через render(), а
+       напрямую в #app (данных ещё нет) — там перерисовка перевод не снимет, и
+       человек, вернувший русский, остался бы с узбекским текстом. Поймано
+       прод-проверкой [чат 020]: в таком случае честнее перезагрузить страницу,
+       язык уже сохранён. */
+    let ok = false;
+    try{ if(typeof D === "object" && D && D.role){ render(); ok = true; } }catch(e){}
+    if(!ok) location.reload();
+  }
 }
 
 /* Начальный язык: сначала выбор человека (он главнее всего), затем язык из
