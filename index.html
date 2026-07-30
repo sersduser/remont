@@ -4518,6 +4518,9 @@ const UZ = {
 "Ни один лист не создан. Либо все стандартные листы объекта уже есть — тогда серверу не хватает листа вне стандартного набора, скажите об этом администратору. Либо у вас нет прав заводить листы.":"Birorta varaq yaratilmadi. Yo obyektning barcha standart varaqlari allaqachon bor — u holda serverga standart to'plamdan tashqaridagi varaq yetishmayapti, buni administratorga ayting. Yo sizda varaq yaratish huquqi yo'q.",
 "точка":"nuqta","добавить":"qo'shish","срок":"muddat","цена":"narx","объём":"hajm",
 "Малярка":"Bo'yoq ishlari","Столярка":"Duradgorlik","Кафель":"Kafel",
+"— когда?":"— qachon?","когда?":"qachon?","исправлено":"to'g'rilangan","принято":"qabul qilindi",
+"какой материал":"qaysi material","сколько израсходовано":"qancha sarflandi",
+"новых нет":"yangisi yo'q","новый":"yangi","заявлено":"bildirilgan",
 "Конструкции":"Konstruksiyalar","Утепление":"Issiqlik izolyatsiyasi",
 "(действует сутки)":"(bir kun amal qiladi)","действует сутки":"bir kun amal qiladi",
 "Пока вы работаете один — это нормально":"Hozircha yolg'iz ishlayapsiz — bu normal",
@@ -4600,6 +4603,10 @@ const UZ_RULES = [
   [/^периметр ([\d.,]+)( м| m)?$/, "perimetr $1$2"],
   [/^высота ([\d.,]+)( м| m)?$/, "balandlik $1$2"],
   [/^не заданы: (.+)$/, "berilmagan: $1"],
+  [/^сейчас (\d{1,2}:\d{2})$/, "hozir $1"],
+  [/^принято как (.+)$/, "qabul qilindi: $1"],
+  [/^(.+) → принято как (.+)$/, "$1 → qabul qilindi: $2"],
+  [/^решил (.+)$/, "hal qildi $1"],
   [/^Без цены \(первые (\d+) из (\d+)\):$/, "Narxsiz (birinchi $1 / $2):"],
   [/^Работников: (\d+)$/, "Ishchilar: $1"],
   [/^добавлен (.+)$/, "qo'shilgan $1"],
@@ -4652,6 +4659,11 @@ const UZ_WORDS = [
   [/(^|[\s·(])активен(?=$|[\s·).,])/g, "$1faol"],
   [/(^|[\s·(])отключён(?=$|[\s·).,])/g, "$1o'chirilgan"],
   [/(^|[\s·(])вернулся(?=$|[\s·).,])/g, "$1qaytdi"],
+  [/(^|[\s·(])начало(?=$|[\s·).,])/g, "$1boshlandi"],
+  [/(^|[\s·(])конец(?=$|[\s·).,])/g, "$1tugadi"],
+  [/(^|[\s·(])исправлено(?=$|[\s·).,])/g, "$1to'g'rilangan"],
+  [/(^|[\s·(])принято(?=$|[\s·).,])/g, "$1qabul qilindi"],
+  [/(^|[\s·(])новый(?=$|[\s·).,])/g, "$1yangi"],
   [/(^|[\s·(])пог\.м(?=$|[\s·).,])/g, "$1pog'.m"],
   [/января/g,"yanvar"],[/февраля/g,"fevral"],[/марта/g,"mart"],[/апреля/g,"aprel"],
   [/мая/g,"may"],[/июня/g,"iyun"],[/июля/g,"iyul"],[/августа/g,"avgust"],
@@ -4832,7 +4844,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "021.4";
+const BUILD = "021.5";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
