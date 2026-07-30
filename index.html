@@ -3743,6 +3743,7 @@ async function onRecStop(){
     fd.append("key", KEY);                       // legacy / отладка вне Telegram
     fd.append("mode", vMode);                    // сценарий разбора на сервере [чат 016]
     fd.append("room", (typeof PROF === "object" && PROF && PROF.room) ? PROF.room : "");   // открытое помещение профиля: подставится, если его не назвали вслух [чат 017]
+    fd.append("lang", LANG);                     // язык интерфейса → язык транскрипции: без него движок относит узбекскую речь к чужому языку [чат 022]
     const r = await fetch(`${API}/voice`, { method: "POST", body: fd });
     const raw = (await r.text()).trim();
     if(r.status === 401 || r.status === 403) throw new Error("Доступ не подтверждён.");
@@ -4844,7 +4845,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "021.6";
+const BUILD = "022.1";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
