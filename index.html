@@ -192,7 +192,8 @@ async function load(){
     if(D && D.need_setup){ renderSetup(D); return; }
     if(!D || !D.role) throw new Error(BAD);
     render();
-    _sig = _snapshot(D);            // калибровка живого обновления
+    _sig = _snapshot(D);
+    langInit();                   // язык: выбор человека → 09_Доступы → Telegram [чат 020]            // калибровка живого обновления
     /* Работник живёт данными контура бригады — тянем их при каждой полной
        загрузке: load() зовётся и при старте, и при откате после ошибки [чат 013] */
     if (D.kind === "hand") crewLoad().then(() => render()).catch(() => {});
@@ -2487,6 +2488,7 @@ function back(){ if(stack.length > 1){ stack.pop(); render(true); } }
 function render(toTop){
   const k = stack[stack.length - 1];
   app.innerHTML = (SCREENS[k] || SCREENS.home)();
+  uzApply(app);                                   // языковой слой E1 [чат 020]
   if(k === "object" && objPlan()) setTimeout(objShowPlan, 0);   // картинка плана грузится отдельным запросом [чат 016]
   if(toTop) window.scrollTo(0, 0);
   if(tg){
@@ -4130,10 +4132,523 @@ async function refresh(){
   }catch{}
 }
 
+/* ═══════════════════════════════════════════════════════════════
+   E1 · ЯЗЫКОВОЙ СЛОЙ ПАНЕЛИ (рус ⇄ o'zbekcha)            [чат 020]
+
+   Замысел большого плана (этап E1): «словарь интерфейса — отдельным
+   слоем панели, не россыпью по коду». Панель рисует по-русски, слой
+   переводит уже собранный DOM. Причина именно такая: надписи живут
+   внутри 117 функций рендера, и перевод «россыпью» (t('ключ') на каждой
+   строке) означал бы переписать панель целиком и разом рискнуть всеми
+   экранами — при этом каждый новый экран пришлось бы писать сразу на
+   двух языках. Слой добавляется одним блоком, снимается одним нажатием
+   и не мешает ни одной существующей функции: панель о нём не знает.
+
+   Цена решения, названная честно: ключ словаря — русская строка.
+   Правка русской надписи без правки словаря молча теряет перевод.
+   Поэтому слой ведёт список того, что встретил и не смог перевести
+   (`window.__uzMiss`) — по нему сборка проверяет покрытие, а не человек
+   глазами.
+
+   Данные не переводятся: названия работ, материалов и помещений
+   приходят из таблицы объекта и в словаре не значатся. Переводятся
+   единицы и статусы — они тоже приходят из листа, но человек читает
+   их как интерфейс.
+   ═══════════════════════════════════════════════════════════════ */
+
+const LANG_KEY = "remont_lang";
+let LANG = "ru";                 // фактический язык интерфейса
+let UZ_BUSY = false;             // замок от рекурсии наблюдателя
+let UZ_OBS = null;
+
+/* Точные надписи. Ключ — строка целиком, как она приходит в текстовый узел. */
+const UZ = {
+"до":"gacha","ед":"birlik","Все":"Barchasi","все":"barchasi","чек":"chek",
+"Допы":"Qo'shimchalar","Чеки":"Cheklar","Снято":"Olib tashlangan","Сроки":"Muddatlar",
+"Сумма":"Summa","Точка":"Nuqta","Готово":"Tayyor","Наряды":"Topshiriqlar","Объект":"Obyekt",
+"Отмена":"Bekor qilish","Отчёты":"Hisobotlar","Оценка":"Taxmin","Работа":"Ish","Работы":"Ishlar",
+"Скидка":"Chegirma","Статус":"Holat","Табель":"Ish vaqti","Чек от":"Chek","убрать":"olib tashlash",
+"Бригада":"Brigada","Договор":"Shartnoma","Заявить":"Bildirish","Остаток":"Qoldiq",
+"Платежи":"To'lovlar","Принять":"Qabul qilish","Приёмка":"Qabul","Финансы":"Moliya",
+"голосом":"ovoz bilan","остаток":"qoldiq","отсчёта":"boshlang'ich","размеры":"o'lchamlar",
+"В работе":"Ishda","Записать":"Yozib qo'yish","Заявлено":"Bildirilgan","Материал":"Material",
+"Обновить":"Yangilash","Оспорено":"E'tiroz bildirilgan","Оспорить":"E'tiroz bildirish",
+"Получено":"Olingan","материал":"material","отмечено":"belgilangan","Без цены:":"Narxsiz:",
+"Выплачено":"To'langan","Готово, %":"Tayyor, %","За работу":"Ish uchun","Изменения":"O'zgarishlar",
+"Календарь":"Kalendar","Материалы":"Materiallar","Не входит":"Kirmaydi","Не начато":"Boshlanmagan",
+"Привязать":"Bog'lash","Процентом":"Foiz bilan","Скидка, %":"Chegirma, %","Цены Юрия":"Yuriy narxlari",
+"в договор":"shartnomaga","— впишите":"— kiriting","Готовность":"Tayyorlik",
+"Мои деньги":"Mening pulim","Что входит":"Nima kiradi","сумма, сум":"summa, so'm",
+"Пересчитать":"Qayta hisoblash","Ваша цена, $":"Sizning narxingiz, $","Всего работы":"Jami ishlar",
+"Ждём чеки на":"Cheklar kutilmoqda","Продиктовать":"Aytib berish","Входит в цену":"Narxga kiradi",
+"Заявлено вами":"Siz bildirgansiz","Изменить срок":"Muddatni o'zgartirish",
+"Изменить цену":"Narxni o'zgartirish","Листы бригады":"Brigada varaqlari",
+"Принято работ":"Qabul qilingan ishlar","Работ в смете":"Smetadagi ishlar",
+"Только пустым":"Faqat bo'shlarga","Точка отсчёта":"Boshlang'ich nuqta",
+"Убрать работу":"Ishni olib tashlash","в чат с ботом":"bot chatiga","почему меняем":"nega o'zgartiramiz",
+"почему скидка":"nega chegirma","+ ещё материал":"+ yana material","Загрузить план":"Rejani yuklash",
+"Заявить скидку":"Chegirmani bildirish","Изменить объём":"Hajmni o'zgartirish",
+"Куплено и ушло":"Sotib olingan va sarflangan","Приостановлено":"To'xtatilgan",
+"Расчётный срок":"Hisoblangan muddat","фото плана БТИ":"BTI rejasi surati",
+"Добавить работу":"Ish qo'shish","Есть на объекте":"Obyektda bor","Итоговой суммой":"Yakuniy summa bilan",
+"Новая цена, USD":"Yangi narx, USD","Отчёт бригадиру":"Brigadirga hisobot",
+"По всем работам":"Barcha ishlar bo'yicha","Профиль ремонта":"Ta'mir profili",
+"статус «Готово»":"«Tayyor» holati","Загружаю наряды…":"Topshiriqlar yuklanmoqda…",
+"Остаток по факту":"Haqiqiy qoldiq","Скидка на работы":"Ishlarga chegirma",
+"Сфотографировать":"Suratga olish","не зафиксирована":"belgilanmagan",
+"трату или работу":"xarajat yoki ish","цена за ед., сум":"birlik narxi, so'm",
+"— какая работа —":"— qaysi ish —","🎤 Сказать ставку":"🎤 Narxni aytish",
+"Заявить изменение":"O'zgarishni bildirish","Осталось получить":"Olish qoldi",
+"Прайс исполнителя":"Ijrochi narxlari","Пройдено по плану":"Reja bo'yicha o'tildi",
+"Работы по приёмке":"Qabulga qo'yilgan ishlar","Рабочих в бригаде":"Brigadadagi ishchilar",
+"память · по факту":"xotira · haqiqat bo'yicha","план БТИ и обмеры":"BTI rejasi va o'lchamlar",
+"Аванс на материалы":"Materiallarga avans","Ближайшие по плану":"Reja bo'yicha yaqin ishlar",
+"Готовность объекта":"Obyekt tayyorligi","Оплачено за работу":"Ish uchun to'langan",
+"Принято заказчиком":"Buyurtmachi qabul qildi","Сумма заданных цен":"Berilgan narxlar summasi",
+"люди и человекодни":"odamlar va odam-kunlar","остатки на объекте":"obyektdagi qoldiqlar",
+"что входит в сумму":"summaga nima kiradi","Договор действующий":"Amaldagi shartnoma",
+"Ждут вашего решения":"Sizning qaroringizni kutmoqda","Материалы по памяти":"Materiallar xotiradan",
+"Остаток по договору":"Shartnoma bo'yicha qoldiq","Отправить бригадиру":"Brigadirga yuborish",
+"Подтверждено чеками":"Cheklar bilan tasdiqlangan","состав, цена, сроки":"tarkib, narx, muddatlar",
+"цены по видам работ":"ish turlari bo'yicha narxlar","— выберите работу —":"— ishni tanlang —",
+"готовность теперь, %":"hozirgi tayyorlik, %","нет заявленных работ":"bildirilgan ishlar yo'q",
+"Материалов на объекте":"Obyektdagi materiallar","Мои работы по приёмке":"Qabulga qo'ygan ishlarim",
+"Порядок заливки полов":"Pol quyish tartibi","— выберите материал —":"— materialni tanlang —",
+"🎤 Продиктовать работы":"🎤 Ishlarni aytib berish","В работе, по прогрессу":"Ishda, jarayoniga ko'ra",
+"Договор, для ориентира":"Shartnoma, mo'ljal uchun","На приёмке у работника":"Ishchida qabulda",
+"Принято и подтверждено":"Qabul qilingan va tasdiqlangan","все платежи по объекту":"obyekt bo'yicha barcha to'lovlar",
+"Непривязанных чеков нет":"Bog'lanmagan cheklar yo'q","Оплат пока не поступало":"Hozircha to'lov kelmagan",
+"работники и приглашения":"ishchilar va taklifnomalar","разовая подготовка базы":"bazani bir marta tayyorlash",
+"справочно, ждёт приёмки":"ma'lumot uchun, qabul kutilmoqda","Вам ещё должны за работу":"Ish uchun sizga hali qarzdor",
+"Внести остатки по памяти":"Qoldiqlarni xotiradan kiritish","По обмерам стены выходят":"O'lchamlarga ko'ra devorlar",
+"Предложить точку отсчёта":"Boshlang'ich nuqtani taklif qilish","Экран доступен бригадиру":"Ekran brigadirga ochiq",
+"кто купил (необязательно)":"kim sotib oldi (majburiy emas)","начала работ, а не после.":"ishlar boshlanishi, keyin emas.",
+"пол, потолок, окна, двери":"pol, shift, derazalar, eshiklar","справочно, ещё не принято":"ma'lumot uchun, hali qabul qilinmagan",
+"Скидка на выбранные работы":"Tanlangan ishlarga chegirma","Комментарий (необязательно)":"Izoh (majburiy emas)",
+"Уже оплачено сверх договора":"Shartnomadan ortiq to'langan","собрать смету по помещениям":"xonalar bo'yicha smeta yig'ish",
+"Комментарий (не обязательно)":"Izoh (majburiy emas)","⏳ Ждёт ответа второй стороны":"⏳ Ikkinchi tomon javobini kutmoqda",
+"Из чего попадаем в помещение:":"Xonaga qayerdan kiriladi:","критический путь и отставание":"kritik yo'l va kechikish",
+"память · остаток задан по факту":"xotira · qoldiq haqiqat bo'yicha berilgan",
+"Разнести сумму пропорционально договору":"Summani shartnomaga proporsional taqsimlash",
+"нет данных — вернитесь на главный экран":"ma'lumot yo'q — asosiy ekranga qayting",
+"что сделал, что израсходовал — без денег":"nima qildi, nima sarfladi — pulsiz",
+"Выберите помещение или продиктуйте работы":"Xonani tanlang yoki ishlarni aytib bering",
+"Пока заказчик ничего не заявил к приёмке.":"Buyurtmachi hozircha qabulga hech narsa bildirmagan.",
+"Пока работник ничего не заявил к приёмке.":"Ishchi hozircha qabulga hech narsa bildirmagan.",
+"Технологический минимум (критический путь)":"Texnologik minimum (kritik yo'l)",
+"Вводить остатки может заказчик или бригадир.":"Qoldiqlarni buyurtmachi yoki brigadir kiritadi.",
+"черта, от которой живут баланс и шкала сроков":"balans va muddat o'lchovi shu chizidan yashaydi",
+"остаток на объекте — то, что принимается по факту":"obyektdagi qoldiq — haqiqat bo'yicha qabul qilinadigan narsa",
+"Данные не загрузились — вернитесь и зайдите ещё раз":"Ma'lumot yuklanmadi — qaytib yana kiring",
+"Скажите ставку голосом — панель посчитает цены сама.":"Narxni ovoz bilan ayting — panel narxlarni o'zi hisoblaydi.",
+"Впишите материалы — здесь появится, что уйдёт в таблицу.":"Materiallarni kiriting — jadvalga nima ketishi shu yerda ko'rinadi.",
+"Заполните поля — здесь появится, что именно уйдёт на согласование.":"Maydonlarni to'ldiring — kelishuvga nima ketishi shu yerda ko'rinadi.",
+"Отметьте работы и задайте скидку — здесь появится, что именно уйдёт на согласование.":"Ishlarni belgilang va chegirmani kiriting — kelishuvga nima ketishi shu yerda ko'rinadi.",
+"План БТИ ещё не загружен. Сфотографируйте его — он нужен глазам, размеры приедут голосом.":"BTI rejasi hali yuklanmagan. Uni suratga oling — reja ko'z uchun, o'lchamlar ovoz bilan keladi.",
+"Отчёт видит только бригадир. Он подтвердит или поправит — и тогда запись попадёт в учёт объекта.":"Hisobotni faqat brigadir ko'radi. U tasdiqlaydi yoki to'g'rilaydi — shundan keyin yozuv obyekt hisobiga tushadi.",
+"Критический путь — цепочка, которая определяет срок целиком: задержка любой её работы двигает финиш день в день. Остальные работы имеют запас.":"Kritik yo'l — muddatni butunlay belgilaydigan zanjir: undagi har qanday ishning kechikishi tugash sanasini kun sayin suradi. Qolgan ishlarda zaxira bor.",
+"Скидку на договорные цены предлагает заказчик. Когда он её заявит, вы увидите пакет в «Изменениях» и сможете принять или оспорить его одним нажатием.":"Shartnoma narxlariga chegirmani buyurtmachi taklif qiladi. U bildirganda siz «O'zgarishlar»da to'plamni ko'rasiz va bir bosishda qabul qilasiz yoki e'tiroz bildirasiz.",
+"К помещению применяются виды работ, объём считается из его размеров, цена — из прайса исполнителя. Пройдите помещения подряд — смета соберётся одним действием в конце.":"Xonaga ish turlari qo'llanadi, hajm uning o'lchamlaridan hisoblanadi, narx — ijrochi narxlaridan. Xonalarni ketma-ket o'ting — smeta oxirida bitta harakat bilan yig'iladi.",
+"Цена ставится за единицу вида работы и хранится в общей базе, а не в этом объекте: на следующем объекте задавать её заново не нужно. Объём подставится из профиля помещения.":"Narx ish turining birligiga qo'yiladi va umumiy bazada saqlanadi, bu obyektda emas: keyingi obyektda uni qaytadan kiritish shart emas. Hajm xona profilidan olinadi.",
+"Снимок чека приходит в буфер из чата бота. Фактом учёта он становится, когда указаны материал и сумма: тогда сумма уходит в материал, а плашка «не подтверждено» уменьшается.":"Chek surati bot chatidan buferga keladi. Material va summa ko'rsatilganda u hisob faktiga aylanadi: shunda summa materialga o'tadi, «tasdiqlanmagan» yozuvi kamayadi.",
+"Пока не зафиксирована. Когда состав, цены, сроки и остатки материалов сойдутся, любая сторона предлагает зафиксировать это как стартовое состояние — вторая подтверждает, и черта проведена.":"Hozircha belgilanmagan. Tarkib, narxlar, muddatlar va material qoldiqlari to'g'ri kelganda, har qaysi tomon buni boshlang'ich holat sifatida belgilashni taklif qiladi — ikkinchisi tasdiqlaydi, chiziq tortiladi.",
+"Цену, объём и снятие работы заявляет заказчик — у вас нет его разнесения цен по работам. Вы можете предложить новую работу со своей ценой или другой срок, а на предложение заказчика ответить в «Изменениях».":"Narx, hajm va ishni olib tashlashni buyurtmachi bildiradi — sizda uning ishlar bo'yicha narx taqsimoti yo'q. Siz o'z narxingiz bilan yangi ish yoki boshqa muddat taklif qilishingiz mumkin, buyurtmachining taklifiga «O'zgarishlar»da javob berasiz.",
+
+/* ── контур работника и бригадира (из литералов панели) ── */
+"Пришёл":"Keldi","пришёл":"keldi","Ушёл":"Ketdi","ушёл":"ketdi","Обед":"Tushlik",
+"Вернулся":"Qaytdi","обед начало":"tushlik boshlandi","обед конец":"tushlik tugadi",
+"сейчас":"hozir","−10 мин":"−10 daq","−30 мин":"−30 daq","−1 час":"−1 soat","своё время":"o'z vaqti",
+"весь день":"kun bo'yi","до обеда":"tushlikkacha","после обеда":"tushlikdan keyin","часы":"soat",
+"Занятость":"Bandlik","Задание":"Topshiriq","Новый наряд":"Yangi topshiriq","Назначить":"Tayinlash",
+"Наряд создан":"Topshiriq yaratildi","Наряд отменён":"Topshiriq bekor qilindi",
+"Отменить наряд:":"Topshiriqni bekor qilish:","Создаю наряд…":"Topshiriq yaratilmoqda…",
+"Мой календарь":"Mening kalendarim","Мои отчёты":"Mening hisobotlarim",
+"На сегодня наряда нет":"Bugunga topshiriq yo'q","впереди пусто":"oldinda bo'sh",
+"Отчёт бригадиру":"Brigadirga hisobot","работа или материал":"ish yoki material",
+"работы и материалы":"ishlar va materiallar","Заполните работу или материал":"Ish yoki materialni to'ldiring",
+"Уйдут обе части: работа и материал":"Ikkala qism ketadi: ish va material",
+"— готовность":"— tayyorlik","— израсходовано":"— sarflangan","Израсходовано":"Sarflangan",
+"Выберите материал":"Materialni tanlang","Укажите сумму в сумах":"Summani so'mda ko'rsating",
+"Подтвердить":"Tasdiqlash","Подтверждено":"Tasdiqlangan","подтверждено":"tasdiqlangan",
+"Подтвердил":"Tasdiqladi","Отклонить":"Rad etish","отклонено":"rad etilgan",
+"Отметка отклонена":"Belgi rad etildi","Исправить время":"Vaqtni to'g'rilash",
+"Время":"Vaqt","Дата":"Sana","Событие":"Hodisa","Отметил":"Belgiladi","Решил":"Hal qildi",
+"Значение":"Qiymat","Стало":"Bo'ldi","Было":"Edi","Комментарий":"Izoh","Примечание":"Eslatma",
+"Работник":"Ishchi","Работники":"Ishchilar","Бригадир":"Brigadir","Имя":"Ism","Телефон":"Telefon",
+"Роль":"Rol","Активен":"Faol","активен":"faol","отключён":"o'chirilgan","приглашён":"taklif qilingan",
+"назначен":"tayinlangan","отменён":"bekor qilingan","Добавлен":"Qo'shilgan","Создан":"Yaratilgan",
+"Добавить работника":"Ishchi qo'shish","Введите имя работника":"Ishchining ismini kiriting",
+"Создать приглашение":"Taklifnoma yaratish","Приглашение создано":"Taklifnoma yaratildi",
+"Создаю приглашение…":"Taklifnoma yaratilmoqda…","Код приглашения:":"Taklifnoma kodi:",
+"Приглашение в бригаду":"Brigadaga taklifnoma","Проверить код":"Kodni tekshirish",
+"Да, это я — подключить":"Ha, bu men — ulash","Нет, ввести другой код":"Yo'q, boshqa kod kiritish",
+"Отключить":"O'chirish","Вернуть в бригаду":"Brigadaga qaytarish","Скопировать приглашение":"Taklifnomani nusxalash",
+"Приглашение скопировано — перешлите работнику":"Taklifnoma nusxalandi — ishchiga yuboring",
+"Показать прошлые (14 дн)":"O'tganlarni ko'rsatish (14 kun)","Скрыть прошлые":"O'tganlarni yashirish",
+"Только последняя неделя":"Faqat oxirgi hafta","Показать всё":"Hammasini ko'rsatish",
+"Скрыть готовое":"Tayyorini yashirish","Показать готовое":"Tayyorini ko'rsatish",
+"все отметки решены":"barcha belgilar hal qilingan","нет данных бригады":"brigada ma'lumoti yo'q",
+"Отчёты бригады":"Brigada hisobotlari","отметки бригады":"brigada belgilari",
+"кто где завтра":"ertaga kim qayerda","сегодня в поле:":"bugun ishda:",
+"Людей на объекте (всего)":"Obyektdagi odamlar (jami)","Человекодней отработано":"Ishlangan odam-kunlar",
+"Пройдено по плану":"Reja bo'yicha o'tildi","Опережение графика":"Grafikdan oldinda",
+"Отставание от графика":"Grafikdan kechikish","Прошло с начала работ":"Ishlar boshlanganidan o'tdi",
+"Голосом":"Ovoz bilan","Расслышал:":"Eshitilgani:","Проверьте и подтвердите":"Tekshirib tasdiqlang",
+"Да, записать":"Ha, yozib qo'y","Записываю…":"Yozilmoqda…","Сохраняю…":"Saqlanmoqda…",
+"Обновляю…":"Yangilanmoqda…","Отменяю…":"Bekor qilinmoqda…","Сохранить":"Saqlash",
+"Не удалось обновить":"Yangilanmadi","Не удалось сохранить (":"Saqlanmadi (",
+"Сервер не принял запись":"Server yozuvni qabul qilmadi",
+"Нет связи с сервером — попробуйте ещё раз.":"Server bilan aloqa yo'q — yana urinib ko'ring.",
+"Не удалось загрузить справочник":"Ma'lumotnoma yuklanmadi",
+"Не удалось создать приглашение":"Taklifnoma yaratilmadi",
+"Отмечается сам работник, отвечаете за данные вы: в человекодни и заказчику идёт только подтверждённое. Исправленное время сохраняет след — исходное останется в истории листа.":"Ishchi o'zini o'zi belgilaydi, ma'lumot uchun siz javobgarsiz: odam-kunlarga va buyurtmachiga faqat tasdiqlangani ketadi. To'g'rilangan vaqt iz qoldiradi — asli varaq tarixida qoladi.",
+"Это буфер: слова работника становятся фактом учёта только после вашего решения. Принятая работа уходит в готовность сметы, материал — в расход.":"Bu bufer: ishchining so'zlari sizning qaroringizdan keyingina hisob faktiga aylanadi. Qabul qilingan ish smeta tayyorligiga, material — sarfga o'tadi.",
+"В бригаде пока никого — вы работаете один, наряды не нужны. Появится работник — здесь вы распределите, кто где и когда.":"Brigadada hozircha hech kim yo'q — siz yolg'iz ishlaysiz, topshiriq kerak emas. Ishchi paydo bo'lsa — kim qayerda va qachon ishlashini shu yerda taqsimlaysiz.",
+"Работник добавляется приглашением: создайте его, перешлите ссылку — человек откроет её, подтвердит себя, и система подключит его сама. Руками Telegram-ID не вводится.":"Ishchi taklifnoma bilan qo'shiladi: uni yarating, havolani yuboring — odam ochadi, o'zini tasdiqlaydi va tizim uni o'zi ulaydi. Telegram-ID qo'lda kiritilmaydi.",
+"Считаются только отметки, подтверждённые бригадиром. Поимённый состав бригады — дело бригадира: заказчику виден объём.":"Faqat brigadir tasdiqlagan belgilar hisobga olinadi. Brigada tarkibi ismlar bilan — brigadirning ishi: buyurtmachiga hajm ko'rinadi.",
+"Отметок пока нет. Работник отмечается кнопками на своём главном экране.":"Hozircha belgi yo'q. Ishchi o'z asosiy ekranidagi tugmalar bilan belgilanadi.",
+"Отчётов пока нет. Работник отправляет их со своего экрана «Отчёт бригадиру».":"Hozircha hisobot yo'q. Ishchi ularni «Brigadirga hisobot» ekranidan yuboradi.",
+"Поправите число — в учёт уйдёт ваша версия, слова работника останутся рядом.":"Sonni to'g'rilasangiz — hisobga sizning variantingiz ketadi, ishchining so'zlari yonida qoladi.",
+"Бригадир отключил вас от объекта. Если это ошибка — свяжитесь с ним напрямую.":"Brigadir sizni obyektdan o'chirdi. Bu xato bo'lsa — u bilan bevosita bog'laning.",
+"Задним числом — только в пределах сегодняшнего дня; раньше — через бригадира.":"Orqaga sana bilan — faqat bugunning ichida; undan oldini brigadir orqali.",
+"Введите код приглашения от бригадира. Если вы открыли панель по ссылке-приглашению, код уже подставлен.":"Brigadirdan olgan taklifnoma kodini kiriting. Panelni taklif havolasi orqali ochgan bo'lsangiz, kod allaqachon qo'yilgan.",
+"Код не подошёл: он мог истечь, быть использован или ваш Telegram уже подключён. Попросите у бригадира новую ссылку.":"Kod to'g'ri kelmadi: muddati o'tgan, ishlatilgan yoki Telegramingiz allaqachon ulangan bo'lishi mumkin. Brigadirdan yangi havola so'rang.",
+"Не получилось подключить — попробуйте ещё раз или запросите новую ссылку.":"Ulanmadi — yana urinib ko'ring yoki yangi havola so'rang.",
+"Если ссылка не открыла панель — нажмите в боте кнопку «Смета» и введите код:":"Havola panelni ochmasa — botda «Smeta» tugmasini bosing va kodni kiriting:",
+"Доступ не подтверждён — откройте панель через бота в Telegram.":"Kirish tasdiqlanmadi — panelni Telegramdagi bot orqali oching.",
+"Например: «пришёл 10 минут назад» или «готовность сдира потолка 50»":"Masalan: «10 daqiqa oldin keldim» yoki «shift sidirish tayyorligi 50»",
+"Например: «покраска потолка в спальне готова» или «куплено 5 мешков цемента»":"Masalan: «yotoqxonada shift bo'yash tayyor» yoki «5 qop tsement sotib olindi»",
+"Например: «в спальне потолок выровнять и покрасить, стены под обои» — помещение подставится из сказанного.":"Masalan: «yotoqxonada shiftni tekislab bo'yash, devorlar oboy ostiga» — xona aytilganidan olinadi.",
+"⚠ такая отметка сегодня уже есть":"⚠ bugun bunday belgi allaqachon bor",
+"⏳ Ещё не записано — выбери время и нажми «Записать»":"⏳ Hali yozilmadi — vaqtni tanlab «Yozib qo'yish»ni bosing",
+"⚠ Отметки «пришёл» нет — молчание не значит «всё нормально»":"⚠ «Keldi» belgisi yo'q — sukunat «hammasi joyida» degani emas",
+"⏳ Ждёт приёмки работником":"⏳ Ishchi qabulini kutmoqda",
+"⏳ Заявлено — ждёт приёмки заказчиком":"⏳ Bildirilgan — buyurtmachi qabulini kutmoqda",
+"⚠ Заказчик оспорил — доработайте и заявите снова":"⚠ Buyurtmachi e'tiroz bildirdi — tugatib yana bildiring",
+"⏳ Сначала должно быть принято:":"⏳ Avval qabul qilinishi kerak:",
+"Заказчик заявил готовность":"Buyurtmachi tayyorlikni bildirdi",
+"Работник заявил готовность":"Ishchi tayyorlikni bildirdi",
+"ждёт вашего решения":"sizning qaroringizni kutmoqda","ждёт вторую сторону":"ikkinchi tomonni kutmoqda",
+"Объект не подготовлен":"Obyekt tayyorlanmagan","Подготовить листы объекта":"Obyekt varaqlarini tayyorlash",
+"Готовлю листы…":"Varaqlar tayyorlanmoqda…","Заводить листы может только администратор объекта.":"Varaqlarni faqat obyekt administratori yaratadi.",
+"Время — в формате ЧЧ:ММ":"Vaqt — SS:DD ko'rinishida","Время — в формате ЧЧ:ММ, не позже текущего":"Vaqt — SS:DD ko'rinishida, hozirgidan keyin emas",
+"Укажите дату":"Sanani ko'rsating","Дата «по» раньше даты «с»":"«Gacha» sanasi «dan» sanasidan oldin",
+"Такое имя уже есть в бригаде":"Bunday ism brigadada allaqachon bor",
+"Выделите и скопируйте текст на экране":"Ekrandagi matnni belgilab nusxalang",
+"Не удалось скопировать — выделите текст на экране":"Nusxalanmadi — ekrandagi matnni belgilang",
+"Код — буквы и цифры, обычно 8 знаков.":"Kod — harflar va raqamlar, odatda 8 belgi.",
+"Пока пусто: нарядов нет, отметок нет.":"Hozircha bo'sh: topshiriq yo'q, belgi yo'q.",
+"Пока вы работаете один — это нормально":"Hozircha yolg'iz ishlayapsiz — bu normal",
+"Вперёд пока ничего не назначено.":"Oldinga hozircha hech narsa tayinlanmagan.",
+"неделя назад и всё, что назначено вперёд":"bir hafta oldin va oldinga tayinlangan hammasi",
+"Проверьте — распознано несколько":"Tekshiring — bir nechtasi tanildi",
+"уйдёт бригадиру на подтверждение":"tasdiqlash uchun brigadirga ketadi",
+"— уйдёт бригадиру на подтверждение":"— tasdiqlash uchun brigadirga ketadi",
+"по подтверждённым отметкам табеля":"tasdiqlangan ish vaqti belgilariga ko'ra",
+"Человекодней за 7 дней (подтверждённых)":"7 kundagi odam-kunlar (tasdiqlangan)",
+"— загляните в календарь":"— kalendarga qarang","Напишите задание":"Topshiriqni yozing",
+"Загружаю план…":"Reja yuklanmoqda…","План не открылся":"Reja ochilmadi",
+"В прайсе пока нет ни одной позиции.":"Narxlar ro'yxatida hozircha bitta ham pozitsiya yo'q.",
+"Не удалось загрузить.":"Yuklanmadi.",
+"Проверьте интернет и откройте ещё раз.":"Internetni tekshirib yana oching.",
+"остаток на объекте важнее истории закупа — он и принимается по факту":"obyektdagi qoldiq xarid tarixidan muhimroq — u haqiqat bo'yicha qabul qilinadi",
+"Например: «сдир потолков по доллару за квадрат, а в спальне по два» или «за всю электрику 300 долларов».":"Masalan: «shift sidirish kvadratiga bir dollardan, yotoqxonada ikkitadan» yoki «butun elektr uchun 300 dollar».",
+"Куплено":"Sotib olingan",
+"Ушло":"Sarflandi",
+"Ждём чеки на":"Cheklar kutilmoqda:",
+"Осталось":"Qoldi",
+"Итого":"Jami",
+"Всего":"Jami",
+"Сегодня":"Bugun",
+"Завтра":"Ertaga",
+"Вчера":"Kecha",
+"Неделя":"Hafta",
+"Месяц":"Oy",
+"Назад":"Orqaga",
+"Далее":"Keyingi",
+"Готово ✓":"Tayyor ✓",
+"Отправить":"Yuborish",
+"Добавить":"Qo'shish",
+"Удалить":"O'chirish",
+"Изменить":"O'zgartirish",
+"Выбрать":"Tanlash",
+"Закрыть":"Yopish",
+"Открыть":"Ochish",
+"Нет":"Yo'q",
+"Да":"Ha",
+"Ошибка":"Xato",
+"Готово!":"Tayyor!",
+"Смета":"Smeta",
+"Помещения":"Xonalar",
+"Помещение":"Xona",
+"Направление":"Yo'nalish",
+"Раздел":"Bo'lim",
+"Вид":"Tur",
+"Тип":"Turi",
+"Ед":"Birlik",
+"Объём":"Hajm",
+"Код":"Kod",
+"Кто":"Kim",
+"Кому":"Kimga",
+"Поле":"Maydon",
+"Ключ":"Kalit",
+"Валюта":"Valyuta",
+"Оценка":"Taxmin",
+"Заявитель":"Bildirgan",
+"Инициатор":"Boshlovchi",
+"Категория":"Toifa",
+"Компонент":"Komponent",
+"Назначение":"Vazifasi",
+"Параметр":"Parametr",
+"Источник":"Manba",
+"Решённые":"Hal qilinganlar",
+"новых нет":"yangisi yo'q",
+"новый":"yangi",
+"новых":"yangi",
+"позиций":"pozitsiya",
+"без цен":"narxsiz",
+"Без цены":"Narxsiz",
+"человек":"kishi",
+"чел.":"kishi",
+"Опережение":"Ilgarilash",
+"Отставание":"Kechikish",
+"Переплата":"Ortiqcha to'lov",
+"Обновлено":"Yangilandi",
+"Создать":"Yaratish",
+"Сохранено":"Saqlandi",
+"Подготовить листы бригады в общей базе (4 листа)?":"Umumiy bazada brigada varaqlarini tayyorlash (4 varaq)?",
+"Кнопка ниже создаст недостающие листы объекта (":"Pastdagi tugma obyektning yetishmayotgan varaqlarini yaratadi (",
+"Данные не загрузились — вернитесь и зайдите ещё раз":"Ma'lumot yuklanmadi — qaytib yana kiring",
+"Сервер не нашёл лист:":"Server varaqni topmadi:",
+"Сервер не отвечает (HTTP":"Server javob bermaydi (HTTP",
+"в таблице объекта не хватает листов":"obyekt jadvalida varaqlar yetishmaydi",
+"Ни один лист не создан. Либо все стандартные листы объекта уже есть — тогда серверу не хватает листа вне стандартного набора, скажите об этом администратору.":"Bitta ham varaq yaratilmadi. Yoki obyektning barcha standart varaqlari bor — unda serverga standart to'plamdan tashqari varaq yetishmaydi, administratorga xabar bering.",
+"Изменений пока не заявляли. Любая сторона может предложить добавить или убрать работу, поменять цену, объём или срок — вторая сторона примет или оспорит.":"Hozircha o'zgarish bildirilmagan. Har qaysi tomon ish qo'shishni yoki olib tashlashni, narx, hajm yoki muddatni o'zgartirishni taklif qilishi mumkin — ikkinchi tomon qabul qiladi yoki e'tiroz bildiradi.",
+"Пока не заданы окна и двери, объёмы работ по откосам, подоконникам и наличникам считаются наугад. Скажите голосом: «в спальне одно окно и одна дверь».":"Derazalar va eshiklar berilmaguncha, yon devor, deraza taxtasi va naliçnik ishlarining hajmi taxminan hisoblanadi. Ovoz bilan ayting: «yotoqxonada bitta deraza va bitta eshik».",
+"Отметьте у помещений, из чего в них попадают — по этой схеме считается порядок заливки полов: залить всё разом нельзя, к дальней комнате не подойти.":"Xonalarga qayerdan kirilishini belgilang — pol quyish tartibi shu chizma bo'yicha hisoblanadi: hammasini birdan quyib bo'lmaydi, uzoq xonaga yo'l qolmaydi.",
+"Материалов пока нет. Внесите то, что уже куплено и лежит на объекте, — по памяти, без чеков: остаток принимается по факту.":"Hozircha material yo'q. Sotib olingan va obyektda turganini kiriting — xotiradan, cheksiz: qoldiq haqiqat bo'yicha qabul qilinadi.",
+"Технологические паузы (стяжка сохнет 28 дн, штукатурка 7 дн…) пока не влияют на расчёт: у работ текущей сметы нет привязки к видам справочника. Она появляется у работ, добавленных через «Профиль ремонта».":"Texnologik pauzalar (styajka 28 kun, shuvoq 7 kun quriydi…) hozircha hisobga ta'sir qilmaydi: joriy smeta ishlari ma'lumotnoma turlariga bog'lanmagan. Bog'lanish «Ta'mir profili» orqali qo'shilgan ishlarda paydo bo'ladi.",
+"жилая":"turar",
+"кухня":"oshxona",
+"санузел":"hojatxona",
+"коридор":"dahliz",
+"прихожая":"dahliz",
+"балкон":"balkon",
+"лоджия":"lodjiya",
+"детская":"bolalar xonasi",
+"гостиная":"mehmonxona",
+"Все материалы — покупает заказчик":"Barcha materiallarni buyurtmachi sotib oladi",
+"Всё, что не в этом списке, — отдельный разговор":"Bu ro'yxatda yo'q narsalar — alohida gap",
+"состав и цена по взаимному согласию":"tarkib va narx o'zaro kelishuv bo'yicha",
+"Полы — базовый вариант (локальный ремонт)":"Pollar — asosiy variant (mahalliy ta'mir)",
+"Малярка полным циклом — все комнаты, лоджия, кухня":"Bo'yoq ishlari to'liq tsikl — barcha xonalar, lodjiya, oshxona",
+"Электрика — 54 точки, щит, перекладка":"Elektr — 54 nuqta, shchit, qayta yotqizish",
+"Батареи 3 шт., переварка, регистр на лоджии":"Radiatorlar 3 dona, qayta payvandlash, lodjiyada registr",
+"Двери, плинтусы, откосы":"Eshiklar, plintuslar, yon devorlar",
+"Кафель в санузле, поддон, гидроизоляция":"Hojatxonada kafel, poddon, gidroizolyatsiya",
+"Стекло душевой кабины":"Dush kabinasi shishasi",
+"Утепление лоджии — три стены":"Lodjiyani isitish — uch devor",
+"Объединение санузла":"Hojatxonani birlashtirish",
+"Тёплый пол":"Issiq pol",
+"Финишное покрытие полов — материал заказчика":"Pol qoplamasi — buyurtmachi materiali",
+"Двери и плинтусы — материал заказчика":"Eshiklar va plintuslar — buyurtmachi materiali",
+"доп D-01, закрыт":"qo'shimcha D-01, yopilgan"
+
+
+};
+
+/* Шаблоны: строка содержит данные (числа, коды, названия) — переводим обвязку,
+   данные оставляем на месте. Порядок важен: правила идут сверху вниз. */
+const UZ_RULES = [
+  [/^Задано (\d+) из (\d+) · всё заполнено$/, "$1 dan $2 berilgan · hammasi to'ldirilgan"],
+  [/^Задано (\d+) из (\d+) · не задано (\d+)$/, "$1 dan $2 berilgan · $3 berilmagan"],
+  [/^(.+) · финиш на ([\d.,]+)-й день · (.+)$/, "$1 · tugash $2-kuni · $3"],
+  [/^Критический путь · (\d+) работ$/, "Kritik yo'l · $1 ish"],
+  [/^Оценка ([\d.,]+) дн при бригаде из (\d+) человек$/, "Taxmin $1 kun, brigada $2 kishi"],
+  [/^При бригаде (\d+) чел\.$/, "Brigada $1 kishi"],
+  [/^(\d+) помещений · обмеры полны$/, "$1 xona · o'lchamlar to'liq"],
+  [/^(\d+) ждут решения$/, "$1 qaror kutmoqda"],
+  [/^(\d+) ждут вашего решения$/, "$1 sizning qaroringizni kutmoqda"],
+  [/^(\d+) на подтверждение$/, "$1 tasdiqlashga"],
+  [/^Ждут привязки: (\d+)$/, "Bog'lash kutmoqda: $1"],
+  [/^ждут привязки (\d+)$/, "bog'lash kutmoqda $1"],
+  [/^Скрыть готовое \((\d+)\)$/, "Tayyorini yashirish ($1)"],
+  [/^· скрыто готовых: (\d+)$/, "· yashirilgan tayyor: $1"],
+  [/^(\d+) позиций · без цен$/, "$1 pozitsiya · narxsiz"],
+  [/^(\d+) позиций$/, "$1 pozitsiya"],
+  [/^Готово · (\d+) %$/, "Tayyor · $1 %"],
+  [/^В работе · (\d+) %$/, "Ishda · $1 %"],
+  [/^было: (.+) → станет: (.+)$/, "edi: $1 → bo'ladi: $2"],
+  [/^на договор не влияет · (.+)$/, "shartnomaga ta'sir qilmaydi · $1"],
+  [/^(.+) · заявил (.+) · (.+)$/, "$1 · bildirdi $2 · $3"],
+  [/^из (\d+) · решает вторая сторона$/, "$1 dan · ikkinchi tomon hal qiladi"],
+  [/^(.+) · решает вторая сторона$/, "$1 · ikkinchi tomon hal qiladi"],
+  [/^пол (\S+) · стены (\S+) · потолок (\S+) · периметр (\S+)$/, "pol $1 · devor $2 · shift $3 · perimetr $4"],
+  [/^стены (.+) · потолок (.+) · окон (\d+) · дверей (\d+)$/, "devor $1 · shift $2 · deraza $3 · eshik $4"],
+  [/^(.+) · пол (.+) · периметр (.+) · высота (.+)$/, "$1 · pol $2 · perimetr $3 · balandlik $4"],
+  [/^Выдано (.+)$/, "Berilgan $1"],
+  [/^Чек от (.+)$/, "Chek $1"],
+  [/^(.+) · новый · снимок остался в чате бота$/, "$1 · yangi · surat bot chatida qoldi"],
+  [/^не задано (\d+)$/, "berilmagan $1"],
+  [/^например (\d+)$/, "masalan $1"],
+  [/^(\d+) из (\d+)$/, "$1 dan $2"],
+  [/^(.+) из ([\d\s .,]+)\$$/, "$1 / $2$"],
+  [/^Принятых работ в списке нет: (\d+) уже приняты, их цена заморожена — (?:скидка|изменения) действу(?:ет|ют) вперёд\.$/,
+   "Ro'yxatda qabul qilingan ish yo'q: $1 allaqachon qabul qilingan, narxi muzlatilgan — o'zgarish oldinga ta'sir qiladi."],
+  [/^(\d+)\. (.+) · (\d+)\. (.+)$/, "$1. $2 · $3. $4"],
+  [/^Выход считаем через (.+) — он заливается последним\.$/, "Chiqishni $1 orqali hisoblaymiz — u oxirida quyiladi."],
+  [/^(.+) м² \(сейчас (\d+)\)$/, "$1 m² (hozir $2)"],
+  [/^м² \(сейчас (\d+)\)$/, "m² (hozir $1)"],
+  [/^(.+), добрый день$/, "$1, xayrli kun"],
+  [/^Остаток по факту, (.+)$/, "Haqiqiy qoldiq, $1"],
+  [/^на (\d\d\.\d\d\.\d{4})$/, "$1 ga"],
+  [/^([\d.,]+) (л|кг|мешок|шт|дн)$/, "$1 $2"]
+];
+
+/* Служебные слова внутри составных строк: единицы и статусы приходят из листа,
+   но человек читает их как интерфейс. Замена только по границам слова. */
+const UZ_WORDS = [
+  [/(^|[\s·(])дн(?=$|[\s·).,])/g, "$1kun"], [/(^|[\s·(])шт(?=$|[\s·).,])/g, "$1dona"],
+  [/(^|[\s·(])чел-дн(?=$|[\s·).,])/g, "$1odam-kun"], [/(^|[\s·(])чел\.(?=$|[\s·).,])/g, "$1kishi"],
+  [/(^|[\s·(])сум(?=$|[\s·).,])/g, "$1so'm"], [/(^|[\s·(])мешок(?=$|[\s·).,])/g, "$1qop"],
+  [/(^|[\s·(])компл(?=$|[\s·).,])/g, "$1to'plam"], [/(^|[\s·(])комплект(?=$|[\s·).,])/g, "$1to'plam"],
+  [/(^|[\s·(])Готово(?=$|[\s·).,])/g, "$1Tayyor"], [/(^|[\s·(])В работе(?=$|[\s·).,])/g, "$1Ishda"],
+  [/(^|[\s·(])Не начато(?=$|[\s·).,])/g, "$1Boshlanmagan"], [/(^|[\s·(])Заявлено(?=$|[\s·).,])/g, "$1Bildirilgan"],
+  [/(^|[\s·(])Оспорено(?=$|[\s·).,])/g, "$1E'tiroz bildirilgan"], [/(^|[\s·(])Принято(?=$|[\s·).,])/g, "$1Qabul qilingan"],
+  [/(^|[\s·(])заявлено(?=$|[\s·).,])/g, "$1bildirilgan"], [/(^|[\s·(])подтверждено(?=$|[\s·).,])/g, "$1tasdiqlangan"],
+  [/(^|[\s·(])отклонено(?=$|[\s·).,])/g, "$1rad etilgan"], [/(^|[\s·(])пришёл(?=$|[\s·).,])/g, "$1keldi"],
+  [/(^|[\s·(])ушёл(?=$|[\s·).,])/g, "$1ketdi"], [/(^|[\s·(])обед(?=$|[\s·).,])/g, "$1tushlik"],
+  [/(^|[\s·(])весь день(?=$|[\s·).,])/g, "$1kun bo'yi"], [/(^|[\s·(])до обеда(?=$|[\s·).,])/g, "$1tushlikkacha"],
+  [/(^|[\s·(])после обеда(?=$|[\s·).,])/g, "$1tushlikdan keyin"], [/(^|[\s·(])голос(?=$|[\s·).,])/g, "$1ovoz"],
+  [/м²/g, "m²"], [/м³/g, "m³"], [/(\d)\s*м(?=$|[\s·).,])/g, "$1 m"],
+  [/(^|[\s·(])л(?=$|[\s·).,])/g, "$1l"], [/(^|[\s·(])кг(?=$|[\s·).,])/g, "$1kg"],
+  [/(^|[\s·(])окон(?=$|[\s·).,])/g, "$1deraza"], [/(^|[\s·(])дверей(?=$|[\s·).,])/g, "$1eshik"],
+  [/(^|[\s·(])Куплено(?=$|[\s·).,])/g, "$1Sotib olingan"], [/(^|[\s·(])Ушло(?=$|[\s·).,])/g, "$1Sarflandi"],
+  [/(^|[\s·(])Длительность_дней(?=$|[\s·).,])/g, "$1Muddat, kun"],
+  [/(^|[\s·(])Готовность_%(?=$|[\s·).,])/g, "$1Tayyorlik, %"],
+  [/января/g,"yanvar"],[/февраля/g,"fevral"],[/марта/g,"mart"],[/апреля/g,"aprel"],
+  [/мая/g,"may"],[/июня/g,"iyun"],[/июля/g,"iyul"],[/августа/g,"avgust"],
+  [/сентября/g,"sentabr"],[/октября/g,"oktabr"],[/ноября/g,"noyabr"],[/декабря/g,"dekabr"]
+];
+
+const uzNorm = t => String(t).replace(/ /g, " ").replace(/\s+/g, " ").trim();
+
+/* Перевод одной строки. null — «перевода нет» (оставляем как есть).
+   Три уровня: точная надпись → шаблон с данными → служебные слова.
+   Составную строку («Изменить цену · решает вторая сторона») пробуем ещё и
+   по частям вокруг разделителя «·»: панель склеивает надписи с данными, и
+   ждать точного совпадения целой склейки в словаре бессмысленно. */
+function uzPart(t){
+  if(UZ[t] !== undefined) return UZ[t];
+  let w = t, hit = false;
+  /* Шаблон переводит обвязку строки, слова — то, что внутри неё осталось:
+     «SP-01 · Спальня · 0.5 дн · финиш на 0.5-й день · Готово» требует обоих
+     проходов, иначе «дн» и «Готово» остаются по-русски рядом с переводом. */
+  for(const [re, rep] of UZ_RULES){ if(re.test(w)){ w = w.replace(re, rep); hit = true; break; } }
+  /* Длинная фраза без разделителей — это, как правило, текст из таблицы
+     объекта (состав договора, название работы). Служебные слова внутри неё
+     не трогаем: «Батареи 3 шт., переварка» с подменённым «шт.» читается как
+     сломанные данные, а выгоды нет. */
+  if(hit || t.length <= 60 || t.indexOf(" · ") >= 0){
+    for(const [re, rep] of UZ_WORDS){ const n = w.replace(re, rep); if(n !== w){ w = n; hit = true; } }
+  }
+  return hit ? w : null;
+}
+function uzStr(raw){
+  const t = uzNorm(raw);
+  if(!t || !/[А-Яа-яЁё]/.test(t)) return null;
+  const whole = uzPart(t);
+  if(whole !== null) return whole;
+  if(t.indexOf(" · ") >= 0){
+    const parts = t.split(" · ");
+    let any = false;
+    const done = parts.map(p => { const v = uzPart(p); if(v !== null){ any = true; return v; } return p; });
+    if(any) return done.join(" · ");
+  }
+  /* Не покрыто словарём — запоминаем для ревизии покрытия (см. шапку слоя). */
+  try{ (window.__uzMiss = window.__uzMiss || new Set()).add(t); }catch(e){}
+  return null;
+}
+
+/* Перевод готового DOM: текстовые узлы + надписи в атрибутах. */
+function uzApply(root){
+  if(LANG !== "uz" || !root) return;
+  const w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null);
+  const list = [];
+  let n; while((n = w.nextNode())){
+    const p = n.parentNode && n.parentNode.nodeName;
+    if(p === "SCRIPT" || p === "STYLE") continue;
+    list.push(n);
+  }
+  list.forEach(node => { const v = uzStr(node.nodeValue); if(v !== null && v !== uzNorm(node.nodeValue)) node.nodeValue = v; });
+  root.querySelectorAll("[placeholder],[title],[aria-label]").forEach(el => {
+    ["placeholder","title","aria-label"].forEach(a => {
+      const cur = el.getAttribute(a); if(!cur) return;
+      const v = uzStr(cur); if(v !== null && v !== uzNorm(cur)) el.setAttribute(a, v);
+    });
+  });
+}
+
+/* Наблюдатель: панель перерисовывает не только #app (тосты, модальные листы,
+   точечные box.innerHTML в 15 местах) — вместо правки каждого места слой
+   слушает body. Замок UZ_BUSY нужен потому, что наша же замена текста
+   порождает новые записи мутаций. */
+function uzWatch(){
+  if(UZ_OBS || LANG !== "uz") return;
+  UZ_OBS = new MutationObserver(() => {
+    if(UZ_BUSY) return;
+    UZ_BUSY = true;
+    try{ uzApply(document.body); }finally{ UZ_OBS.takeRecords(); UZ_BUSY = false; }
+  });
+  UZ_OBS.observe(document.body, { childList:true, subtree:true, characterData:true });
+}
+
+/* Кнопка языка. Вставляется в body один раз, поэтому ни один экран
+   не приходится править: переключатель нужен и на экране приглашения,
+   куда работник попадает до всякой роли. */
+function langButton(){
+  if(document.getElementById("langbtn")) return;
+  const b = document.createElement("button");
+  b.id = "langbtn";
+  b.textContent = LANG === "uz" ? "RU" : "UZ";
+  b.setAttribute("aria-label", LANG === "uz" ? "Русский" : "O'zbekcha");
+  b.style.cssText = "position:fixed;right:10px;bottom:calc(10px + env(safe-area-inset-bottom,0px));z-index:9999;" +
+    "padding:7px 11px;border:0;border-radius:12px;background:rgba(58,58,60,.92);color:#fff;" +
+    "font-size:13px;font-weight:600;letter-spacing:.5px;box-shadow:0 2px 8px rgba(0,0,0,.45)";
+  b.onclick = () => langSet(LANG === "uz" ? "ru" : "uz");
+  document.body.appendChild(b);
+}
+
+/* Смена языка. На узбекский — включаем слой и переводим то, что на экране.
+   Обратно — панель просто перерисовывает экран: она всегда рисует по-русски,
+   поэтому «снять перевод» = отрисовать заново, без перезагрузки данных. */
+function langSet(v){
+  LANG = (v === "uz") ? "uz" : "ru";
+  try{ localStorage.setItem(LANG_KEY, LANG); }catch(e){}
+  const b = document.getElementById("langbtn");
+  if(b){ b.textContent = LANG === "uz" ? "RU" : "UZ"; b.setAttribute("aria-label", LANG === "uz" ? "Русский" : "O'zbekcha"); }
+  if(LANG === "uz"){ uzWatch(); uzApply(document.body); }
+  else { if(UZ_OBS){ UZ_OBS.disconnect(); UZ_OBS = null; } try{ render(); }catch(e){} }
+}
+
+/* Начальный язык: сначала выбор человека (он главнее всего), затем язык из
+   09_Доступы (свойство пользователя — так задумано планом E1), затем язык
+   Telegram. Ничего нет — русский. */
+function langInit(){
+  let saved = null;
+  try{ saved = localStorage.getItem(LANG_KEY); }catch(e){}
+  const fromSheet = (typeof D === "object" && D && D.lang) ? String(D.lang).toLowerCase().slice(0,2) : "";
+  const fromTg = String((tg && tg.initDataUnsafe && tg.initDataUnsafe.user && tg.initDataUnsafe.user.language_code) || "").toLowerCase().slice(0,2);
+  const want = saved || (fromSheet === "uz" ? "uz" : "") || (fromTg === "uz" ? "uz" : "") || "ru";
+  langButton();
+  langSet(want);
+}
+
 /* ── СТАРТ ────────────────────────────────────────────────── */
 tg?.ready();
 tg?.expand();
 load();
+langInit();                                       // кнопка языка нужна и до данных [чат 020]
 setInterval(refresh, 15000);
 document.addEventListener("visibilitychange", () => { if(!document.hidden) refresh(); });
 window.addEventListener("focus", refresh);
