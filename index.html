@@ -1459,14 +1459,17 @@ async function dscPackApply(pk){
   await dscRun('Вношу пакет в смету…', list, async c => { await chgApplyOne(c); });
 }
 
-/* Виды заявок по роли. Бригадиру сервер не отдаёт разнесение цен по работам
-   (price_alloc_usd только заказчику), поэтому вид, дельту которого без него
-   не посчитать, ему не показывается: заявка ушла бы с дельтой от нуля и
-   раздула бы договор на полную цену вместо разницы. [чат 019] */
+/* Виды заявок — по факту прихода цены, а не по роли. В 019 бригадиру не отдавали
+   разнесение (price_alloc_usd), и виды, дельту которых без него не посчитать, ему
+   не показывались: заявка ушла бы с дельтой от нуля и раздула бы договор. С чата 022
+   сервер отдаёт цену работы и бригадиру — своя цена есть знание исполнителя, а не наш
+   секрет, — поэтому условие переехало с роли на наличие поля: пришла цена — виды открыты,
+   не пришла (старый сервер, урезанный контур) — прежняя защита остаётся в силе. */
 const CH_KINDS_NO_ALLOC = ['добавить', 'срок'];
-const chgKindsFor = () => (dscCan() ? CH_KINDS : CH_KINDS_NO_ALLOC);
+const hasAlloc = () => (D && Array.isArray(D.works)) && D.works.some(w => w.price_alloc_usd !== undefined && w.price_alloc_usd !== null);
+const chgKindsFor = () => (hasAlloc() ? CH_KINDS : CH_KINDS_NO_ALLOC);
 function chgKindsNote(){
-  if(dscCan()) return '';
+  if(hasAlloc()) return '';
   return '<div class="stat"><span class="k" style="font-size:13px;opacity:.75">Цену, объём и снятие работы заявляет заказчик — у вас нет его разнесения цен по работам. Вы можете предложить новую работу со своей ценой или другой срок, а на предложение заказчика ответить в «Изменениях».</span></div>';
 }
 
@@ -4845,7 +4848,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "022.1";
+const BUILD = "022.2";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
