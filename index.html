@@ -4615,14 +4615,14 @@ function langButton(){
   b.style.cssText = "position:fixed;right:10px;bottom:calc(10px + env(safe-area-inset-bottom,0px));z-index:9999;" +
     "padding:7px 11px;border:0;border-radius:12px;background:rgba(58,58,60,.92);color:#fff;" +
     "font-size:13px;font-weight:600;letter-spacing:.5px;box-shadow:0 2px 8px rgba(0,0,0,.45)";
-  b.onclick = () => langSet(LANG === "uz" ? "ru" : "uz");
+  b.onclick = () => langSet(LANG === "uz" ? "ru" : "uz", true);   // true = переключил человек
   document.body.appendChild(b);
 }
 
 /* Смена языка. На узбекский — включаем слой и переводим то, что на экране.
    Обратно — панель просто перерисовывает экран: она всегда рисует по-русски,
    поэтому «снять перевод» = отрисовать заново, без перезагрузки данных. */
-function langSet(v){
+function langSet(v, byUser){
   LANG = (v === "uz") ? "uz" : "ru";
   try{ localStorage.setItem(LANG_KEY, LANG); }catch(e){}
   const b = document.getElementById("langbtn");
@@ -4637,7 +4637,11 @@ function langSet(v){
        язык уже сохранён. */
     let ok = false;
     try{ if(typeof D === "object" && D && D.role){ render(); ok = true; } }catch(e){}
-    if(!ok) location.reload();
+    /* Перезагрузка — только когда язык переключил человек. Вызов из langInit()
+       приходит ДО загрузки данных (D ещё null), и безусловный reload там
+       превращал бы каждый запуск панели в цикл перезагрузок — поймано прод-
+       проверкой сразу после выката [чат 020]. */
+    if(!ok && byUser) location.reload();
   }
 }
 
