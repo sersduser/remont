@@ -4844,14 +4844,15 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "021.5";
+const BUILD = "021.6";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
   d.id = "buildtag";
   d.textContent = BUILD;
-  d.style.cssText = "position:fixed;right:58px;bottom:calc(16px + env(safe-area-inset-bottom,0px));z-index:9998;" +
-    "font-size:11px;line-height:1;color:rgba(235,235,245,.35);letter-spacing:.5px;pointer-events:none;user-select:none";
+  d.style.cssText = "position:fixed;right:56px;bottom:calc(10px + env(safe-area-inset-bottom,0px));z-index:9998;" +
+    "padding:6px 9px;border-radius:10px;background:rgba(58,58,60,.72);color:rgba(235,235,245,.9);" +
+    "font-size:12px;font-weight:600;line-height:1;letter-spacing:.5px;pointer-events:none;user-select:none";
   document.body.appendChild(d);
 }
 
