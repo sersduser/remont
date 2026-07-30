@@ -4829,11 +4829,26 @@ function langInit(){
   langSet(want);
 }
 
+/* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
+   перехватывает (pointer-events:none) и не переводится языковым слоем —
+   в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
+const BUILD = "021.4";
+function buildTag(){
+  if(document.getElementById("buildtag")) return;
+  const d = document.createElement("div");
+  d.id = "buildtag";
+  d.textContent = BUILD;
+  d.style.cssText = "position:fixed;right:58px;bottom:calc(16px + env(safe-area-inset-bottom,0px));z-index:9998;" +
+    "font-size:11px;line-height:1;color:rgba(235,235,245,.35);letter-spacing:.5px;pointer-events:none;user-select:none";
+  document.body.appendChild(d);
+}
+
 /* ── СТАРТ ────────────────────────────────────────────────── */
 tg?.ready();
 tg?.expand();
 load();
 langInit();                                       // кнопка языка нужна и до данных [чат 020]
+buildTag();                                       // видимый номер версии [чат 021]
 setInterval(refresh, 15000);
 document.addEventListener("visibilitychange", () => { if(!document.hidden) refresh(); });
 window.addEventListener("focus", refresh);
