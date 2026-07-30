@@ -4575,6 +4575,9 @@ const UZ_RULES = [
   [/^периметр ([\d.,]+)( м| m)?$/, "perimetr $1$2"],
   [/^высота ([\d.,]+)( м| m)?$/, "balandlik $1$2"],
   [/^не заданы: (.+)$/, "berilmagan: $1"],
+  [/^Пройдено ([\d.,]+) из ([\d.,]+) дн · прошло ([\d.,]+)$/, "Reja bo'yicha $1 / $2 kun · o'tdi $3"],
+  [/^Пройдено ([\d.,]+) из ([\d.,]+) дн$/, "Reja bo'yicha $1 / $2 kun"],
+  [/^прошло ([\d.,]+)$/, "o'tdi $1"],
   [/^за (м²|m²)$/, "m² uchun"],
   [/^за (м³|m³)$/, "m³ uchun"],
   [/^за (м|m)$/, "m uchun"],
@@ -4701,7 +4704,18 @@ function uzApply(root){
     if(p === "SCRIPT" || p === "STYLE") continue;
     list.push(n);
   }
-  list.forEach(node => { const v = uzStr(node.nodeValue); if(v !== null && v !== uzNorm(node.nodeValue)) node.nodeValue = v; });
+  list.forEach(node => {
+    const raw = node.nodeValue;
+    const v = uzStr(raw);
+    if(v === null || v === uzNorm(raw)) return;
+    /* Края узла возвращаем на место [чат 021, живой прогон]. Панель разбивает
+       надпись на соседние узлы («880 000 сум» жирным + « из аванса 26.06…»),
+       и пробел на стыке живёт внутри одного из них; uzNorm его срезает, а
+       замена подставляла обрезанный перевод — получалось «so'mavansdan». */
+    const lead = (raw.match(/^\s*/) || [''])[0];
+    const tail = (raw.match(/\s*$/) || [''])[0];
+    node.nodeValue = lead + v + tail;
+  });
   root.querySelectorAll("[placeholder],[title],[aria-label]").forEach(el => {
     ["placeholder","title","aria-label"].forEach(a => {
       const cur = el.getAttribute(a); if(!cur) return;
