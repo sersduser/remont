@@ -2482,15 +2482,32 @@ function toast(msg, kind){
 }
 
 /* ── НАВИГАЦИЯ (стек, ровно один уровень вглубь) ───────────── */
-function go(k){ stack.push(k); render(true); }
-function back(){ if(stack.length > 1){ stack.pop(); render(true); } }
+/* Вертикальная позиция экрана [чат 021]. Раньше любая перерисовка бросала
+   страницу наверх: поллинг раз в 15 секунд сбрасывал прокрутку посреди чтения
+   длинного списка, а возврат со второго уровня открывал экран с начала, хотя
+   человек ушёл с его середины. Позиция хранится по ключу экрана в памяти
+   вкладки — переживать перезагрузку ей незачем. */
+const SCROLL = {};
+function scrollSave(){ try{ SCROLL[stack[stack.length - 1]] = window.scrollY || 0; }catch(e){} }
+function go(k){ scrollSave(); stack.push(k); render(true); }
+function back(){ if(stack.length > 1){ scrollSave(); stack.pop(); render(true); } }
 
 function render(toTop){
   const k = stack[stack.length - 1];
+  const keep = window.scrollY || 0;               // где человек стоял до перерисовки
   app.innerHTML = (SCREENS[k] || SCREENS.home)();
   uzApply(app);                                   // языковой слой E1 [чат 020]
   if(k === "object" && objPlan()) setTimeout(objShowPlan, 0);   // картинка плана грузится отдельным запросом [чат 016]
-  if(toTop) window.scrollTo(0, 0);
+  /* Переход (toTop) открывает экран там, где его оставили в прошлый раз;
+     перерисовка от данных не двигает страницу вовсе. Восстановление отложено
+     на кадр: сразу после подстановки разметки высота документа ещё старая,
+     и scrollTo упёрся бы в неё [чат 021]. */
+  const want = toTop ? (SCROLL[k] || 0) : keep;
+  if(want || toTop){
+    const put = () => window.scrollTo(0, want);
+    put();
+    if(typeof requestAnimationFrame === "function") requestAnimationFrame(put); else setTimeout(put, 0);
+  }
   if(tg){
     if(stack.length > 1){ tg.BackButton.show(); tg.BackButton.onClick(back); }
     else tg.BackButton.hide();
@@ -4500,6 +4517,14 @@ const UZ = {
 "Кнопка ниже создаст недостающие листы объекта (12 штук) с правильными шапками. Существующие листы не тронутся — их данные останутся как есть.":"Quyidagi tugma obyektning yetishmayotgan varaqlarini (12 ta) to'g'ri sarlavhalar bilan yaratadi. Mavjud varaqlar tegilmaydi — ulardagi ma'lumot o'z holicha qoladi.",
 "Ни один лист не создан. Либо все стандартные листы объекта уже есть — тогда серверу не хватает листа вне стандартного набора, скажите об этом администратору. Либо у вас нет прав заводить листы.":"Birorta varaq yaratilmadi. Yo obyektning barcha standart varaqlari allaqachon bor — u holda serverga standart to'plamdan tashqaridagi varaq yetishmayapti, buni administratorga ayting. Yo sizda varaq yaratish huquqi yo'q.",
 "точка":"nuqta","добавить":"qo'shish","срок":"muddat","цена":"narx","объём":"hajm",
+"Малярка":"Bo'yoq ishlari","Столярка":"Duradgorlik","Кафель":"Kafel",
+"Конструкции":"Konstruksiyalar","Утепление":"Issiqlik izolyatsiyasi",
+"(действует сутки)":"(bir kun amal qiladi)","действует сутки":"bir kun amal qiladi",
+"Пока вы работаете один — это нормально":"Hozircha yolg'iz ishlayapsiz — bu normal",
+"Имя (как зовут в бригаде)":"Ism (brigadada qanday chaqirishadi)",
+"Телефон (не обязательно)":"Telefon (majburiy emas)",
+"Без цены":"Narxsiz","с":"dan","по (можно ту же)":"gacha (o'sha kun ham bo'ladi)",
+"Отменить":"Bekor qilish","сколько часов":"necha soat","часов":"soat",
 "не заданы: окна, двери":"berilmagan: deraza, eshik","не заданы: окна":"berilmagan: deraza",
 "не заданы: двери":"berilmagan: eshik","окна, двери":"deraza, eshik",
 "доп D-01, закрыт":"qo'shimcha D-01, yopilgan"
@@ -4575,6 +4600,17 @@ const UZ_RULES = [
   [/^периметр ([\d.,]+)( м| m)?$/, "perimetr $1$2"],
   [/^высота ([\d.,]+)( м| m)?$/, "balandlik $1$2"],
   [/^не заданы: (.+)$/, "berilmagan: $1"],
+  [/^Без цены \(первые (\d+) из (\d+)\):$/, "Narxsiz (birinchi $1 / $2):"],
+  [/^Работников: (\d+)$/, "Ishchilar: $1"],
+  [/^добавлен (.+)$/, "qo'shilgan $1"],
+  [/^отключён (.+)$/, "o'chirilgan $1"],
+  [/^сегодня в поле: (\d+)$/, "bugun ishda: $1"],
+  [/^(\d+) новых$/, "$1 ta yangi"],
+  [/^Человекодней за (\d+) дней \(подтверждённых\)$/, "$1 kun ichida odam-kun (tasdiqlangan)"],
+  [/^назначений: (\d+)$/, "tayinlovlar: $1"],
+  [/^— израсходовано (.+)$/, "— sarflandi $1"],
+  [/^израсходовано (.+)$/, "sarflandi $1"],
+  [/^готовность (\d+) %$/, "tayyorlik $1 %"],
   [/^Пройдено ([\d.,]+) из ([\d.,]+) дн · прошло ([\d.,]+)$/, "Reja bo'yicha $1 / $2 kun · o'tdi $3"],
   [/^Пройдено ([\d.,]+) из ([\d.,]+) дн$/, "Reja bo'yicha $1 / $2 kun"],
   [/^прошло ([\d.,]+)$/, "o'tdi $1"],
