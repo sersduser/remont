@@ -87,8 +87,19 @@ input[type=number]{text-align:center}
 .vmask{position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:flex-end;
   justify-content:center;z-index:20;opacity:0;pointer-events:none;transition:.2s}
 .vmask.on{opacity:1;pointer-events:auto}
+/* Лист подтверждения прокручивается [чат 029]. При длинном разборе (работы по
+   коридору — два десятка видов) лист вырастал за экран: кнопки «Отмена» и
+   «Записать» оставались внизу за краем, а «Расслышал:» уезжал вверх, и
+   проверить распознанное было нечем. */
 .vsheet{background:var(--bg);width:100%;max-width:560px;border-radius:18px 18px 0 0;
-  padding:18px 16px calc(18px + env(safe-area-inset-bottom));transform:translateY(20px);transition:.24s}
+  padding:18px 16px calc(18px + env(safe-area-inset-bottom));transform:translateY(20px);transition:.24s;
+  max-height:88vh;overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolling:touch}
+/* Фильтр «только отмеченные»: прячем невыбранное, не трогая состояние выбора. */
+#vlist.selonly .vitem:not(.sel){display:none}
+.vfilter{display:flex;gap:8px;align-items:center;margin:0 0 10px}
+.vfilter button{flex:1;border:none;border-radius:10px;padding:9px;font:inherit;font-size:13px;
+  background:var(--sec);color:var(--txt);cursor:pointer}
+.vfilter button.on{background:var(--btn);color:var(--btxt)}
 .vmask.on .vsheet{transform:none}
 .vsheet .vh{font-size:17px;font-weight:600;margin-bottom:4px}
 .vsheet .vs{font-size:12px;color:var(--hint);margin-bottom:14px}
@@ -122,7 +133,7 @@ input[type=number]{text-align:center}
 .vitem .vv{font-size:13px;margin-top:3px}
 .vitem .vv b{color:var(--ok)}
 .vquote{background:var(--sec);border-radius:10px;padding:10px 12px;font-size:13px;color:var(--hint);
-  margin-bottom:12px;line-height:1.45}
+  margin-bottom:12px;line-height:1.45;position:sticky;top:-4px;z-index:2;box-shadow:0 6px 12px -8px rgba(0,0,0,.9)}
 .vquote b{color:var(--txt);font-weight:500}
 .vspin{width:34px;height:34px;border:3px solid rgba(125,139,153,.3);border-top-color:var(--btn);
   border-radius:50%;animation:spin .8s linear infinite;margin:8px auto}
@@ -878,7 +889,7 @@ function objPick(){
     "</div>";
   document.body.appendChild(box);
   box.querySelector("#objNo").onclick = () => box.remove();
-  box.querySelector("#objCam").onclick = () => { box.remove(); objInput(true); };
+  box.querySelector("#objCam").onclick = () => { box.remove(); objCamera(); };
   box.querySelector("#objGal").onclick = () => { box.remove(); objInput(false); };
 }
 
@@ -888,6 +899,71 @@ function objInput(useCamera){
   if(useCamera) inp.setAttribute("capture", "environment");
   inp.onchange = () => { if(inp.files && inp.files[0]) objPreview(inp.files[0]); };
   inp.click();
+}
+
+/* Своя камера [чат 029.2]. Живой проход: «выбрал "сфотографировать" —
+   инструмент не вижу». Внутри Telegram WebView атрибут capture у <input>
+   игнорируется, открывается тот же выбор из галереи, а метода «сними фото»
+   у Mini App SDK нет. Поэтому видоискатель свой: поток с задней камеры,
+   кадр снимается в canvas и уходит в тот же предпросмотр с поворотом.
+   Где getUserMedia недоступен (старый webview, отказ в доступе) — честный
+   откат к выбору файла с объяснением, а не молчаливое «ничего не произошло». */
+let objStream = null;
+
+function objCamStop(){
+  try{ if(objStream) objStream.getTracks().forEach(t => t.stop()); }catch(e){}
+  objStream = null;
+  const b = document.getElementById("objCamBox");
+  if(b) b.remove();
+}
+
+async function objCamera(){
+  if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+    toast("Камера недоступна в этом клиенте — открываю выбор снимка", "wait");
+    objInput(true); return;
+  }
+  try{
+    objStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" } }, audio: false });
+  }catch(e){
+    toast("Камера не открылась — открываю выбор снимка", "wait");
+    objInput(true); return;
+  }
+  const box = document.createElement("div");
+  box.id = "objCamBox";
+  box.style.cssText = "position:fixed;inset:0;z-index:9999;background:#000;display:flex;flex-direction:column";
+  box.innerHTML =
+    '<div style="flex:1;min-height:0;display:flex;align-items:center;justify-content:center">' +
+      '<video id="objCamV" playsinline autoplay muted style="max-width:100%;max-height:100%"></video>' +
+    "</div>" +
+    '<div style="display:flex;gap:8px;padding:14px calc(14px + env(safe-area-inset-left)) calc(14px + env(safe-area-inset-bottom))">' +
+      '<button id="objCamNo" style="flex:1;padding:14px;border-radius:12px;border:0;background:#3a3a3c;color:#fff;font-size:15px">Отмена</button>' +
+      '<button id="objCamGo" style="flex:2;padding:14px;border-radius:12px;border:0;background:#0a84ff;color:#fff;font-size:15px">Снять</button>' +
+    "</div>";
+  document.body.appendChild(box);
+  const v = box.querySelector("#objCamV");
+  try{ v.srcObject = objStream; }catch(e){}
+  box.querySelector("#objCamNo").onclick = () => objCamStop();
+  box.querySelector("#objCamGo").onclick = () => {
+    let file = null;
+    try{
+      const c = document.createElement("canvas");
+      c.width = v.videoWidth || 1280; c.height = v.videoHeight || 960;
+      const x = c.getContext("2d");
+      if(!x) throw new Error("нет контекста");
+      x.drawImage(v, 0, 0, c.width, c.height);
+      c.toBlob(b => {
+        objCamStop();
+        if(!b){ toast("Снимок не получился — попробуйте выбрать файл", "err"); return; }
+        objPreview(new File([b], "plan.jpg", { type: "image/jpeg" }));
+      }, "image/jpeg", 0.92);
+      return;
+    }catch(e){
+      objCamStop();
+      toast("Снять не вышло — открываю выбор снимка", "wait");
+      objInput(true);
+    }
+    return file;
+  };
 }
 
 /* Предпросмотр до отправки: человек видит, что снял, и доворачивает план.
@@ -3606,8 +3682,12 @@ object(){
       '<div class="m" style="margin-top:4px">стены ' + numOrDash(r.wall_m2, "м²") + " · потолок " + numOrDash(r.ceiling_m2, "м²") +
         " · окон " + numOrDash(r.windows, "") + " · дверей " + numOrDash(r.doors, "") + "</div>" +
       wallLine +
-      (need(r.windows) ? inpFor("Окон_шт", "win_" + r.code, "сколько окон") : "") +
-      (need(r.doors)   ? inpFor("Дверей_шт", "dr_" + r.code, "сколько дверей") : "") +
+      /* Поле и «Нет» стоят всегда [чат 029]. До 029.2 ввод показывался только
+         при пустом значении, и записанный ноль запирал карточку: «если ошибся,
+         назад как вернуться?». Правка значения — такое же обычное действие,
+         как первый ввод. */
+      inpFor("Окон_шт", "win_" + r.code, need(r.windows) ? "сколько окон" : "окон сейчас " + fmt(r.windows)) +
+      inpFor("Дверей_шт", "dr_" + r.code, need(r.doors) ? "сколько дверей" : "дверей сейчас " + fmt(r.doors)) +
       '<div class="m" style="margin-top:8px">Из чего попадаем в помещение:</div><div>' + adjChips(r.code) + "</div>" +
       "</div>";
   }).join("");
@@ -4329,6 +4409,7 @@ function showVRooms(d){
     <div class="vh">Обмеры помещений</div>
     <div class="vs">${conflicts ? "Отмеченное запишу. Значения, которые уже стояли, не отмечены — подтвердите замену вручную." : "Проверьте и подтвердите — запишу в профиль объекта."}</div>
     ${quote}
+    <div class="vfilter"><button onclick="vSelOnly(this)">Только отмеченные</button></div>
     <div id="vlist">${rows}</div>
     <div class="vrow">
       <button class="vbtn-cancel" onclick="closeVSheet()">Отмена</button>
@@ -4424,12 +4505,25 @@ function showVRepair(d){
     <div class="vh">Работы по помещениям</div>
     <div class="vs">Отмеченное перенесу в профиль ремонта: объём посчитается из обмеров, а смета соберётся кнопкой «Добавить в смету».</div>
     ${quote}
+    <div class="vfilter"><button onclick="vSelOnly(this)">Только отмеченные</button></div>
     <div id="vlist">${rows}</div>
     <div class="vrow">
       <button class="vbtn-cancel" onclick="closeVSheet()">Отмена</button>
       <button class="vbtn-ok" onclick="applyVoiceRepair()">Отметить в профиле</button>
     </div>`);
 }
+
+/* Фильтр списка [чат 029, просьба Дмитрия «напрашивается фильтр показать
+   отмеченное»]. Прячет невыбранные строки классом на контейнере: состояние
+   выбора не трогается, повторное нажатие возвращает всё. */
+function vSelOnly(btn){
+  const box = document.getElementById("vlist");
+  if(!box) return;
+  const on = !box.classList.contains("selonly");
+  box.classList.toggle("selonly", on);
+  if(btn){ btn.classList.toggle("on", on); btn.textContent = on ? "Показать все" : "Только отмеченные"; }
+}
+function vSelCount(){ return document.querySelectorAll("#vlist .vitem.sel").length; }
 
 function toggleVRep(i, j){
   const k = vRep[i].kinds[j];
@@ -4947,6 +5041,13 @@ const UZ = {
 "Загрузить":"Yuklash",
 "Нет":"Yo'q",
 "Повернуть не вышло — отправляю как есть":"Burish bo'lmadi — borichaligicha yuboraman",
+"Только отмеченные":"Faqat belgilanganlar",
+"Показать все":"Hammasini ko'rsatish",
+"Снять":"Suratga olish",
+"Камера недоступна в этом клиенте — открываю выбор снимка":"Bu klientda kamera mavjud emas — surat tanlashni ochaman",
+"Камера не открылась — открываю выбор снимка":"Kamera ochilmadi — surat tanlashni ochaman",
+"Снять не вышло — открываю выбор снимка":"Suratga olib bo'lmadi — surat tanlashni ochaman",
+"Снимок не получился — попробуйте выбрать файл":"Surat chiqmadi — fayl tanlab ko'ring",
 "Отметьте у помещений, из чего в них попадают — по этой схеме считается порядок заливки полов: залить всё разом нельзя, к дальней комнате не подойти.":"Xonalarga qayerdan kirilishini belgilang — pol quyish tartibi shu chizma bo'yicha hisoblanadi: hammasini birdan quyib bo'lmaydi, uzoq xonaga yo'l qolmaydi.",
 "Материалов пока нет. Внесите то, что уже куплено и лежит на объекте, — по памяти, без чеков: остаток принимается по факту.":"Hozircha material yo'q. Sotib olingan va obyektda turganini kiriting — xotiradan, cheksiz: qoldiq haqiqat bo'yicha qabul qilinadi.",
 "Технологические паузы (стяжка сохнет 28 дн, штукатурка 7 дн…) пока не влияют на расчёт: у работ текущей сметы нет привязки к видам справочника. Она появляется у работ, добавленных через «Профиль ремонта».":"Texnologik pauzalar (styajka 28 kun, shuvoq 7 kun quriydi…) hozircha hisobga ta'sir qilmaydi: joriy smeta ishlari ma'lumotnoma turlariga bog'lanmagan. Bog'lanish «Ta'mir profili» orqali qo'shilgan ishlarda paydo bo'ladi.",
@@ -5119,6 +5220,8 @@ const UZ_RULES = [
   [/^нужно: окна и двери$/, "kerak: derazalar va eshiklar"],
   [/^нужно: окна$/, "kerak: derazalar"],
   [/^нужно: двери$/, "kerak: eshiklar"],
+  [/^окон сейчас ([\d\s.,]+)$/, "hozir deraza $1"],
+  [/^дверей сейчас ([\d\s.,]+)$/, "hozir eshik $1"],
   [/^⏳ Сначала должно быть принято: (.+)$/, "⏳ Avval qabul qilinishi kerak: $1"],
   [/^План не открылся: (.+)$/, "Reja ochilmadi: $1"],
   [/^Готово, (.+)! Вы в бригаде\. Открываю панель…$/, "Tayyor, $1! Siz brigadadasiz. Panel ochilmoqda…"],
@@ -5380,7 +5483,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "029.1";
+const BUILD = "029.2";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
