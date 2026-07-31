@@ -814,7 +814,14 @@ const S_WIN = 3.1, S_DOOR = 1.7;
 const objDocs = () => (D.drafts || []).filter(d => /план/i.test(String(d.kind || "")));
 const objPlan = () => { const l = objDocs(); return l.length ? l[l.length - 1] : null; };
 const roomList = () => (D.rooms || []);
-const roomGap  = () => roomList().filter(r => r.windows === null || r.windows === undefined || r.doors === null || r.doors === undefined);
+/* Пробел проёмов [чат 029]. До 029 фильтр смотрел только на null/undefined:
+   пустая ячейка, приехавшая строкой, считалась заполненной, а ноль отличить
+   от «не задано» было нечем вовсе — отсюда вечная подсказка в помещениях,
+   где окон нет физически. Теперь «не задано» — это null, undefined и пустая
+   строка, а 0 — обычное заданное значение. */
+const roomNeed = v => v === null || v === undefined || String(v).trim() === "";
+const roomGapOf = r => [roomNeed(r.windows) ? "окна" : "", roomNeed(r.doors) ? "двери" : ""].filter(Boolean);
+const roomGap  = () => roomList().filter(r => roomGapOf(r).length);
 
 /* Стены по обмерам: периметр × высота минус проёмы. Возвращает null,
    пока не хватает данных, — считать «примерно» тут нельзя, число уходит
@@ -850,11 +857,105 @@ async function objShowPlan(){
   }
 }
 
+/* Снимок плана [чат 029]. Требования Дмитрия по ходу живого прохода:
+   «Должна быть возможность сделать фото» — до 029 кнопка открывала только
+   галерею, и план приходилось снимать заранее другим приложением; «Надо
+   добавить возможность крутить фото» — план БТИ снимают как лежит, а в
+   панели он потом виден боком. Поворот делается ДО отправки: снимок уходит
+   в чат человека и становится файлом системы, там его уже не повернуть. */
+let objRot = 0, objFile = null;
+
 function objPick(){
+  const box = document.createElement("div");
+  box.id = "objSrc";
+  box.style.cssText = "position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.6);display:flex;align-items:flex-end;justify-content:center;padding:14px";
+  box.innerHTML =
+    '<div style="background:#1c1c1e;color:#fff;border-radius:16px;padding:16px;max-width:420px;width:100%;font-size:15px">' +
+      '<div style="font-weight:700;margin-bottom:10px">План БТИ</div>' +
+      '<button id="objCam" style="width:100%;padding:13px;border-radius:12px;border:0;background:#0a84ff;color:#fff;font-size:15px;margin-bottom:8px">Сфотографировать план</button>' +
+      '<button id="objGal" style="width:100%;padding:13px;border-radius:12px;border:0;background:#3a3a3c;color:#fff;font-size:15px;margin-bottom:8px">Выбрать из галереи</button>' +
+      '<button id="objNo" style="width:100%;padding:13px;border-radius:12px;border:0;background:transparent;color:#8e8e93;font-size:15px">Отмена</button>' +
+    "</div>";
+  document.body.appendChild(box);
+  box.querySelector("#objNo").onclick = () => box.remove();
+  box.querySelector("#objCam").onclick = () => { box.remove(); objInput(true); };
+  box.querySelector("#objGal").onclick = () => { box.remove(); objInput(false); };
+}
+
+function objInput(useCamera){
   const inp = document.createElement("input");
   inp.type = "file"; inp.accept = "image/*";
-  inp.onchange = () => { if(inp.files && inp.files[0]) objUpload(inp.files[0]); };
+  if(useCamera) inp.setAttribute("capture", "environment");
+  inp.onchange = () => { if(inp.files && inp.files[0]) objPreview(inp.files[0]); };
   inp.click();
+}
+
+/* Предпросмотр до отправки: человек видит, что снял, и доворачивает план.
+   Поворот на экране — CSS-трансформация, в отправку он попадает уже
+   пикселями (иначе повёрнутым его увидит только этот телефон). */
+function objPreview(file){
+  objFile = file; objRot = 0;
+  const box = document.createElement("div");
+  box.id = "objPrev";
+  box.style.cssText = "position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.85);display:flex;align-items:center;justify-content:center;padding:14px";
+  box.innerHTML =
+    '<div style="background:#1c1c1e;color:#fff;border-radius:16px;padding:16px;max-width:460px;width:100%;font-size:15px">' +
+      '<div style="font-weight:700;margin-bottom:8px">Проверьте снимок</div>' +
+      '<div style="overflow:hidden;border-radius:12px;background:#000;display:flex;align-items:center;justify-content:center;min-height:180px">' +
+        '<img id="objPrevImg" alt="План БТИ" style="max-width:100%;max-height:52vh;display:block;transition:transform .2s">' +
+      "</div>" +
+      '<div style="display:flex;gap:8px;margin-top:12px">' +
+        '<button id="objRotL" style="flex:1;padding:12px;border-radius:12px;border:0;background:#3a3a3c;color:#fff;font-size:15px">Повернуть</button>' +
+        '<button id="objSend" style="flex:1;padding:12px;border-radius:12px;border:0;background:#0a84ff;color:#fff;font-size:15px">Загрузить</button>' +
+      "</div>" +
+      '<button id="objPrevNo" style="width:100%;padding:12px;border-radius:12px;border:0;background:transparent;color:#8e8e93;font-size:15px;margin-top:6px">Отмена</button>' +
+    "</div>";
+  document.body.appendChild(box);
+  const img = box.querySelector("#objPrevImg");
+  try{ img.src = URL.createObjectURL(file); }catch(e){}
+  box.querySelector("#objPrevNo").onclick = () => { box.remove(); objFile = null; };
+  box.querySelector("#objRotL").onclick = () => {
+    objRot = (objRot + 90) % 360;
+    img.style.transform = "rotate(" + objRot + "deg)";
+    img.style.maxHeight = (objRot % 180 === 90) ? "38vh" : "52vh";
+  };
+  box.querySelector("#objSend").onclick = async () => {
+    box.remove();
+    const f = objFile; objFile = null;
+    if(!f) return;
+    let out = f;
+    if(objRot % 360 !== 0){
+      try{ out = await objRotate(f, objRot); }
+      catch(e){ toast("Повернуть не вышло — отправляю как есть", "wait"); out = f; }
+    }
+    objUpload(out);
+  };
+}
+
+/* Поворот пикселями: canvas меняет местами стороны на 90 и 270 градусов.
+   Имя файла сохраняем — сервер кладёт снимок в чат под ним. */
+function objRotate(file, deg){
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      try{
+        const swap = (deg % 180) === 90;
+        const c = document.createElement("canvas");
+        c.width  = swap ? img.height : img.width;
+        c.height = swap ? img.width  : img.height;
+        const x = c.getContext("2d");
+        x.translate(c.width / 2, c.height / 2);
+        x.rotate(deg * Math.PI / 180);
+        x.drawImage(img, -img.width / 2, -img.height / 2);
+        c.toBlob(b => {
+          if(!b){ reject(new Error("canvas пуст")); return; }
+          resolve(new File([b], file.name || "plan.jpg", { type: "image/jpeg" }));
+        }, "image/jpeg", 0.92);
+      }catch(e){ reject(e); }
+    };
+    img.onerror = () => reject(new Error("снимок не открылся"));
+    try{ img.src = URL.createObjectURL(file); }catch(e){ reject(e); }
+  });
 }
 
 /* Загрузка документа объекта. Снимок уходит в личный чат человека с ботом
@@ -896,6 +997,36 @@ async function roomSaveNum(code, col, inputId){
     await load();
     render();
   }catch(e){ toast(e.message, "err"); if(el) el.disabled = false; }
+}
+
+/* Ноль проёмов — отдельная кнопка, а не пустое поле [чат 029]. Сказанное
+   «окон нет» до 029 не имело куда лечь: разбор возвращал число, а нуля не
+   возвращал, и человек оставался с подсказкой, которую нечем закрыть.
+   Путь записи тот же, что у числа, — writeCell в ту же колонку. */
+async function roomSaveZero(code, col){
+  try{
+    await writeCell("06_Помещения", code, col, "0");
+    toast("Записано");
+    await load();
+    render();
+  }catch(e){ toast(e.message, "err"); }
+}
+
+/* Переход из подсказки к карточке помещения [чат 029]. Требование Дмитрия:
+   «жёлтое окно должно быть интерактивным, показывающим, чего реально не
+   хватает» — список говорит, чего нет, строка ведёт туда, где это вводится. */
+function objGoRoom(code){
+  const el = document.getElementById("room_" + code);
+  if(!el) return;
+  /* Прокрутка — необязательная роскошь: в старом webview у элемента может не
+     быть scrollIntoView вовсе (и в jsdom его нет), а подсветка нужна всегда. */
+  if(typeof el.scrollIntoView === "function"){
+    try{ el.scrollIntoView({ behavior: "smooth", block: "center" }); }
+    catch(e){ try{ el.scrollIntoView(); }catch(e2){} }
+  }
+  const prev = el.style.boxShadow;
+  el.style.boxShadow = "0 0 0 2px #0a84ff";
+  setTimeout(() => { el.style.boxShadow = prev; }, 1400);
 }
 
 /* Пересчёт стен и потолка по обмерам: предлагается кнопкой и никогда
@@ -3462,12 +3593,13 @@ object(){
       '<div style="display:flex;gap:8px;align-items:center;margin-top:6px">' +
         '<input id="' + id + '" type="number" inputmode="decimal" placeholder="' + ph + '" style="flex:1;padding:9px;border-radius:10px;border:1px solid #3a3a3c;background:#000;color:#fff;font-size:15px">' +
         '<button onclick="roomSaveNum(\'' + r.code + '\',\'' + col + '\',\'' + id + '\')" style="padding:9px 13px;border-radius:10px;border:0;background:#0a84ff;color:#fff;font-size:14px">Записать</button>' +
+        '<button onclick="roomSaveZero(\'' + r.code + '\',\'' + col + '\')" style="padding:9px 13px;border-radius:10px;border:0;background:#3a3a3c;color:#fff;font-size:14px">Нет</button>' +
       "</div>";
     const wallLine = (w !== null && Math.abs(w - Number(r.wall_m2 || 0)) > 0.05)
       ? '<div class="m" style="margin-top:6px">По обмерам стены выходят <b>' + fmt(w) + '</b> м² (сейчас ' + fmt(r.wall_m2 || 0) + ') ' +
         '<button onclick="roomApplyWalls(\'' + r.code + '\')" style="margin-left:6px;padding:6px 10px;border-radius:9px;border:0;background:#3a3a3c;color:#fff;font-size:13px">Пересчитать</button></div>'
       : "";
-    return '<div class="work">' +
+    return '<div class="work" id="room_' + esc(r.code) + '">' +
       '<div class="t">' + esc(r.name || r.code) + '</div>' +
       '<div class="m">' + esc(r.kind || "—") + " · пол " + numOrDash(r.floor_m2, "м²") +
         " · периметр " + numOrDash(r.perimeter_m, "м") + " · высота " + numOrDash(r.height_m, "м") + "</div>" +
@@ -3490,7 +3622,13 @@ object(){
       '<button class="tile" onclick="objPick()"><span class="ic">🗺️</span><span class="nm">' + (plan ? "Заменить план" : "Загрузить план") + '</span><div class="h">фото плана БТИ</div></button>' +
     "</div>" +
     planBox +
-    (gap.length ? '<div class="warnbox">Пока не заданы окна и двери, объёмы работ по откосам, подоконникам и наличникам считаются наугад. Скажите голосом: «в спальне одно окно и одна дверь».</div>' : "") +
+    (gap.length ? ('<div class="warnbox" id="objGap">' +
+      '<div>Пока не заданы окна и двери, объёмы работ по откосам, подоконникам и наличникам считаются наугад.</div>' +
+      gap.map(r => '<div onclick="objGoRoom(\'' + esc(r.code) + '\')" style="margin-top:6px;padding:8px 10px;border-radius:10px;background:rgba(255,255,255,.06);cursor:pointer">' +
+        esc(String(r.name || r.code)) + ' · нужно: ' + roomGapOf(r).join(" и ") + '</div>').join("") +
+      '<div style="margin-top:10px;display:flex;gap:8px">' +
+        '<button onclick="startVoice(\'rooms\')" style="flex:1;padding:10px;border-radius:10px;border:0;background:#0a84ff;color:#fff;font-size:14px">Продиктовать проёмы</button>' +
+      '</div></div>') : "") +
     (() => {
       const f = floorOrder();
       if(!f) return '<div class="stat"><span class="k">Отметьте у помещений, из чего в них попадают — по этой схеме считается порядок заливки полов: залить всё разом нельзя, к дальней комнате не подойти.</span></div>';
@@ -4799,6 +4937,16 @@ const UZ = {
 "Ни один лист не создан. Либо все стандартные листы объекта уже есть — тогда серверу не хватает листа вне стандартного набора, скажите об этом администратору.":"Bitta ham varaq yaratilmadi. Yoki obyektning barcha standart varaqlari bor — unda serverga standart to'plamdan tashqari varaq yetishmaydi, administratorga xabar bering.",
 "Изменений пока не заявляли. Любая сторона может предложить добавить или убрать работу, поменять цену, объём или срок — вторая сторона примет или оспорит.":"Hozircha o'zgarish bildirilmagan. Har qaysi tomon ish qo'shishni yoki olib tashlashni, narx, hajm yoki muddatni o'zgartirishni taklif qilishi mumkin — ikkinchi tomon qabul qiladi yoki e'tiroz bildiradi.",
 "Пока не заданы окна и двери, объёмы работ по откосам, подоконникам и наличникам считаются наугад. Скажите голосом: «в спальне одно окно и одна дверь».":"Derazalar va eshiklar berilmaguncha, yon devor, deraza taxtasi va naliçnik ishlarining hajmi taxminan hisoblanadi. Ovoz bilan ayting: «yotoqxonada bitta deraza va bitta eshik».",
+"Пока не заданы окна и двери, объёмы работ по откосам, подоконникам и наличникам считаются наугад.":"Derazalar va eshiklar berilmaguncha, yon devor, deraza taxtasi va naliçnik ishlarining hajmi taxminan hisoblanadi.",
+"Продиктовать проёмы":"Ochiqliklarni aytib bering",
+"План БТИ":"BTI rejasi",
+"Сфотографировать план":"Rejani suratga olish",
+"Выбрать из галереи":"Galereyadan tanlash",
+"Проверьте снимок":"Suratni tekshiring",
+"Повернуть":"Burish",
+"Загрузить":"Yuklash",
+"Нет":"Yo'q",
+"Повернуть не вышло — отправляю как есть":"Burish bo'lmadi — borichaligicha yuboraman",
 "Отметьте у помещений, из чего в них попадают — по этой схеме считается порядок заливки полов: залить всё разом нельзя, к дальней комнате не подойти.":"Xonalarga qayerdan kirilishini belgilang — pol quyish tartibi shu chizma bo'yicha hisoblanadi: hammasini birdan quyib bo'lmaydi, uzoq xonaga yo'l qolmaydi.",
 "Материалов пока нет. Внесите то, что уже куплено и лежит на объекте, — по памяти, без чеков: остаток принимается по факту.":"Hozircha material yo'q. Sotib olingan va obyektda turganini kiriting — xotiradan, cheksiz: qoldiq haqiqat bo'yicha qabul qilinadi.",
 "Технологические паузы (стяжка сохнет 28 дн, штукатурка 7 дн…) пока не влияют на расчёт: у работ текущей сметы нет привязки к видам справочника. Она появляется у работ, добавленных через «Профиль ремонта».":"Texnologik pauzalar (styajka 28 kun, shuvoq 7 kun quriydi…) hozircha hisobga ta'sir qilmaydi: joriy smeta ishlari ma'lumotnoma turlariga bog'lanmagan. Bog'lanish «Ta'mir profili» orqali qo'shilgan ishlarda paydo bo'ladi.",
@@ -4968,6 +5116,9 @@ const UZ_RULES = [
   [/^(−?[\d\s .,]+) \$ к договору · работ: (\d+)$/, "shartnomaga $1 $ · ish: $2"],
   [/^(\d+) помещений · в (\d+) не заданы проёмы$/, "$1 xona · $2 tasida ochiqliklar berilmagan"],
   [/^(\d+) помещений · обмеры полны$/, "$1 xona · o'lchamlar to'liq"],
+  [/^нужно: окна и двери$/, "kerak: derazalar va eshiklar"],
+  [/^нужно: окна$/, "kerak: derazalar"],
+  [/^нужно: двери$/, "kerak: eshiklar"],
   [/^⏳ Сначала должно быть принято: (.+)$/, "⏳ Avval qabul qilinishi kerak: $1"],
   [/^План не открылся: (.+)$/, "Reja ochilmadi: $1"],
   [/^Готово, (.+)! Вы в бригаде\. Открываю панель…$/, "Tayyor, $1! Siz brigadadasiz. Panel ochilmoqda…"],
@@ -5229,7 +5380,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "028.1";
+const BUILD = "029.1";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
