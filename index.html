@@ -2016,7 +2016,7 @@ function openCrew(){ return openCrewScreen("crew"); }
    подтягивают свежее сами. Тик пропускается, когда идёт ввод или запись —
    перерисовка не должна красть фокус и сбрасывать поля. */
 let CREW_TS = 0;
-const CREW_LIVE = ["crew", "crew_orders", "crew_time", "crew_reports", "crew_cal"];
+const CREW_LIVE = ["crew", "crew_orders", "crew_time", "crew_reports", "crew_cal", "crew_my"];
 function crewFresh(){
   try{
     if(document.visibilityState !== "visible") return;
@@ -2247,6 +2247,82 @@ async function tmDecide(i, mode){
   }catch(e){ toast(e.message, "err"); }
   finally{ TM_BUSY = false; }
 }
+/* ── ЧАСЫ БРИГАДИРА (заказчик) [чат 026, маяк §15] ──
+   «Бригадир сам себе бригадир, но финально подтвердить дни работы, а вернее
+   часы, должен заказчик». Механика решения — та же, что у бригадира с отметками
+   бригады: подтвердить · исправить время · отклонить, запись в тот же лист
+   «Табель». Список свой (c.ftime) и функция своя: у бригадирского пути уже есть
+   живой прогон, и вешать на него вторую роль — плодить общие поломки. */
+let FT_BUSY = false, FT_FIX = null, FT_ALL = false;
+async function ftDecide(i, mode){
+  const t = (((CREW_DATA || {}).ftime) || [])[i];
+  if(!t || FT_BUSY) return;
+  if(mode === "reject" && !confirm("Отклонить отметку «" + (t.event || "") + " " + (t.time || "") + "» (" + (t.worker || "") + ")?")) return;
+  let newTime = "";
+  if(mode === "fix"){
+    newTime = String((document.getElementById("ft_" + i) || {}).value || "").trim();
+    if(!/^\d{2}:\d{2}$/.test(newTime)){ toast("Время — в формате ЧЧ:ММ", "err"); return; }
+  }
+  FT_BUSY = true;
+  try{
+    toast("Сохраняю…", "wait");
+    if(mode === "fix"){
+      await crewCell("Табель", t.id, "Время", newTime);
+      await crewCell("Табель", t.id, "Статус", "исправлено");
+      t.time = newTime; t.status = "исправлено";
+    } else if(mode === "reject"){
+      await crewCell("Табель", t.id, "Статус", "отклонено");
+      t.status = "отклонено";
+    } else {
+      await crewCell("Табель", t.id, "Статус", "подтверждено");
+      t.status = "подтверждено";
+    }
+    await crewCell("Табель", t.id, "Подтвердил", D.who);
+    t.confirmed = D.who;
+    FT_FIX = null;
+    toast(mode === "reject" ? "Отметка отклонена" : "Отметка " + (mode === "fix" ? "исправлена" : "подтверждена"));
+    render();
+  }catch(e){ toast(e.message, "err"); }
+  finally{ FT_BUSY = false; }
+}
+/* Блок часов бригадира на экране «Бригада» у заказчика. Пустой список — не
+   ошибка: бригадир мог ещё ни разу не отметиться, и говорить об этом надо
+   прямо, а не пустым местом. */
+function ftBlock(c){
+  const rows = ((c || {}).ftime) || [];
+  if(!rows.length) return '<div class="stat"><span class="k">Бригадир пока не отмечал свои часы. Когда отметит, решение появится здесь.</span></div>';
+  const wait = rows.filter(x => String(x.status || "") === "заявлено");
+  const view = FT_ALL ? rows : rows.filter(x => String(x.date || "") >= dShift(crewToday(), -7));
+  const groups = {};
+  view.forEach(x => { const d = String(x.date || "?"); (groups[d] = groups[d] || []).push(x); });
+  const idxOf = x => rows.indexOf(x);
+  const card = x => {
+    const i = idxOf(x);
+    const open = String(x.status || "") === "заявлено";
+    return '<div class="work"><div class="t">' + esc(String(x.worker || "")) + " · " + esc(String(x.event || "")) + " · " + esc(String(x.time || "")) + "</div>" +
+      '<div class="m">' + (x.object ? esc(String(x.object)) + " · " : "") + esc(String(x.status || "")) +
+        (x.confirmed ? " · решил " + esc(String(x.confirmed)) : "") + "</div>" +
+      (open ? (FT_FIX === i ?
+        '<div class="m" style="margin-top:8px;display:flex;gap:8px;align-items:center">' +
+          '<input id="ft_' + i + '" type="time" value="' + attr(String(x.time || "")) + '" style="flex:1;padding:10px;border-radius:10px;border:1px solid #3a3a3c;background:#000;color:#fff;font-size:15px">' +
+          '<button onclick="ftDecide(' + i + ',\'fix\')" ' + CREW_BTN + ">Сохранить</button>" +
+          '<button onclick="FT_FIX=null;render()" ' + CREW_BTN2 + ">✕</button>" +
+        "</div>" :
+        '<div class="m" style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">' +
+          '<button onclick="ftDecide(' + i + ',\'ok\')" ' + CREW_BTN + ">Подтвердить</button>" +
+          '<button onclick="FT_FIX=' + i + ';render()" ' + CREW_BTN2 + ">Исправить время</button>" +
+          '<button onclick="ftDecide(' + i + ',\'reject\')" ' + CREW_BTNR + ">Отклонить</button>" +
+        "</div>") : "") +
+      "</div>";
+  };
+  const list = Object.keys(groups).sort().reverse().map(d =>
+    '<div class="sub" style="margin-top:14px">' + dLabel(d) + "</div>" + groups[d].map(card).join("")).join("");
+  return '<div class="sub" style="margin-top:16px">Часы бригадира</div>' +
+    '<div class="stat"><span class="k">' + (wait.length ? (wait.length + " ждут вашего решения") : "все часы бригадира решены") + "</span></div>" +
+    '<div class="filt"><button class="' + (FT_ALL ? "on" : "") + '" onclick="FT_ALL=!FT_ALL;render()">' + (FT_ALL ? "Только последняя неделя" : "Показать всё") + "</button></div>" +
+    (view.length ? list : '<div class="stat"><span class="k">За последнюю неделю отметок нет.</span></div>');
+}
+
 /* Человекодни: уникальные пары дата+работник по подтверждённым отметкам —
    та же формула, что в GET-ноде для заказчика. */
 function tmMandays(rows){
@@ -2337,11 +2413,28 @@ function hrTab(v){ HR_TYPE = v; render(); }
 function handMyOrders(){ return ordActive(); }   // сервер уже отдал hand только его наряды
 function handObject(){
   const today = crewToday();
-  const t = handMyOrders().find(o => String(o.date || "") === today);
+  /* Наряд без объекта — не ответ [чат 026]: раньше первая же сегодняшняя строка
+     возвращала пустую строку, и «Объект» в табеле оставался пустым, хотя объект
+     был известен из соседних записей. */
+  const t = handMyOrders().find(o => String(o.date || "") === today && String(o.object || "").trim());
   if(t) return String(t.object || "");
   const past = handMyOrders().filter(o => String(o.date || "") <= today).sort((a, b) => String(a.date).localeCompare(String(b.date)));
-  return past.length ? String(past[past.length - 1].object || "") : "";
+  if(past.length && String(past[past.length - 1].object || "").trim()) return String(past[past.length - 1].object || "");
+  /* У бригадира наряда на себя нет [чат 026]: он их выдаёт, а не получает,
+     и его строка табеля уходила в лист с пустым «Объектом». Берём объект из
+     последней отметки — сначала своей, потом бригадной: это тот же объект,
+     просто записанный кем-то другим. */
+  const seen = ((((CREW_DATA || {}).my_time) || []).concat((((CREW_DATA || {}).time) || [])))
+    .filter(x => String(x.object || "").trim())
+    .sort((a, b) => String(a.date || "").localeCompare(String(b.date || "")));
+  return seen.length ? String(seen[seen.length - 1].object || "") : "";
 }
+/* Кому уходит моя отметка [чат 026, маяк §15]: у работника её решает бригадир,
+   у бригадира — заказчик («бригадир сам себе бригадир, но финально подтвердить
+   часы должен заказчик»). Подпись обязана называть верного адресата: она —
+   единственное, из чего человек понимает, кто теперь ждёт решения. */
+function markGoesTo(){ return (D && (D.kind === "foreman" || D.role === "foreman")) ? "заказчику" : "бригадиру"; }
+function markHint(){ return markGoesTo() === "заказчику" ? "уйдёт заказчику на подтверждение" : "уйдёт бригадиру на подтверждение"; }
 function handMark(ev){ HM = { ev: ev, mode: "now" }; render(); }
 function handMarkTime(){
   if(!HM) return "";
@@ -2371,7 +2464,7 @@ async function handMarkGo(){
       "Событие": HM.ev, "Время": t, "Отметил": D.who, "Статус": "заявлено",
       "Подтвердил": "", "Комментарий": "",
     }]);
-    toast("Отмечено: " + HM.ev + " " + t + " — уйдёт бригадиру на подтверждение");
+    toast("Отмечено: " + HM.ev + " " + t + " — " + markHint());
     HM = null;
     await crewLoad(); render();
   }catch(e){ toast(e.message, "err"); }
@@ -2645,6 +2738,9 @@ home(){
       ${(D.kind === 'foreman' || D.role === 'foreman') ? `<button class="tile" onclick="openCrew()"><span class="ic">🛠️</span>
         <span class="nm">Бригада</span>
         <div class="h">работники и приглашения</div></button>` : ""}
+      ${(D.kind === 'foreman' || D.role === 'foreman') ? `<button class="tile" onclick="openCrewScreen('crew_my')"><span class="ic">⏱️</span>
+        <span class="nm">Мой день</span>
+        <div class="h">приход, обед, уход</div></button>` : ""}
       ${['admin','owner'].includes(D.role) ? `<button class="tile" onclick="openCrew()"><span class="ic">👥</span>
         <span class="nm">Бригада</span>
         <div class="h">люди и человекодни</div></button>` : ""}
@@ -2917,7 +3013,8 @@ crew(){
         '<div class="r"><span class="k">Людей на объекте (всего)</span><span class="v">' + (Number(c.people) || 0) + "</span></div>" +
         '<div class="r"><span class="k">Человекодней отработано</span><span class="v">' + (Number(c.mandays) || 0) + "</span></div>" +
       "</div>" +
-      '<div class="stat"><span class="k">Считаются только отметки, подтверждённые бригадиром. Поимённый состав бригады — дело бригадира: заказчику виден объём.</span></div>';
+      '<div class="stat"><span class="k">Отметки работников подтверждает бригадир, а его собственные часы — вы. Поимённый состав бригады остаётся его делом: вам виден объём.</span></div>' +
+      ftBlock(c);
   }
   if(c.role !== "foreman")
     return '<div class="hello">Бригада</div><div class="sub">Экран доступен бригадиру</div>';
@@ -3018,7 +3115,10 @@ crew_time(){
   if(!c || c.role !== "foreman") return '<div class="hello">Табель</div><div class="sub">Экран доступен бригадиру</div>';
   const rows = (c.time || []);
   const wait = rows.filter(x => String(x.status || "") === "заявлено");
-  const md7 = tmMandays(rows.filter(x => String(x.date || "") >= dShift(crewToday(), -7)));
+  /* Человекодни объекта включают и самого бригадира [чат 026]: он работает
+     руками, и до §15 его труд не считался вовсе. Решает его часы заказчик,
+     поэтому в подсчёт они входят на тех же правах — по статусу, а не по роли. */
+  const md7 = tmMandays(rows.concat(c.my_time || []).filter(x => String(x.date || "") >= dShift(crewToday(), -7)));
   const view = TM_ALL ? rows : rows.filter(x => String(x.date || "") >= dShift(crewToday(), -7));
   const groups = {};
   view.forEach(x => { const d = String(x.date || "?"); (groups[d] = groups[d] || []).push(x); });
@@ -3053,6 +3153,58 @@ crew_time(){
     '<div class="stat"><span class="k">Отмечается сам работник, отвечаете за данные вы: в человекодни и заказчику идёт только подтверждённое. Исправленное время сохраняет след — исходное останется в истории листа.</span></div>' +
     '<div class="filt"><button class="' + (TM_ALL ? "on" : "") + '" onclick="TM_ALL=!TM_ALL;render()">' + (TM_ALL ? "Только последняя неделя" : "Показать всё") + "</button></div>" +
     (view.length ? list : '<div class="stat"><span class="k">Отметок пока нет. Работник отмечается кнопками на своём главном экране.</span></div>');
+},
+
+/* Мой день (бригадир) [чат 026, маяк §15]. Бригадир работает руками, и обед
+   на него распространяется так же, как на бригаду. Промежуточного подтверждения
+   у его отметок нет — они уходят прямо заказчику. Разметка здесь своя, а не
+   общая с экраном работника: контур работника прожит вживую (014, 021), и
+   переписывать его ради переиспользования — риск больше выгоды. */
+crew_my(){
+  const c = CREW_DATA;
+  if(!c || c.role !== "foreman") return '<div class="hello">Мой день</div><div class="sub">Экран доступен бригадиру</div>';
+  const rows = (c.my_time || []);
+  const today = crewToday();
+  const mine = rows.filter(x => String(x.date || "") === today);
+  const waitN = rows.filter(x => String(x.status || "") === "заявлено").length;
+  const marks = mine.length ?
+    '<div class="stat">' + mine.map(x =>
+      '<div class="r"><span class="k">' + esc(String(x.event || "")) + " " + esc(String(x.time || "")) + '</span><span class="v" style="font-size:13px;color:var(--hint)">' +
+      (x.status === "подтверждено" || x.status === "исправлено" ? "✓ " : "") + esc(String(x.status || "")) + "</span></div>").join("") + "</div>"
+    : '<div class="stat"><span class="k">Сегодня вы ещё не отмечались.</span></div>';
+  const hmBox = HM ? (() => {
+    const now = crewNow();
+    const opt = (m, lbl) => '<button onclick="HM.mode=\'' + m + '\';render()" style="padding:9px 12px;border-radius:10px;border:0;font-size:14px;background:' +
+      (HM.mode === m ? "#0a84ff" : "#3a3a3c") + ';color:#fff">' + lbl + "</button>";
+    return '<div class="warnbox"><b>' + esc(HM.ev) + "</b> — когда?" +
+      '<div style="display:flex;gap:7px;flex-wrap:wrap;margin:10px 0">' +
+      opt("now", "сейчас " + now) + opt("m10", "−10 мин") + opt("m30", "−30 мин") + opt("m60", "−1 час") +
+      opt("custom", "своё время") + "</div>" +
+      (HM.mode === "custom" ? '<div style="margin-bottom:10px"><input id="hm_time" type="time" value="' + now + '" ' + CREW_INP + "></div>" : "") +
+      '<div style="color:var(--hint);font-size:12px;margin-bottom:10px">Задним числом — только в пределах сегодняшнего дня.</div>' +
+      '<div style="color:var(--warn);font-size:13px;font-weight:600;margin-bottom:10px">⏳ Ещё не записано — выберите время и нажмите «Записать»</div>' +
+      '<div style="display:flex;gap:8px">' +
+      '<button onclick="HM=null;render()" style="flex:1;padding:12px;border-radius:10px;border:0;background:#3a3a3c;color:#fff;font-size:15px">Отмена</button>' +
+      '<button onclick="handMarkGo()" style="flex:1;padding:12px;border-radius:10px;border:0;background:#0a84ff;color:#fff;font-size:15px">Записать</button>' +
+      "</div></div>";
+  })() : "";
+  const btn = (ev, ic, nm) => '<button class="tile pri" onclick="handMark(\'' + ev + '\')"><span class="ic">' + ic + '</span><span class="nm">' + nm + "</span></button>";
+  const past = rows.filter(x => String(x.date || "") !== today).slice(-12).reverse();
+  const hist = past.length ? ('<div class="sub" style="margin-top:14px">Прежние отметки</div>' + past.map(x =>
+    '<div class="work"><div class="t">' + esc(String(x.event || "")) + " · " + esc(String(x.time || "")) + "</div>" +
+    '<div class="m">' + dLabel(String(x.date || "")) + " · " + esc(String(x.status || "")) +
+      (x.confirmed ? " · решил " + esc(String(x.confirmed)) : "") + "</div></div>").join("")) : "";
+  return '<div class="hello">Мой день</div>' +
+    '<div class="sub">' + (waitN ? (waitN + " ждут заказчика") : "все ваши отметки решены") + "</div>" +
+    marks + hmBox +
+    '<div class="grid">' +
+    btn("пришёл", "🏁", "Пришёл") + btn("обед начало", "🍲", "Обед") +
+    btn("обед конец", "🔁", "Вернулся") + btn("ушёл", "🏠", "Ушёл") +
+    '<button class="tile pri" onclick="startVoice()"><span class="ic">🎤</span><span class="nm">Голосом</span><div class="h">пришёл · обед · ушёл</div></button>' +
+    '<button class="tile" onclick="openCrewScreen(\'crew_my\')"><span class="ic">🔄</span><span class="nm">Обновить</span></button>' +
+    "</div>" +
+    '<div class="stat"><span class="k">Ваши часы подтверждает заказчик: промежуточного решения у ваших отметок нет. Отметки бригады решаете вы сами — на экране «Табель».</span></div>' +
+    hist;
 },
 
 /* Отчёты бригады: буфер, а не факт учёта — та же конструкция, что чеки.
@@ -4061,7 +4213,7 @@ function showVHand(d){
   const today = crewToday();
   const dup = a => (((CREW_DATA || {}).time) || []).some(x => String(x.date || "") === today && String(x.event || "") === a.event && String(x.status || "") !== "отклонено");
   const line = a => {
-    if(a.kind === "time") return { t: "⏱ " + a.event + " — " + handActTime(a), d: (a.shift_min ? "сдвиг −" + a.shift_min + " мин · " : "") + (dup(a) ? "⚠ такая отметка сегодня уже есть" : "уйдёт бригадиру на подтверждение") };
+    if(a.kind === "time") return { t: "⏱ " + a.event + " — " + handActTime(a), d: (a.shift_min ? "сдвиг −" + a.shift_min + " мин · " : "") + (dup(a) ? "⚠ такая отметка сегодня уже есть" : markHint()) };
     if(a.kind === "work") return { t: "🔨 " + (a.name || a.code) + " → " + a.percent + " %", d: (a.room ? a.room + " · " : "") + "отчёт бригадиру" };
     return { t: "🧱 " + a.name + " → " + a.qty, d: "расход материала · отчёт бригадиру" };
   };
@@ -4105,7 +4257,7 @@ async function applyVoiceHand(){
     if(tbl.length) await crewAppend("Табель", tbl);
     if(rep.length) await crewAppend("Отчёты_бригады", rep);
     closeVSheet();
-    toast("Записано: " + chosen.length + " — уйдёт бригадиру на подтверждение");
+    toast("Записано: " + chosen.length + " — " + markHint());
     await crewLoad(); render();
   }catch(e){ closeVSheet(); toast(e.message, "err"); }
 }
@@ -4365,6 +4517,20 @@ const UZ = {
 "Проверьте — распознано несколько":"Tekshiring — bir nechtasi tanildi",
 "уйдёт бригадиру на подтверждение":"tasdiqlash uchun brigadirga ketadi",
 "— уйдёт бригадиру на подтверждение":"— tasdiqlash uchun brigadirga ketadi",
+"уйдёт заказчику на подтверждение":"tasdiqlash uchun buyurtmachiga ketadi",
+"— уйдёт заказчику на подтверждение":"— tasdiqlash uchun buyurtmachiga ketadi",
+"Мой день":"Mening kunim","приход, обед, уход":"kelish, tushlik, ketish",
+"Часы бригадира":"Brigadir soatlari","пришёл · обед · ушёл":"keldi · tushlik · ketdi",
+"Сегодня вы ещё не отмечались.":"Bugun siz hali belgilanmadingiz.",
+"все ваши отметки решены":"barcha belgilaringiz hal qilingan",
+"все часы бригадира решены":"brigadirning barcha soatlari hal qilingan",
+"Прежние отметки":"Oldingi belgilar",
+"Задним числом — только в пределах сегодняшнего дня.":"Orqaga sana bilan — faqat bugungi kun ichida.",
+"⏳ Ещё не записано — выберите время и нажмите «Записать»":"⏳ Hali yozilmadi — vaqtni tanlang va «Yozish» tugmasini bosing",
+"Ваши часы подтверждает заказчик: промежуточного решения у ваших отметок нет. Отметки бригады решаете вы сами — на экране «Табель».":"Soatlaringizni buyurtmachi tasdiqlaydi: belgilaringizda oraliq qaror yo'q. Brigada belgilarini o'zingiz hal qilasiz — «Ish vaqti» ekranida.",
+"Отметки работников подтверждает бригадир, а его собственные часы — вы. Поимённый состав бригады остаётся его делом: вам виден объём.":"Ishchilar belgilarini brigadir tasdiqlaydi, uning o'z soatlarini esa siz. Brigada tarkibi ismma-ism uning ishi bo'lib qoladi: sizga hajm ko'rinadi.",
+"Бригадир пока не отмечал свои часы. Когда отметит, решение появится здесь.":"Brigadir hozircha o'z soatlarini belgilamadi. Belgilagach, qaror shu yerda paydo bo'ladi.",
+"За последнюю неделю отметок нет.":"So'nggi haftada belgilar yo'q.",
 "по подтверждённым отметкам табеля":"tasdiqlangan ish vaqti belgilariga ko'ra",
 "Человекодней за 7 дней (подтверждённых)":"7 kundagi odam-kunlar (tasdiqlangan)",
 "— загляните в календарь":"— kalendarga qarang","Напишите задание":"Topshiriqni yozing",
@@ -4542,6 +4708,9 @@ const UZ = {
 /* Шаблоны: строка содержит данные (числа, коды, названия) — переводим обвязку,
    данные оставляем на месте. Порядок важен: правила идут сверху вниз. */
 const UZ_RULES = [
+  /* Часы бригадира [чат 026]: счётчик ожидания на его стороне. Шаблон «N ждут
+     вашего решения» уже есть ниже — он же обслуживает сторону заказчика. */
+  [/^(\d+) ждут заказчика$/, "$1 buyurtmachini kutmoqda"],
   [/^Задано (\d+) из (\d+) · всё заполнено$/, "$1 dan $2 berilgan · hammasi to'ldirilgan"],
   [/^Задано (\d+) из (\d+) · не задано (\d+)$/, "$1 dan $2 berilgan · $3 berilmagan"],
   [/^(.+) · финиш на ([\d.,]+)-й день · (.+)$/, "$1 · tugash $2-kuni · $3"],
@@ -4848,7 +5017,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "022.2";
+const BUILD = "026.1";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
