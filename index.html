@@ -3479,9 +3479,15 @@ buy(){
 
   /* Строка материала. Правящей стороне даём и «остаток по факту» (главное поле
      встречи), и историю закупа; остальным — только цифру остатка. [чат 019] */
+  /* Что заплачено за материал [чат 026]: приходит только когда задано, поэтому
+     строка появляется у тех материалов, по которым закуп вообще известен. */
+  const spent = m => (m.spent_sum == null && m.unit_sum == null) ? '' :
+    '<div class="m">Закуп: ' + (m.spent_sum != null ? fmt(m.spent_sum) + ' сум' : '—') +
+      (m.unit_sum != null ? ' · цена ' + fmt(m.unit_sum) + ' сум за ед.' : '') + '</div>';
   const line = m => canEdit ? '<div class="work">' +
       '<div class="t">' + esc(m.name) + '</div>' +
       '<div class="m">' + esc(m.src || '') + (m.rest_manual ? ' · остаток задан по факту' : '') + '</div>' +
+      spent(m) +
       '<div class="row"><label>Остаток по факту, ' + esc(m.unit || '') + '</label>' +
         '<input type="number" min="0" step="0.01" value="' + (m.rest_manual ? attr(m.rest) : '') + '" placeholder="' + (m.rest_manual ? '' : String(m.rest ?? '')) + '" ' +
         'onchange="matRest(this.dataset.c, this)" data-c="' + attr(m.name) + '" style="' + box + '"></div>' +
@@ -4518,6 +4524,7 @@ const UZ = {
 "уйдёт бригадиру на подтверждение":"tasdiqlash uchun brigadirga ketadi",
 "— уйдёт бригадиру на подтверждение":"— tasdiqlash uchun brigadirga ketadi",
 "уйдёт заказчику на подтверждение":"tasdiqlash uchun buyurtmachiga ketadi",
+"Сумма закупа, сум":"Xarid summasi, so'm","Цена за единицу, сум":"Birlik narxi, so'm",
 "— уйдёт заказчику на подтверждение":"— tasdiqlash uchun buyurtmachiga ketadi",
 "Мой день":"Mening kunim","приход, обед, уход":"kelish, tushlik, ketish",
 "Часы бригадира":"Brigadir soatlari","пришёл · обед · ушёл":"keldi · tushlik · ketdi",
@@ -4711,6 +4718,10 @@ const UZ_RULES = [
   /* Часы бригадира [чат 026]: счётчик ожидания на его стороне. Шаблон «N ждут
      вашего решения» уже есть ниже — он же обслуживает сторону заказчика. */
   [/^(\d+) ждут заказчика$/, "$1 buyurtmachini kutmoqda"],
+  /* Закуп материала [чат 026]: сумма и цена единицы — данные, слова вокруг них
+     интерфейс, поэтому строка переводится шаблоном целиком. */
+  [/^Закуп: (.+) сум · цена (.+) сум за ед\.$/, "Xarid: $1 so'm · narx $2 so'm/birlik"],
+  [/^Закуп: (.+) сум$/, "Xarid: $1 so'm"],
   [/^Задано (\d+) из (\d+) · всё заполнено$/, "$1 dan $2 berilgan · hammasi to'ldirilgan"],
   [/^Задано (\d+) из (\d+) · не задано (\d+)$/, "$1 dan $2 berilgan · $3 berilmagan"],
   [/^(.+) · финиш на ([\d.,]+)-й день · (.+)$/, "$1 · tugash $2-kuni · $3"],
@@ -5017,7 +5028,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "026.1";
+const BUILD = "026.2";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
