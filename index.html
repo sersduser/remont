@@ -2358,6 +2358,15 @@ const TMC_DONE = ['подтверждено', 'исправлено'];   /* ре
 let TMC_FORM = null;      /* id отметки с открытой формой правки */
 let TMC_BUSY = false;     /* замок от повторного входа [грабля 012] */
 
+/* Час без ведущего нуля — обычное дело для значения, пришедшего из листа:
+   Google хранит время числом и отдаёт отображаемое «8:20» (грабля 19, на ней
+   падала регистрация в 014). Сравнивать и подставлять в поле ввода можно
+   только приведённое к ЧЧ:ММ, иначе «правка 8:20 → 08:20» пройдёт как
+   настоящая. Показываем при этом то, что пришло: это данные листа. */
+const tmcHM = v => {
+  const m = String(v == null ? '' : v).trim().match(/^(\d{1,2}):(\d{2})/);
+  return m ? (m[1].length < 2 ? '0' : '') + m[1] + ':' + m[2] : '';
+};
 const tmcDone = t => TMC_DONE.includes(String((t && t.status) || '').trim());
 const tmcAll  = () => chgAll().filter(c => String(c.kind || '').trim() === TMC_KIND);
 const tmcFor  = id => tmcAll().filter(c => String(c.code || '') === String(id));
@@ -2375,7 +2384,7 @@ async function tmcSubmit(id){
   if(!t){ toast('Отметка не найдена', 'err'); return; }
   const nt = String((document.getElementById('tmc_' + id) || {}).value || '').trim();
   if(!/^\d{2}:\d{2}$/.test(nt)){ toast('Время — в формате ЧЧ:ММ', 'err'); return; }
-  if(nt === String(t.time || '').trim()){ toast('Время то же самое — менять нечего', 'err'); return; }
+  if(nt === tmcHM(t.time)){ toast('Время то же самое — менять нечего', 'err'); return; }
   if(tmcOpen(id)){ toast('По этой отметке уже заявлена правка', 'err'); return; }
   const why = String((document.getElementById('tmcw_' + id) || {}).value || '').trim();
   TMC_BUSY = true;
@@ -2388,7 +2397,7 @@ async function tmcSubmit(id){
       'Вид': TMC_KIND,
       'Код_работы': String(id),
       'Что_меняем': 'Часы: ' + String(t.worker || '') + ' · ' + String(t.date || '') + ' · ' + String(t.event || ''),
-      'Было': String(t.time || ''),
+      'Было': tmcHM(t.time) || String(t.time || ''),
       'Стало': nt,
       'Дельта_USD': 0,
       'Дельта_дней': 0,
@@ -2427,7 +2436,7 @@ function tmcUI(t){
   if(TMC_FORM === id)
     return hist +
       '<div class="m" style="margin-top:8px;display:flex;gap:8px;align-items:center">' +
-        '<input id="tmc_' + attr(id) + '" type="time" value="' + attr(String(t.time || '')) + '" style="flex:1;padding:10px;border-radius:10px;border:1px solid #3a3a3c;background:#000;color:#fff;font-size:15px">' +
+        '<input id="tmc_' + attr(id) + '" type="time" value="' + attr(tmcHM(t.time)) + '" style="flex:1;padding:10px;border-radius:10px;border:1px solid #3a3a3c;background:#000;color:#fff;font-size:15px">' +
         '<button onclick="tmcSubmit(\'' + esc(id) + '\')" ' + CREW_BTN + '>Заявить</button>' +
         '<button onclick="TMC_FORM=null;render()" ' + CREW_BTN2 + '>✕</button>' +
       '</div>' +
@@ -5159,7 +5168,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "027.1";
+const BUILD = "027.2";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
