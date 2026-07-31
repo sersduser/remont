@@ -1124,7 +1124,10 @@ async function chgAccept(id){
   try{
     await writeCell('11_Изменения', c.id, 'Статус', 'Принято');
     await writeCell('11_Изменения', c.id, 'Решил', D.who);
-    if(['admin', 'owner'].includes(D.role)){
+    /* Часы применяет принявшая сторона независимо от роли: право писать
+       «Время» в «Табеле» есть у обеих, а ждать заказчика бессмысленно —
+       он же и мог быть заявителем [чат 027]. */
+    if(['admin', 'owner'].includes(D.role) || String(c.kind || '').trim() === TMC_KIND){
       await chgApply(id, true);
     }else{
       toast('Принято — заказчик применит к смете');
@@ -1179,13 +1182,27 @@ async function chgApply(id, quiet){
       if(!w) throw new Error('Работа ' + c.code + ' не найдена');
       await writeCell('01_Работы', c.code, 'Объём', parseFloat(String(c.now)) || 0);
       await writeCell('01_Работы', c.code, 'Цена_аллокация_USD', Math.round((workPrice(w) + (Number(c.d_usd) || 0)) * 100) / 100);
+    }else if(k === TMC_KIND){
+      /* Время правится в том же листе, где живёт отметка. Статус её не трогаем:
+         она уже решена, меняется только время — а прежнее остаётся следом в
+         комментарии, чтобы через месяц спор был с чем сверить (та же логика,
+         что у отчётов бригады: слова работника остаются в «Значение»). */
+      const t = tmcRow(c.code);
+      const nt = String(c.now || '').trim();
+      if(!/^\d{2}:\d{2}$/.test(nt)) throw new Error('Время правки испорчено: ' + nt);
+      await crewCell('Табель', c.code, 'Время', nt);
+      const note = (t && t.comment ? String(t.comment) + ' · ' : '') +
+        'время ' + String(c.was || '') + ' → ' + nt + ' по заявке ' + c.id + ' (решил ' + D.who + ')';
+      await crewCell('Табель', c.code, 'Комментарий', note);
+      if(t){ t.time = nt; t.comment = note; }
     }else if(k === 'срок'){
       if(!w) throw new Error('Работа ' + c.code + ' не найдена');
       await writeCell('01_Работы', c.code, 'Длительность_дней', parseFloat(String(c.now)) || 0);
     }
     await writeCell('11_Изменения', c.id, 'Статус', 'Применено');
-    toast(quiet ? 'Принято и внесено в смету' : 'Внесено в смету');
+    toast(k === TMC_KIND ? 'Правка принята — время в табеле изменено' : (quiet ? 'Принято и внесено в смету' : 'Внесено в смету'));
     await load();
+    if(k === TMC_KIND) await crewLoad();
   }catch(e){
     toast('Принято, но применить не удалось: ' + e.message, 'err');
     await load();
@@ -1372,7 +1389,8 @@ function dscActs(c, mode){
     '<button style="' + bt + ';background:var(--bad)" onclick="' + (isRef ? 'refDispute' : 'chgDispute') + '(\'' + esc(c.id) + '\')">Оспорить</button></div>';
   if(mode === 'mine') return '<div class="m" style="color:var(--warn);margin-top:6px">⏳ Ждёт ответа второй стороны</div>';
   if(mode === 'apply') return '<div class="row" style="margin-top:10px">' +
-    '<button style="' + bt + ';background:#0a84ff" onclick="chgApply(\'' + esc(c.id) + '\')">Внести в смету</button></div>';
+    '<button style="' + bt + ';background:#0a84ff" onclick="chgApply(\'' + esc(c.id) + '\')">' +
+      (String(c.kind || '').trim() === TMC_KIND ? 'Внести в табель' : 'Внести в смету') + '</button></div>';
   return '';
 }
 function dscPackCard(pk, list, mode){
@@ -2313,6 +2331,7 @@ function ftBlock(c){
           '<button onclick="FT_FIX=' + i + ';render()" ' + CREW_BTN2 + ">Исправить время</button>" +
           '<button onclick="ftDecide(' + i + ',\'reject\')" ' + CREW_BTNR + ">Отклонить</button>" +
         "</div>") : "") +
+      tmcUI(x) +
       "</div>";
   };
   const list = Object.keys(groups).sort().reverse().map(d =>
@@ -2321,6 +2340,100 @@ function ftBlock(c){
     '<div class="stat"><span class="k">' + (wait.length ? (wait.length + " ждут вашего решения") : "все часы бригадира решены") + "</span></div>" +
     '<div class="filt"><button class="' + (FT_ALL ? "on" : "") + '" onclick="FT_ALL=!FT_ALL;render()">' + (FT_ALL ? "Только последняя неделя" : "Показать всё") + "</button></div>" +
     (view.length ? list : '<div class="stat"><span class="k">За последнюю неделю отметок нет.</span></div>');
+}
+
+/* ── ПРАВКА РЕШЁННЫХ ЧАСОВ [чат 027, маяк §15] ──
+   «Последующие изменения этой информации так же: запрос и подтверждение или
+   опровержение». Решённую отметку (подтверждена или исправлена) больше нельзя
+   переписать тихо — правка идёт заявкой вида «часы» в 11_Изменения: ссылка на
+   отметку в «Код_работы», время в «Было» → «Стало», дельты нулевые, поэтому
+   договор она не двигает (тот же приём, что у вида «точка», решение 019).
+   Новой сущности в данных не заводим — механизм согласования в системе один
+   на всё: заявил → вторая сторона приняла или оспорила (решение 006).
+   Применяет принявшая сторона: право писать «Время» в «Табеле» есть и у
+   заказчика (поля решения, чат 026), и у бригадира — значит ждать третьего
+   не нужно, а «принято, но не применено» перестало бы значить хоть что-то. */
+const TMC_KIND = 'часы';
+const TMC_DONE = ['подтверждено', 'исправлено'];   /* решённые отметки: только их правят заявкой */
+let TMC_FORM = null;      /* id отметки с открытой формой правки */
+let TMC_BUSY = false;     /* замок от повторного входа [грабля 012] */
+
+const tmcDone = t => TMC_DONE.includes(String((t && t.status) || '').trim());
+const tmcAll  = () => chgAll().filter(c => String(c.kind || '').trim() === TMC_KIND);
+const tmcFor  = id => tmcAll().filter(c => String(c.code || '') === String(id));
+const tmcOpen = id => tmcFor(id).filter(c => chgSt(c) === 'Заявлено')[0] || null;
+const tmcLast = id => tmcFor(id).filter(c => ['Применено', 'Оспорено'].includes(chgSt(c))).slice(-1)[0] || null;
+/* Отметку ищем во всех трёх списках: свои часы бригадира (my_time), часы
+   бригадира глазами заказчика (ftime) и табель бригады (time). */
+const tmcRow  = id => ((((CREW_DATA || {}).my_time) || [])
+  .concat(((CREW_DATA || {}).ftime) || [], ((CREW_DATA || {}).time) || []))
+  .filter(x => String(x.id) === String(id))[0] || null;
+
+async function tmcSubmit(id){
+  if(TMC_BUSY) return;
+  const t = tmcRow(id);
+  if(!t){ toast('Отметка не найдена', 'err'); return; }
+  const nt = String((document.getElementById('tmc_' + id) || {}).value || '').trim();
+  if(!/^\d{2}:\d{2}$/.test(nt)){ toast('Время — в формате ЧЧ:ММ', 'err'); return; }
+  if(nt === String(t.time || '').trim()){ toast('Время то же самое — менять нечего', 'err'); return; }
+  if(tmcOpen(id)){ toast('По этой отметке уже заявлена правка', 'err'); return; }
+  const why = String((document.getElementById('tmcw_' + id) || {}).value || '').trim();
+  TMC_BUSY = true;
+  try{
+    toast('Отправляю на согласование…', 'wait');
+    await crewAppend('11_Изменения', [{
+      'id': 'CH-' + Date.now().toString(36).toUpperCase(),
+      'Время': chgStamp(),
+      'Инициатор': D.who,
+      'Вид': TMC_KIND,
+      'Код_работы': String(id),
+      'Что_меняем': 'Часы: ' + String(t.worker || '') + ' · ' + String(t.date || '') + ' · ' + String(t.event || ''),
+      'Было': String(t.time || ''),
+      'Стало': nt,
+      'Дельта_USD': 0,
+      'Дельта_дней': 0,
+      'Статус': 'Заявлено',
+      'Решил': '',
+      'Комментарий': why,
+    }]);
+    TMC_FORM = null;
+    toast('Правка заявлена — ждёт решения второй стороны');
+    await load();
+    await crewLoad();
+  }catch(e){ toast(e.message, 'err'); }
+  finally{ TMC_BUSY = false; }
+}
+
+/* Разметка правки под карточкой отметки — одна на оба контура: у бригадира
+   («Мой день») и у заказчика («Часы бригадира») путь один и тот же, и вешать
+   на него две разные разметки значило бы чинить потом в двух местах. */
+function tmcUI(t){
+  if(!t || !tmcDone(t)) return '';
+  const id = String(t.id || '');
+  const op = tmcOpen(id);
+  if(op){
+    const line = '<div class="m" style="margin-top:6px;color:var(--warn)">✎ правка времени: ' +
+      esc(String(op.was || '')) + ' → ' + esc(String(op.now || '')) +
+      (op.comment ? (' · ' + esc(String(op.comment))) : '') + '</div>';
+    if(String(op.by || '') === String(D.who))
+      return line + '<div class="m" style="color:var(--warn)">⏳ Ждёт ответа второй стороны</div>';
+    return line + '<div class="m" style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">' +
+      '<button onclick="chgAccept(\'' + esc(String(op.id)) + '\')" ' + CREW_BTN + '>Принять правку</button>' +
+      '<button onclick="chgDispute(\'' + esc(String(op.id)) + '\')" ' + CREW_BTNR + '>Оспорить правку</button></div>';
+  }
+  const last = tmcLast(id);
+  const hist = last ? ('<div class="m" style="opacity:.65">правка ' + esc(String(last.was || '')) + ' → ' +
+    esc(String(last.now || '')) + ' · ' + esc(chgSt(last)) + '</div>') : '';
+  if(TMC_FORM === id)
+    return hist +
+      '<div class="m" style="margin-top:8px;display:flex;gap:8px;align-items:center">' +
+        '<input id="tmc_' + attr(id) + '" type="time" value="' + attr(String(t.time || '')) + '" style="flex:1;padding:10px;border-radius:10px;border:1px solid #3a3a3c;background:#000;color:#fff;font-size:15px">' +
+        '<button onclick="tmcSubmit(\'' + esc(id) + '\')" ' + CREW_BTN + '>Заявить</button>' +
+        '<button onclick="TMC_FORM=null;render()" ' + CREW_BTN2 + '>✕</button>' +
+      '</div>' +
+      '<div style="margin-top:8px"><input id="tmcw_' + attr(id) + '" type="text" placeholder="почему меняем — необязательно" style="width:100%;padding:10px;border-radius:10px;border:1px solid #3a3a3c;background:#000;color:#fff;font-size:14px"></div>';
+  return hist + '<div class="m" style="margin-top:8px">' +
+    '<button onclick="TMC_FORM=\'' + esc(id) + '\';render()" ' + CREW_BTN2 + '>Изменить время</button></div>';
 }
 
 /* Человекодни: уникальные пары дата+работник по подтверждённым отметкам —
@@ -3170,7 +3283,7 @@ crew_my(){
   const marks = mine.length ?
     '<div class="stat">' + mine.map(x =>
       '<div class="r"><span class="k">' + esc(String(x.event || "")) + " " + esc(String(x.time || "")) + '</span><span class="v" style="font-size:13px;color:var(--hint)">' +
-      (x.status === "подтверждено" || x.status === "исправлено" ? "✓ " : "") + esc(String(x.status || "")) + "</span></div>").join("") + "</div>"
+      (x.status === "подтверждено" || x.status === "исправлено" ? "✓ " : "") + esc(String(x.status || "")) + "</span></div>" + tmcUI(x)).join("") + "</div>"
     : '<div class="stat"><span class="k">Сегодня вы ещё не отмечались.</span></div>';
   const hmBox = HM ? (() => {
     const now = crewNow();
@@ -3193,7 +3306,7 @@ crew_my(){
   const hist = past.length ? ('<div class="sub" style="margin-top:14px">Прежние отметки</div>' + past.map(x =>
     '<div class="work"><div class="t">' + esc(String(x.event || "")) + " · " + esc(String(x.time || "")) + "</div>" +
     '<div class="m">' + dLabel(String(x.date || "")) + " · " + esc(String(x.status || "")) +
-      (x.confirmed ? " · решил " + esc(String(x.confirmed)) : "") + "</div></div>").join("")) : "";
+      (x.confirmed ? " · решил " + esc(String(x.confirmed)) : "") + "</div>" + tmcUI(x) + "</div>").join("")) : "";
   return '<div class="hello">Мой день</div>' +
     '<div class="sub">' + (waitN ? (waitN + " ждут заказчика") : "все ваши отметки решены") + "</div>" +
     marks + hmBox +
@@ -3203,7 +3316,7 @@ crew_my(){
     '<button class="tile pri" onclick="startVoice()"><span class="ic">🎤</span><span class="nm">Голосом</span><div class="h">пришёл · обед · ушёл</div></button>' +
     '<button class="tile" onclick="openCrewScreen(\'crew_my\')"><span class="ic">🔄</span><span class="nm">Обновить</span></button>' +
     "</div>" +
-    '<div class="stat"><span class="k">Ваши часы подтверждает заказчик: промежуточного решения у ваших отметок нет. Отметки бригады решаете вы сами — на экране «Табель».</span></div>' +
+    '<div class="stat"><span class="k">Ваши часы подтверждает заказчик: промежуточного решения у ваших отметок нет. Отметки бригады решаете вы сами — на экране «Табель». Решённую отметку тихо не переписать: «Изменить время» отправит правку заказчику на подтверждение.</span></div>' +
     hist;
 },
 
@@ -3566,9 +3679,12 @@ changes(){
     const w = (D.works || []).find(x => x.code === c.code);
     return w ? w.name : (String(c.kind) === 'добавить' ? String(c.now || '').split('|')[0].trim() : c.code);
   };
+  /* У заявки «часы» работы нет вовсе — ссылка ведёт на отметку табеля, и
+     показывать её код человеку незачем: `TB-MS55OFTWY` ему ничего не говорит,
+     а кто, когда и что менял, уже сказано заголовком. */
   const card = (c, actions) => '<div class="work">' +
-    '<div class="t">' + esc(c.what || c.kind) + ' · ' + esc(wname(c)) + '</div>' +
-    '<div class="m">' + esc(c.code || '') + ' · заявил ' + esc(c.by || '') + ' · ' + esc(c.at || '') + '</div>' +
+    '<div class="t">' + esc(c.what || c.kind) + (String(c.kind || '').trim() === TMC_KIND ? '' : (' · ' + esc(wname(c)))) + '</div>' +
+    '<div class="m">' + (String(c.kind || '').trim() === TMC_KIND ? '' : (esc(c.code || '') + ' · ')) + 'заявил ' + esc(c.by || '') + ' · ' + esc(c.at || '') + '</div>' +
     '<div class="m">было: ' + esc(c.was || '—') + ' → станет: ' + esc(String(c.now || '').split('|')[0].trim()) + '</div>' +
     '<div class="m" style="color:' + ((Number(c.d_usd) || 0) >= 0 ? 'var(--warn)' : 'var(--ok)') + '">' +
       ((Number(c.d_usd) || 0) ? ((Number(c.d_usd) > 0 ? '+' : '−') + usd(Math.abs(Number(c.d_usd))) + ' $ к договору') : 'на договор не влияет') +
@@ -3602,7 +3718,7 @@ changes(){
     (toApply ? ('<div class="sub" style="margin-top:14px">Принято — внести в смету</div>' + toApply) : '') +
     (done ? ('<div class="sub" style="margin-top:14px">История</div>' + done) : '') +
     ((theirs || mine || toApply || done) ? '' :
-      '<div class="stat"><span class="k">Изменений пока не заявляли. Любая сторона может предложить добавить или убрать работу, поменять цену, объём или срок — вторая сторона примет или оспорит, и только принятое двигает сумму договора.</span></div>');
+      '<div class="stat"><span class="k">Изменений пока не заявляли. Любая сторона может предложить добавить или убрать работу, поменять цену, объём или срок, а также поправить уже подтверждённые часы — вторая сторона примет или оспорит, и только принятое двигает сумму договора.</span></div>');
 },
 
 
@@ -4342,6 +4458,15 @@ let UZ_OBS = null;
 
 /* Точные надписи. Ключ — строка целиком, как она приходит в текстовый узел. */
 const UZ = {
+"Изменить время":"Vaqtni o'zgartirish","В том числе изменения":"Shu jumladan o'zgarishlar","Заявить":"Bildirish","Принять правку":"Tuzatishni qabul qilish",
+"Оспорить правку":"Tuzatishga e'tiroz","Время то же самое — менять нечего":"Vaqt o'sha — o'zgartiradigan narsa yo'q",
+"По этой отметке уже заявлена правка":"Bu belgi bo'yicha tuzatish allaqachon bildirilgan",
+"Правка заявлена — ждёт решения второй стороны":"Tuzatish bildirildi — ikkinchi tomon qarorini kutmoqda",
+"Правка принята — время в табеле изменено":"Tuzatish qabul qilindi — tabelda vaqt o'zgartirildi",
+"почему меняем — необязательно":"nega o'zgartiramiz — majburiy emas","Внести в табель":"Tabelga kiritish",
+"Отметка не найдена":"Belgi topilmadi",
+"Ваши часы подтверждает заказчик: промежуточного решения у ваших отметок нет. Отметки бригады решаете вы сами — на экране «Табель». Решённую отметку тихо не переписать: «Изменить время» отправит правку заказчику на подтверждение.":"Sizning soatlaringizni buyurtmachi tasdiqlaydi: belgilaringizda oraliq qaror yo'q. Brigada belgilarini o'zingiz hal qilasiz — «Tabel» ekranida. Hal qilingan belgini jimgina qayta yozib bo'lmaydi: «Vaqtni o'zgartirish» tuzatishni buyurtmachiga tasdiqlashga yuboradi.",
+"Изменений пока не заявляли. Любая сторона может предложить добавить или убрать работу, поменять цену, объём или срок, а также поправить уже подтверждённые часы — вторая сторона примет или оспорит, и только принятое двигает сумму договора.":"Hozircha o'zgarish bildirilmagan. Har qaysi tomon ish qo'shishni yoki olib tashlashni, narx, hajm yoki muddatni o'zgartirishni, shuningdek tasdiqlangan soatlarni tuzatishni taklif qilishi mumkin — ikkinchi tomon qabul qiladi yoki e'tiroz bildiradi.",
 "до":"gacha","ед":"birlik","Все":"Barchasi","все":"barchasi","чек":"chek",
 "Допы":"Qo'shimchalar","Чеки":"Cheklar","Снято":"Olib tashlangan","Сроки":"Muddatlar",
 "Сумма":"Summa","Точка":"Nuqta","Готово":"Tayyor","Наряды":"Topshiriqlar","Объект":"Obyekt",
@@ -4693,7 +4818,7 @@ const UZ = {
 "Например: «в спальне пять двадцать на три двадцать, потолки два восемьдесят пять, одно окно и одна дверь»":"Masalan: «yotoqxona besh yigirmaga uch yigirma, shift ikki sakson besh, bitta deraza va bitta eshik»",
 "Кнопка ниже создаст недостающие листы объекта (12 штук) с правильными шапками. Существующие листы не тронутся — их данные останутся как есть.":"Quyidagi tugma obyektning yetishmayotgan varaqlarini (12 ta) to'g'ri sarlavhalar bilan yaratadi. Mavjud varaqlar tegilmaydi — ulardagi ma'lumot o'z holicha qoladi.",
 "Ни один лист не создан. Либо все стандартные листы объекта уже есть — тогда серверу не хватает листа вне стандартного набора, скажите об этом администратору. Либо у вас нет прав заводить листы.":"Birorta varaq yaratilmadi. Yo obyektning barcha standart varaqlari allaqachon bor — u holda serverga standart to'plamdan tashqaridagi varaq yetishmayapti, buni administratorga ayting. Yo sizda varaq yaratish huquqi yo'q.",
-"точка":"nuqta","добавить":"qo'shish","срок":"muddat","цена":"narx","объём":"hajm",
+"точка":"nuqta","добавить":"qo'shish","срок":"muddat","цена":"narx","объём":"hajm","часы":"soatlar",
 "Малярка":"Bo'yoq ishlari","Столярка":"Duradgorlik","Кафель":"Kafel",
 "— когда?":"— qachon?","когда?":"qachon?","исправлено":"to'g'rilangan","принято":"qabul qilindi",
 "какой материал":"qaysi material","сколько израсходовано":"qancha sarflandi",
@@ -4715,6 +4840,12 @@ const UZ = {
 /* Шаблоны: строка содержит данные (числа, коды, названия) — переводим обвязку,
    данные оставляем на месте. Порядок важен: правила идут сверху вниз. */
 const UZ_RULES = [
+  /* Договор с принятыми изменениями [чат 027]: строки появляются только при
+     ненулевой дельте, поэтому до починки мока стенд их не показывал. */
+  [/^база (.+) \+ изменения (.+)$/, "asos $1 + o'zgarishlar $2"],
+  [/^база (.+) − изменения (.+)$/, "asos $1 − o'zgarishlar $2"],
+  [/^принятых заявок: (\d+)$/, "qabul qilingan arizalar: $1"],
+  [/^([+−].+) \$ к договору$/, "shartnomaga $1 $"],
   /* Часы бригадира [чат 026]: счётчик ожидания на его стороне. Шаблон «N ждут
      вашего решения» уже есть ниже — он же обслуживает сторону заказчика. */
   [/^(\d+) ждут заказчика$/, "$1 buyurtmachini kutmoqda"],
@@ -5028,7 +5159,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "026.2";
+const BUILD = "027.1";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
