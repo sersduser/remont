@@ -2558,35 +2558,50 @@ function handObject(){
 function markGoesTo(){ return (D && (D.kind === "foreman" || D.role === "foreman")) ? "заказчику" : "бригадиру"; }
 function markHint(){ return markGoesTo() === "заказчику" ? "уйдёт заказчику на подтверждение" : "уйдёт бригадиру на подтверждение"; }
 function handMark(ev){ HM = { ev: ev, mode: "now" }; render(); }
-function handMarkTime(){
-  if(!HM) return "";
-  const now = crewNow();
+/* Кнопки и голос считают момент одной функцией: разойдись они — ночная
+   отметка кнопкой и голосом легла бы в разные сутки. [чат 028] */
+function handMarkMoment(){
+  if(!HM) return null;
   if(HM.mode === "custom"){
-    const v = String((document.getElementById("hm_time") || {}).value || "").trim();
-    return /^\d{2}:\d{2}$/.test(v) ? (v > now ? now : v) : "";
+    const el = document.getElementById("hm_time");
+    const v = String(el ? (el.value || "") : (HM.at || crewNow())).trim();
+    return /^\d{1,2}:\d{2}$/.test(v) ? handMoment({ at: v }) : null;
   }
-  const shift = { now: 0, m10: 10, m30: 30, m60: 60 }[HM.mode] || 0;
-  const mins = Math.max(0, Number(now.slice(0, 2)) * 60 + Number(now.slice(3, 5)) - shift);
-  const p = n => String(n).padStart(2, "0");
-  return p(Math.floor(mins / 60)) + ":" + p(mins % 60);
+  return handMoment({ shift_min: { now: 0, m10: 10, m30: 30, m60: 60 }[HM.mode] || 0 });
+}
+function handMarkTime(){ const m = handMarkMoment(); return m ? m.time : ""; }
+/* Что именно запишется — видно до нажатия «Записать»: и время, и день.
+   Введённое своё время держим в HM.at: панель перерисовывается поллингом,
+   и без этого набранное пропадало бы на очередном обновлении. */
+function hmWhen(){
+  const m = handMarkMoment();
+  if(!m) return "Время — в формате ЧЧ:ММ";
+  return "Запишется: " + (m.date === crewToday() ? "сегодня" : dLabel(m.date)) + " " + m.time;
+}
+function hmHint(){
+  const el = document.getElementById("hm_time");
+  if(el && HM) HM.at = el.value;
+  const box = document.getElementById("hm_when");
+  if(box) box.textContent = hmWhen();
 }
 async function handMarkGo(){
   if(!HM || HM_BUSY) return;
-  const t = handMarkTime();
-  if(!t){ toast("Время — в формате ЧЧ:ММ, не позже текущего", "err"); return; }
-  const today = crewToday();
+  const mo = handMarkMoment();
+  if(!mo){ toast("Время — в формате ЧЧ:ММ", "err"); return; }
+  const t = mo.time, today = crewToday();
+  const day = mo.date === today ? "сегодня" : dLabel(mo.date);
   const dup = (((CREW_DATA || {}).time) || []).some(x =>
-    String(x.date || "") === today && String(x.event || "") === HM.ev && String(x.status || "") !== "отклонено");
-  if(dup && !confirm("Отметка «" + HM.ev + "» сегодня уже есть. Добавить ещё одну?")) return;
+    String(x.date || "") === mo.date && String(x.event || "") === HM.ev && String(x.status || "") !== "отклонено");
+  if(dup && !confirm("Отметка «" + HM.ev + "» " + day + " уже есть. Добавить ещё одну?")) return;
   HM_BUSY = true;
   try{
     toast("Записываю…", "wait");
     await crewAppend("Табель", [{
-      "id": crewId("TB"), "Работник": D.who, "Объект": handObject(), "Дата": today,
+      "id": crewId("TB"), "Работник": D.who, "Объект": handObject(), "Дата": mo.date,
       "Событие": HM.ev, "Время": t, "Отметил": D.who, "Статус": "заявлено",
       "Подтвердил": "", "Комментарий": "",
     }]);
-    toast("Отмечено: " + HM.ev + " " + t + " — " + markHint());
+    toast("Отмечено: " + HM.ev + " " + (mo.date === today ? "" : day + " ") + t + " — " + markHint());
     HM = null;
     await crewLoad(); render();
   }catch(e){ toast(e.message, "err"); }
@@ -2661,8 +2676,9 @@ function handHome(){
       '<div style="display:flex;gap:7px;flex-wrap:wrap;margin:10px 0">' +
       opt("now", "сейчас " + now) + opt("m10", "−10 мин") + opt("m30", "−30 мин") + opt("m60", "−1 час") +
       opt("custom", "своё время") + "</div>" +
-      (HM.mode === "custom" ? '<div style="margin-bottom:10px"><input id="hm_time" type="time" value="' + now + '" ' + CREW_INP + "></div>" : "") +
-      '<div style="color:var(--hint);font-size:12px;margin-bottom:10px">Задним числом — только в пределах сегодняшнего дня; раньше — через бригадира.</div>' +
+      (HM.mode === "custom" ? '<div style="margin-bottom:10px"><input id="hm_time" type="time" value="' + (HM.at || now) + '" oninput="hmHint()" ' + CREW_INP + "></div>" : "") +
+      '<div id="hm_when" style="color:var(--hint);font-size:13px;margin-bottom:8px">' + hmWhen() + "</div>" +
+      '<div style="color:var(--hint);font-size:12px;margin-bottom:10px">Задним числом — в пределах суток; после полуночи отметка ляжет вчерашним днём. Раньше — через бригадира.</div>' +
       '<div style="color:var(--warn);font-size:13px;font-weight:600;margin-bottom:10px">⏳ Ещё не записано — выбери время и нажми «Записать»</div>' +
       '<div style="display:flex;gap:8px">' +
       '<button onclick="HM=null;render()" style="flex:1;padding:12px;border-radius:10px;border:0;background:#3a3a3c;color:#fff;font-size:15px">Отмена</button>' +
@@ -3302,8 +3318,9 @@ crew_my(){
       '<div style="display:flex;gap:7px;flex-wrap:wrap;margin:10px 0">' +
       opt("now", "сейчас " + now) + opt("m10", "−10 мин") + opt("m30", "−30 мин") + opt("m60", "−1 час") +
       opt("custom", "своё время") + "</div>" +
-      (HM.mode === "custom" ? '<div style="margin-bottom:10px"><input id="hm_time" type="time" value="' + now + '" ' + CREW_INP + "></div>" : "") +
-      '<div style="color:var(--hint);font-size:12px;margin-bottom:10px">Задним числом — только в пределах сегодняшнего дня.</div>' +
+      (HM.mode === "custom" ? '<div style="margin-bottom:10px"><input id="hm_time" type="time" value="' + (HM.at || now) + '" oninput="hmHint()" ' + CREW_INP + "></div>" : "") +
+      '<div id="hm_when" style="color:var(--hint);font-size:13px;margin-bottom:8px">' + hmWhen() + "</div>" +
+      '<div style="color:var(--hint);font-size:12px;margin-bottom:10px">Задним числом — в пределах суток: после полуночи отметка ляжет вчерашним днём.</div>' +
       '<div style="color:var(--warn);font-size:13px;font-weight:600;margin-bottom:10px">⏳ Ещё не записано — выберите время и нажмите «Записать»</div>' +
       '<div style="display:flex;gap:8px">' +
       '<button onclick="HM=null;render()" style="flex:1;padding:12px;border-radius:10px;border:0;background:#3a3a3c;color:#fff;font-size:15px">Отмена</button>' +
@@ -4319,13 +4336,36 @@ async function applyVoiceRepair(){
    Сервер (mode:'hand') возвращает действия, а не правки листов; запись —
    прежними каналами (crewAppend в Табель и Отчёты_бригады), права те же. */
 let vActs = [];
-function handActTime(a){
-  const now = crewNow();
-  if(a.at && /^\d{2}:\d{2}$/.test(a.at)) return a.at > now ? now : a.at;
-  const mins = Math.max(0, Number(now.slice(0, 2)) * 60 + Number(now.slice(3, 5)) - (a.shift_min || 0));
+/* Момент отметки — дата и время вместе [чат 028]. «Двадцать минут назад»,
+   сказанное в 00:07, ведёт во вчерашние сутки; прежний расчёт жил в минутах
+   одних суток, обрезал разницу по нулю и писал 00:00 сегодняшним днём —
+   неверное время и неверный день разом. Нашлось живым проходом: моки
+   молчаливо жили в середине дня, где обрезание никогда не срабатывало.
+   Явное время больше текущего — не будущее, а одно из двух: оговорка
+   (в пределах HAND_SLIP_MIN прижимаем к «сейчас», как было до 028) либо
+   речь о вчерашнем вечере. Дальше вчера кнопка не уводит: отметки прошлых
+   дней — дело бригадира, а не сдвига «−1 час». */
+const HAND_SLIP_MIN = 120;
+const HAND_DAY_MIN = 24 * 60;
+function handMoment(a){
   const p = n => String(n).padStart(2, "0");
-  return p(Math.floor(mins / 60)) + ":" + p(mins % 60);
+  const today = crewToday(), now = crewNow();
+  const mins = t => Number(t.slice(0, 2)) * 60 + Number(t.slice(3, 5));
+  const nowMin = mins(now);
+  const at = String((a && a.at) || "").trim();
+  const m = at.match(/^(\d{1,2}):(\d{2})$/);
+  if(m){
+    const hm = p(Number(m[1])) + ":" + m[2];
+    const d = mins(hm) - nowMin;
+    if(d <= 0) return { date: today, time: hm };
+    return d <= HAND_SLIP_MIN ? { date: today, time: now } : { date: dShift(today, -1), time: hm };
+  }
+  const shift = Math.min(HAND_DAY_MIN, Math.max(0, Number((a && a.shift_min) || 0) || 0));
+  let v = nowMin - shift, date = today;
+  if(v < 0){ v += HAND_DAY_MIN; date = dShift(today, -1); }
+  return { date: date, time: p(Math.floor(v / 60)) + ":" + p(v % 60) };
 }
+function handActTime(a){ return handMoment(a).time; }
 function showVHand(d){
   const acts = d.actions || [];
   vActs = acts.map(a => ({ ...a, _sel: true }));
@@ -4342,9 +4382,13 @@ function showVHand(d){
     return;
   }
   const today = crewToday();
-  const dup = a => (((CREW_DATA || {}).time) || []).some(x => String(x.date || "") === today && String(x.event || "") === a.event && String(x.status || "") !== "отклонено");
+  /* Дубль ищем в тех сутках, куда ляжет отметка: ночная приходит во вчера. [чат 028] */
+  const dup = a => { const m = handMoment(a);
+    return (((CREW_DATA || {}).time) || []).some(x => String(x.date || "") === m.date && String(x.event || "") === a.event && String(x.status || "") !== "отклонено"); };
   const line = a => {
-    if(a.kind === "time") return { t: "⏱ " + a.event + " — " + handActTime(a), d: (a.shift_min ? "сдвиг −" + a.shift_min + " мин · " : "") + (dup(a) ? "⚠ такая отметка сегодня уже есть" : markHint()) };
+    if(a.kind === "time"){ const m = handMoment(a), day = m.date === today ? "" : dLabel(m.date);
+      return { t: "⏱ " + a.event + " — " + (day ? day + " " : "") + m.time,
+        d: (a.shift_min ? "сдвиг −" + a.shift_min + " мин · " : "") + (dup(a) ? "⚠ такая отметка " + (day || "сегодня") + " уже есть" : markHint()) }; }
     if(a.kind === "work") return { t: "🔨 " + (a.name || a.code) + " → " + a.percent + " %", d: (a.room ? a.room + " · " : "") + "отчёт бригадиру" };
     return { t: "🧱 " + a.name + " → " + a.qty, d: "расход материала · отчёт бригадиру" };
   };
@@ -4377,8 +4421,10 @@ async function applyVoiceHand(){
   if(btn){ btn.disabled = true; btn.textContent = "Записываю…"; }
   const today = crewToday(), tbl = [], rep = [];
   for(const a of chosen){
-    if(a.kind === "time") tbl.push({ "id": crewId("TB") + (tbl.length ? "-" + tbl.length : ""), "Работник": D.who, "Объект": handObject(), "Дата": today,
-      "Событие": a.event, "Время": handActTime(a), "Отметил": D.who + " (голос)", "Статус": "заявлено", "Подтвердил": "", "Комментарий": "" });
+    /* Дата — из момента отметки, а не «сегодня»: после полуночи это разные дни. [чат 028] */
+    if(a.kind === "time"){ const m = handMoment(a);
+      tbl.push({ "id": crewId("TB") + (tbl.length ? "-" + tbl.length : ""), "Работник": D.who, "Объект": handObject(), "Дата": m.date,
+        "Событие": a.event, "Время": m.time, "Отметил": D.who + " (голос)", "Статус": "заявлено", "Подтвердил": "", "Комментарий": "" }); }
     else if(a.kind === "work") rep.push({ "id": crewId("RP") + (rep.length ? "-" + rep.length : ""), "Дата": today, "Работник": D.who,
       "Тип": "работа", "Код": a.code, "Значение": String(a.percent), "Комментарий": a.comment || "голос", "Статус": "новый", "Стало": "", "Решил": "", "Время": crewNow() });
     else rep.push({ "id": crewId("RP") + (rep.length ? "-" + rep.length : ""), "Дата": today, "Работник": D.who,
@@ -4623,7 +4669,7 @@ const UZ = {
 "Отчётов пока нет. Работник отправляет их со своего экрана «Отчёт бригадиру».":"Hozircha hisobot yo'q. Ishchi ularni «Brigadirga hisobot» ekranidan yuboradi.",
 "Поправите число — в учёт уйдёт ваша версия, слова работника останутся рядом.":"Sonni to'g'rilasangiz — hisobga sizning variantingiz ketadi, ishchining so'zlari yonida qoladi.",
 "Бригадир отключил вас от объекта. Если это ошибка — свяжитесь с ним напрямую.":"Brigadir sizni obyektdan o'chirdi. Bu xato bo'lsa — u bilan bevosita bog'laning.",
-"Задним числом — только в пределах сегодняшнего дня; раньше — через бригадира.":"Orqaga sana bilan — faqat bugunning ichida; undan oldini brigadir orqali.",
+"Задним числом — в пределах суток; после полуночи отметка ляжет вчерашним днём. Раньше — через бригадира.":"Orqaga sana bilan — sutka ichida; yarim tundan keyin belgi kechagi kunga tushadi. Undan oldini brigadir orqali.",
 "Введите код приглашения от бригадира. Если вы открыли панель по ссылке-приглашению, код уже подставлен.":"Brigadirdan olgan taklifnoma kodini kiriting. Panelni taklif havolasi orqali ochgan bo'lsangiz, kod allaqachon qo'yilgan.",
 "Код не подошёл: он мог истечь, быть использован или ваш Telegram уже подключён. Попросите у бригадира новую ссылку.":"Kod to'g'ri kelmadi: muddati o'tgan, ishlatilgan yoki Telegramingiz allaqachon ulangan bo'lishi mumkin. Brigadirdan yangi havola so'rang.",
 "Не получилось подключить — попробуйте ещё раз или запросите новую ссылку.":"Ulanmadi — yana urinib ko'ring yoki yangi havola so'rang.",
@@ -4632,7 +4678,7 @@ const UZ = {
 "Например: «пришёл 10 минут назад» или «готовность сдира потолка 50»":"Masalan: «10 daqiqa oldin keldim» yoki «shift sidirish tayyorligi 50»",
 "Например: «покраска потолка в спальне готова» или «куплено 5 мешков цемента»":"Masalan: «yotoqxonada shift bo'yash tayyor» yoki «5 qop tsement sotib olindi»",
 "Например: «в спальне потолок выровнять и покрасить, стены под обои» — помещение подставится из сказанного.":"Masalan: «yotoqxonada shiftni tekislab bo'yash, devorlar oboy ostiga» — xona aytilganidan olinadi.",
-"⚠ такая отметка сегодня уже есть":"⚠ bugun bunday belgi allaqachon bor",
+"⚠ такая отметка сегодня уже есть":"⚠ bugun bunday belgi allaqachon bor","⚠ такая отметка вчера уже есть":"⚠ kecha bunday belgi allaqachon bor","Время — в формате ЧЧ:ММ":"Vaqt — SS:DD ko'rinishida",
 "⏳ Ещё не записано — выбери время и нажми «Записать»":"⏳ Hali yozilmadi — vaqtni tanlab «Yozib qo'yish»ni bosing",
 "⚠ Отметки «пришёл» нет — молчание не значит «всё нормально»":"⚠ «Keldi» belgisi yo'q — sukunat «hammasi joyida» degani emas",
 "⏳ Ждёт приёмки работником":"⏳ Ishchi qabulini kutmoqda",
@@ -4666,7 +4712,7 @@ const UZ = {
 "все ваши отметки решены":"barcha belgilaringiz hal qilingan",
 "все часы бригадира решены":"brigadirning barcha soatlari hal qilingan",
 "Прежние отметки":"Oldingi belgilar",
-"Задним числом — только в пределах сегодняшнего дня.":"Orqaga sana bilan — faqat bugungi kun ichida.",
+"Задним числом — в пределах суток: после полуночи отметка ляжет вчерашним днём.":"Orqaga sana bilan — sutka ichida: yarim tundan keyin belgi kechagi kunga tushadi.",
 "⏳ Ещё не записано — выберите время и нажмите «Записать»":"⏳ Hali yozilmadi — vaqtni tanlang va «Yozish» tugmasini bosing",
 "Ваши часы подтверждает заказчик: промежуточного решения у ваших отметок нет. Отметки бригады решаете вы сами — на экране «Табель».":"Soatlaringizni buyurtmachi tasdiqlaydi: belgilaringizda oraliq qaror yo'q. Brigada belgilarini o'zingiz hal qilasiz — «Ish vaqti» ekranida.",
 "Отметки работников подтверждает бригадир, а его собственные часы — вы. Поимённый состав бригады остаётся его делом: вам виден объём.":"Ishchilar belgilarini brigadir tasdiqlaydi, uning o'z soatlarini esa siz. Brigada tarkibi ismma-ism uning ishi bo'lib qoladi: sizga hajm ko'rinadi.",
@@ -4849,6 +4895,17 @@ const UZ = {
 /* Шаблоны: строка содержит данные (числа, коды, названия) — переводим обвязку,
    данные оставляем на месте. Порядок важен: правила идут сверху вниз. */
 const UZ_RULES = [
+  /* Ночная отметка [чат 028]: окно называет сутки, куда она ляжет. День внутри
+     строки — служебное слово, поэтому шаблон разбирает оба варианта отдельно,
+     а не отдаёт «сегодня/вчера» общей подстановке. */
+  [/^Запишется: сегодня (.+)$/, "Yoziladi: bugun $1"],
+  [/^Запишется: вчера (.+)$/, "Yoziladi: kecha $1"],
+  [/^Запишется: (.+)$/, "Yoziladi: $1"],
+  /* День внутри строки отметки: «⏱ пришёл — вчера 23:47» слой разбирает по
+     тире, и вторая часть остаётся строкой «вчера HH:MM». Без шаблона она
+     доезжала до узбекского экрана кириллицей — поймано стендом (покрытие). */
+  [/^вчера (\d{1,2}:\d{2})$/, "kecha $1"],
+  [/^сегодня (\d{1,2}:\d{2})$/, "bugun $1"],
   /* Договор с принятыми изменениями [чат 027]: строки появляются только при
      ненулевой дельте, поэтому до починки мока стенд их не показывал. */
   [/^база (.+) \+ изменения (.+)$/, "asos $1 + o'zgarishlar $2"],
@@ -4959,6 +5016,10 @@ const UZ_RULES = [
 /* Служебные слова внутри составных строк: единицы и статусы приходят из листа,
    но человек читает их как интерфейс. Замена только по границам слова. */
 const UZ_WORDS = [
+  [/(^|[\s·(])пн(?=$|[\s·).,])/g, "$1du"], [/(^|[\s·(])вт(?=$|[\s·).,])/g, "$1se"],
+  [/(^|[\s·(])ср(?=$|[\s·).,])/g, "$1cho"], [/(^|[\s·(])чт(?=$|[\s·).,])/g, "$1pay"],
+  [/(^|[\s·(])пт(?=$|[\s·).,])/g, "$1ju"], [/(^|[\s·(])сб(?=$|[\s·).,])/g, "$1sha"],
+  [/(^|[\s·(])вс(?=$|[\s·).,])/g, "$1yak"],
   [/(^|[\s·(])дн(?=$|[\s·).,])/g, "$1kun"], [/(^|[\s·(])шт(?=$|[\s·).,])/g, "$1dona"],
   [/(^|[\s·(])чел-дн(?=$|[\s·).,])/g, "$1odam-kun"], [/(^|[\s·(])чел\.(?=$|[\s·).,])/g, "$1kishi"],
   [/(^|[\s·(])сум(?=$|[\s·).,])/g, "$1so'm"], [/(^|[\s·(])мешок(?=$|[\s·).,])/g, "$1qop"],
@@ -5168,7 +5229,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "027.2";
+const BUILD = "028.1";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
