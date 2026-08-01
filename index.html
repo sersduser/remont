@@ -429,6 +429,16 @@ function profPicked(code){                      // выбор одного по�
 function profVol(kind, room){
   if(!kind || !room) return null;
   const part = b => {
+    /* Уточнённая база [чат 033]: считаем по судьбам проёмов, когда схема
+       заведена. Схемы нет — уточнение отбрасывается и берётся прежнее число
+       обмеров, то есть объект без схемы ведёт себя ровно как до 033. */
+    const q = elemBase(b);
+    if(q){
+      if(elemOf(room.code).length) return elemVol(room.code, q.src, q.role, q.side, kind.unit);
+      if(q.src === 'двери') return room.doors;
+      if(q.src === 'окна')  return room.windows;
+      return null;
+    }
     if(b === 'пол')       return room.floor_m2;
     if(b === 'потолок')   return room.ceiling_m2;
     if(b === 'стены')     return room.wall_m2;
@@ -879,6 +889,94 @@ function elemDelta(r){
   return (needW || needD) ? { w: w, d: d, needW: needW, needD: needD } : null;
 }
 
+
+/* ── Объём работ по судьбе проёма [чат 033] ───────────────────────────
+   Третий шаг разбора 16. До 033 вид с базой «двери» брал ВСЕ двери помещения,
+   поэтому «замена дверей» в коридоре считалась по пяти дверям, из которых
+   заменяются две, одна переносится, одна демонтируется и одна не трогается.
+
+   База объёма получает уточнение через двоеточие: источник : роль : сторона.
+   «двери:установить:внутр» — сколько внутренних дверей этого помещения нам
+   предстоит поставить. Уточнение читается ТОЛЬКО когда у помещения заведена
+   схема проёмов; её нет — уточнение отбрасывается и работает прежнее число
+   из обмеров (путь «сущности ещё нет», решение 031). */
+
+/* Роль работы → судьбы, которые она обслуживает (разбор 16 §8). Замена и
+   перенос раскладываются на демонтаж и установку: старую дверь сняли, новую
+   поставили, — поэтому одна и та же дверь попадает в обе работы. */
+const ELEM_ROLE = {
+  "демонтировать": ["демонтировать", "заменить", "перенести"],
+  "установить":    ["установить", "заменить", "перенести"],
+  "заменить":      ["заменить"],
+  "перенести":     ["перенести"],
+  "заложить":      ["заложить"],
+  "пробить":       ["пробить"],
+  "не трогаем":    ["не трогаем"]
+};
+/* Источник — чем ограничен отбор по типу. «проёмы» это любое отверстие в
+   стене (дверное, оконное, арка): закладывают и пробивают их одинаково, а
+   деление по типу здесь потеряло бы заложенную дверь. */
+const ELEM_SRC = { "двери": "дверь", "окна": "окно", "проёмы": null };
+const ELEM_OUT = ["улица", "подъезд", "шахта"];
+
+/* Тип проёма для отбора: что застали, а если не застали ничего — что было
+   по плану. Заложенная дверь (план «дверь», факт «нет») остаётся дверью:
+   закладывают именно дверной проём. */
+function elemType(e){
+  const f = String((e && e.fact) || "").trim();
+  return (f && f !== "нет") ? f : String((e && e.plan) || "").trim();
+}
+const elemOuter = e => ELEM_OUT.indexOf(String((e && e.b) || "")) >= 0 || ELEM_OUT.indexOf(String((e && e.a) || "")) >= 0;
+
+/* Проёмы помещения, которые обслуживает работа с такой базой. Неизвестная
+   роль даёт пустой список, а не все проёмы: выдуманное уточнение не должно
+   молча превращаться в «посчитать всё». */
+function elemPick(code, src, role, side){
+  const want = ELEM_SRC[src];
+  const fates = ELEM_ROLE[role];
+  if(!fates) return [];
+  return elemOf(code).filter(e =>
+    (want === null || elemType(e) === want) &&
+    fates.indexOf(String(e.fate || "").trim()) >= 0 &&
+    (!side || (side === "наруж" ? elemOuter(e) : !elemOuter(e))));
+}
+
+/* Сколько единиц даёт помещение. Мера — штуки, кроме работ в квадратных
+   метрах: заделке проёма нужна его площадь, а не число (свои размеры, если
+   заданы, иначе типовые — то же правило, что у стен, решение 031). */
+function elemVol(code, src, role, side, unit){
+  const list = elemPick(code, src, role, side);
+  if(/м²|м2/i.test(String(unit || ""))){
+    let s = 0;
+    for(const e of list){
+      const w = Number(e.w), h = Number(e.h);
+      s += (w > 0 && h > 0) ? (w * h) : (ELEM_AREA[elemType(e)] || 0);
+    }
+    return Math.round(s * 100) / 100;
+  }
+  return list.length;
+}
+
+/* Разбор базы: «источник:роль:сторона». null — уточнения нет вовсе, значит
+   работает прежний расчёт из обмеров и ни одна старая строка справочника
+   поведения не меняет. */
+function elemBase(b){
+  const seg = String(b == null ? "" : b).split(":").map(x => x.trim());
+  if(seg.length < 2) return null;
+  if(!Object.prototype.hasOwnProperty.call(ELEM_SRC, seg[0])) return null;
+  return { src: seg[0], role: seg[1], side: seg[2] || "" };
+}
+
+/* Откуда взялось число: человек должен видеть, что оно не с потолка, и
+   понимать ноль — «по схеме: 0 из 5» честнее пустого поля. */
+function elemVolHint(kind, room){
+  const q = elemBase(kind && kind.base);
+  if(!q || !room) return "";
+  if(!elemOf(room.code).length) return "схемы проёмов нет — объём по числу";
+  const want = ELEM_SRC[q.src];
+  const all = elemOf(room.code).filter(e => want === null || elemType(e) === want).length;
+  return "по схеме: " + elemPick(room.code, q.src, q.role, q.side).length + " из " + all + " · " + q.role;
+}
 
 const objDocs = () => (D.drafts || []).filter(d => /план/i.test(String(d.kind || "")));
 const objPlan = () => { const l = objDocs(); return l.length ? l[l.length - 1] : null; };
@@ -3689,6 +3787,7 @@ profile(){
     const items = groups[g].map(k => {
       const on = !!picked[k.code];
       const auto = profVol(k, room);
+      const hint = elemVolHint(k, room);   // [чат 033] откуда взялось число
       const vol = on ? picked[k.code].vol : auto;
       const rate = profPrice(k.code);
       const sum = (Number(vol) > 0 && rate) ? Math.round(Number(vol) * rate * 100) / 100 : 0;
@@ -3697,6 +3796,7 @@ profile(){
         '<div class="t" onclick="profToggle(\'' + esc(k.code) + '\')" style="cursor:pointer">' + (on ? '✅ ' : '⬜ ') + esc(k.name) + '</div>' +
         '<div class="m">' + esc(k.code) + ' · ' + esc(k.unit || '') + ' · ' + (rate ? (fmt(rate) + ' USD за единицу') : 'цена не задана') +
           (auto === null ? ' · объём вводится вручную' : '') +
+          (hint ? (' · ' + esc(hint)) : '') +
           (dup ? ' · <span style="color:#ff9f0a">уже в смете</span>' : '') + '</div>' +
         (on ? ('<div class="m" style="margin-top:6px">объём: ' +
           '<input type="number" step="0.01" inputmode="decimal" data-code="' + esc(k.code) + '" value="' + (vol === null ? '' : vol) + '"' +
@@ -5405,7 +5505,7 @@ const UZ = {
 "Что здесь сейчас":"Hozir bu yerda nima bor","Что было на плане БТИ":"BTI rejasida nima bor edi","Что делаем в ремонте":"Ta'mirda nima qilamiz",
 "Тип и судьбу зададите следующим шагом.":"Turi va taqdirini keyingi qadamda belgilaysiz.",
 "Проём добавлен":"Ochiq qo'shildi","Числа приведены к схеме":"Sonlar sxemaga keltirildi","Расхождения нет":"Farq yo'q",
-"Привести к схеме":"Sxemaga keltirish","судьба не задана":"taqdiri belgilanmagan","нечего делать":"qiladigan narsa yo'q","не решено":"hal qilinmagan",
+"Привести к схеме":"Sxemaga keltirish","схемы проёмов нет — объём по числу":"ochiqlar sxemasi yo'q — hajm son bo'yicha","Проектирование":"Loyihalash","Согласования":"Kelishuvlar","Капитальный демонтаж":"Kapital demontaj","Кладка и монолит":"G'isht terish va monolit","Гидроизоляция":"Gidroizolyatsiya","Потолки":"Shiftlar","Отопление":"Isitish","Вентиляция и климат":"Ventilyatsiya va iqlim","Слаботочные системы":"Past kuchlanishli tizimlar","Окна и остекление":"Derazalar va oynalash","Мебель и оборудование":"Mebel va jihozlar","Фасад":"Fasad","Кровля":"Tom yopish","Уборка и вывоз":"Tozalash va chiqindi olib chiqish","Гарантийный сервис":"Kafolat xizmati","Ничего не выбрано":"Hech narsa tanlanmagan","План пуст":"Reja bo'sh","к списку помещений":"xonalar ro'yxatiga","объём:":"hajm:","Выбор сохраняется: пройдите остальные помещения, смета соберётся одной кнопкой на общем экране.":"Tanlov saqlanadi: qolgan xonalarni ham o'ting, smeta umumiy ekranda bitta tugma bilan yig'iladi.","судьба не задана":"taqdiri belgilanmagan","нечего делать":"qiladigan narsa yo'q","не решено":"hal qilinmagan",
 "дверь":"eshik","окно":"deraza","проём":"ochiq","нет":"yo'q",
 "не трогаем":"tegmaymiz","заменить":"almashtirish","демонтировать":"demontaj","заложить":"berkitish","пробить":"ochish","перенести":"ko'chirish","установить":"o'rnatish",
 "Нечего строить: нет ни смежности, ни проёмов":"Tuzadigan narsa yo'q: na qo'shnilik, na ochiqlar bor",
@@ -5839,6 +5939,22 @@ const UZ_RULES = [
      русской надписи без словаря молча теряет перевод). */
   [/^Кнопка ниже создаст недостающие листы объекта \((\d+) штук\) с правильными шапками\. Существующие листы не тронутся — их данные останутся как есть\.$/,
     "Quyidagi tugma obyektning yetishmayotgan varaqlarini ($1 ta) to’g’ri sarlavhalar bilan yaratadi. Mavjud varaqlar tegilmaydi — ulardagi ma’lumot o’z holicha qoladi."],
+  /* Объём по судьбе проёма [чат 033]: число внутри — значит шаблон. */
+  [/^по схеме: (\d+) из (\d+)$/, "sxema bo'yicha: $2 tadan $1 tasi"],
+  /* Итоги профиля ремонта — те же поверхности, что вскрылись в 033. */
+  [/^Выбрано (\d+) · на ([\d\s.,]+) USD$/, "Tanlandi: $1 · $2 USD"],
+  [/^Выбрано (\d+) · на ([\d\s.,]+) USD · без объёма: (\d+)$/, "Tanlandi: $1 · $2 USD · hajmsiz: $3"],
+  [/^В плане (\d+) работ в (\d+) помещ\. · ([\d\s.,]+) USD$/, "Rejada $2 xonada $1 ish · $3 USD"],
+  [/^В плане (\d+) работ в (\d+) помещ\. · ([\d\s.,]+) USD · без объёма: (\d+)$/, "Rejada $2 xonada $1 ish · $3 USD · hajmsiz: $4"],
+  /* Унаследованный пробел, вскрытый починкой мока [чат 033]: цена вида
+     в карточке профиля ремонта не переводилась с 020 — на стенде она
+     была нулевой, и строка «N USD за единицу» ни разу не рисовалась. */
+  [/^([\d\s.,]+) USD за единицу$/, "$1 USD birlik uchun"],
+  /* Оттуда же: подсказка ставки вида (решение 018) на стенде не рисовалась,
+     потому что цены в моке не было вовсе. */
+  [/^ориентир ([\d\s.,]+)$/, "mo'ljal $1"],
+  [/^вилка ([\d\s.,]+–[\d\s.,]+)$/, "oralig'i $1"],
+  [/^ориентир по рынку ([\d\s.,]+–[\d\s.,]+)$/, "bozor bo'yicha mo'ljal $1"],
   [/^Проёмы: (\d+)$/, "Ochiqlar: $1"],
   [/^Проёмы: (\d+) · расходятся с планом: (\d+)$/, "Ochiqlar: $1 · reja bilan farq qiladi: $2"],
   [/^Расходятся с планом БТИ: (\d+) — (.+)$/, "BTI rejasi bilan farq qiladi: $1 — $2"],
@@ -6198,7 +6314,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "032.2";
+const BUILD = "033.1";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
