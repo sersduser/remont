@@ -1105,6 +1105,59 @@ function objGoRoom(code){
   setTimeout(() => { el.style.boxShadow = prev; }, 1400);
 }
 
+/* Окно разнесения: показать, как названная сумма ляжет на работы, и только
+   потом писать. Молча переписать все цены сметы нельзя — это те же деньги,
+   что стороны потом делят при приёмке. */
+function allocShow(){
+  const el = document.getElementById('allocSum');
+  const plan = allocPlan(el ? el.value : 0);
+  if(!plan.ok){
+    toast(plan.base > 0 ? 'Введите сумму договора' : 'В смете нет работ с ценой — сначала соберите смету', 'err');
+    return;
+  }
+  const head = plan.rows.slice(0, 12).map(r =>
+    '<div class="vitem sel"><div class="vchk">✓</div><div style="flex:1;min-width:0">' +
+      '<div class="vv">' + esc(r.name) + '</div>' +
+      '<div class="vd">' + esc(r.code) + ' · ' + fmt(r.was) + ' → <b style="color:var(--ok)">' + fmt(r.now) + '</b> $</div>' +
+    '</div></div>').join('');
+  const more = plan.rows.length > 12 ? '<div class="vd" style="margin:6px 0 10px">и ещё работ: ' + (plan.rows.length - 12) + '</div>' : '';
+  const nopr = plan.nopr.length
+    ? '<div class="vd" style="margin:8px 0 0;color:#ff9f0a">Без цены: ' + plan.nopr.length + ' — им цену задайте вручную</div>'
+    : '';
+  openVSheet(
+    '<div class="vh">Разнесение суммы</div>' +
+    '<div class="vs">Цены изменятся пропорционально: коэффициент ' + fmt(Math.round(plan.k * 1000) / 1000) +
+      '. Сумма работ станет ровно ' + fmt(plan.sum) + ' $.</div>' +
+    '<div id="vlist">' + head + '</div>' + more + nopr +
+    '<div class="vrow">' +
+      '<button class="vbtn-cancel" onclick="closeVSheet()">Отмена</button>' +
+      '<button class="vbtn-ok" id="allocGo" onclick="allocApply(' + plan.sum + ')">Записать цены</button>' +
+    '</div>');
+}
+
+async function allocApply(total){
+  const plan = allocPlan(total);
+  if(!plan.ok){ toast('Нечего записывать', 'err'); return; }
+  const btn = document.getElementById('allocGo');
+  if(btn && btn.disabled) return;                 // замок от двойного тапа
+  if(btn){ btn.disabled = true; btn.textContent = 'Записываю…'; }
+  let done = 0, fail = 0;
+  for(const r of plan.rows){
+    try{
+      await writeCell('01_Работы', r.code, 'Цена_аллокация_USD', String(r.now).replace('.', ','));
+      done++;
+      if(btn) btn.textContent = 'Записываю… ' + done + ' из ' + plan.rows.length;
+    }catch(e){ fail++; }
+  }
+  try{
+    await writeCell('07_Настройки', 'Договор_USD', 'Значение', String(plan.sum).replace('.', ','));
+  }catch(e){ fail++; }
+  closeVSheet();
+  toast(fail ? ('Записано ' + done + ', с ошибкой ' + fail) : ('Сумма разнесена по ' + done + ' работам'), fail ? 'err' : 'ok');
+  await load();
+  render();
+}
+
 /* Пересчёт стен и потолка по обмерам: предлагается кнопкой и никогда
    не делается молча — эти числа уже участвуют в объёмах работ. */
 function roomApplyWalls(code){
@@ -1837,6 +1890,34 @@ const REF_KIND = 'точка';
 let REF_BUSY = false;
 
 const refIsClient = () => ['admin','owner'].includes(D.role);
+
+/* Разнесение суммы договора по работам [чат 029].
+   Вес работы — её нынешняя цена: при сборке сметы панель проставляет
+   объём × ставку справочника, и это и есть структура сметы. Приведение к
+   названной сумме сохраняет пропорции и меняет только масштаб — ровно то,
+   что происходит на встрече, когда пара договаривается «за всё столько-то».
+   Работы без цены в дележе не участвуют: делить между «16 м²» и «3 шт»
+   нечего, и выдумывать им вес — значит назначить цену наугад. */
+function allocPlan(total){
+  const sum = Math.round((Number(total) || 0) * 100) / 100;
+  const live = (D.works || []).filter(w => w.code && w.status !== 'Снято');
+  const priced = live.filter(w => (Number(w.price_alloc_usd) || 0) > 0);
+  const nopr = live.filter(w => !((Number(w.price_alloc_usd) || 0) > 0));
+  const base = Math.round(priced.reduce((s, w) => s + Number(w.price_alloc_usd), 0) * 100) / 100;
+  if(!(sum > 0) || !priced.length || !(base > 0)) return { ok: false, sum, base, priced: [], nopr, k: 0 };
+  const k = sum / base;
+  const rows = priced.map(w => ({
+    code: w.code, name: w.name, room: w.room,
+    was: Math.round(Number(w.price_alloc_usd) * 100) / 100,
+    now: Math.round(Number(w.price_alloc_usd) * k * 100) / 100,
+  }));
+  /* Копейки округления добираются последней строкой: сумма работ обязана
+     совпасть с договором до цента, иначе экран денег начнёт спорить сам с собой. */
+  const got = Math.round(rows.reduce((s, r) => s + r.now, 0) * 100) / 100;
+  const tail = Math.round((sum - got) * 100) / 100;
+  if(tail !== 0 && rows.length) rows[rows.length - 1].now = Math.round((rows[rows.length - 1].now + tail) * 100) / 100;
+  return { ok: true, sum, base, k, rows, nopr, tail };
+}
 
 /* Снимок текущего состояния: то, что стороны фиксируют как стартовое. */
 function refSnap(){
@@ -3883,6 +3964,16 @@ deal(){
       <div class="r"><span class="k">Выплачено</span><span class="v ok">${usd(paidSum())} $</span></div>
       <div class="r"><span class="k">Остаток</span><span class="v">${usd(dealRest())} $</span></div>
     </div>
+    ${D.role === "admin" || D.role === "owner" ? `
+    <div class="card">
+      <div class="lbl">Назначить сумму и разнести по работам</div>
+      <div class="m" style="margin-bottom:8px">Цены работ изменятся пропорционально их нынешним долям, сумма сойдётся до цента. Принятые изменения считаются сверх этой суммы.</div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <input id="allocSum" type="number" inputmode="decimal" placeholder="сумма договора, $" value="${dealBase() || ""}"
+          style="flex:1;padding:10px;border-radius:10px;border:1px solid #3a3a3c;background:#000;color:#fff;font-size:15px">
+        <button onclick="allocShow()" style="padding:10px 14px;border-radius:10px;border:0;background:#0a84ff;color:#fff;font-size:15px">Разнести</button>
+      </div>
+    </div>` : ""}
     <div class="card">
       <div class="lbl">Входит в цену</div>
       <div style="font-size:13.5px;line-height:1.9">
@@ -5042,6 +5133,15 @@ const UZ = {
 "Нет":"Yo'q",
 "Повернуть не вышло — отправляю как есть":"Burish bo'lmadi — borichaligicha yuboraman",
 "Только отмеченные":"Faqat belgilanganlar",
+"Назначить сумму и разнести по работам":"Summani belgilash va ishlarga taqsimlash",
+"Цены работ изменятся пропорционально их нынешним долям, сумма сойдётся до цента. Принятые изменения считаются сверх этой суммы.":"Ish narxlari hozirgi ulushlariga mutanosib o'zgaradi, summa sentigacha to'g'ri keladi. Qabul qilingan o'zgarishlar bu summadan tashqari hisoblanadi.",
+"Разнести":"Taqsimlash",
+"Разнесение суммы":"Summani taqsimlash",
+"Записать цены":"Narxlarni yozish",
+"Записываю…":"Yozyapman…",
+"Введите сумму договора":"Shartnoma summasini kiriting",
+"В смете нет работ с ценой — сначала соберите смету":"Smetada narxli ish yo'q — avval smetani yig'ing",
+"Нечего записывать":"Yozadigan narsa yo'q",
 "Показать все":"Hammasini ko'rsatish",
 "Снять":"Suratga olish",
 "Камера недоступна в этом клиенте — открываю выбор снимка":"Bu klientda kamera mavjud emas — surat tanlashni ochaman",
@@ -5220,6 +5320,12 @@ const UZ_RULES = [
   [/^нужно: окна и двери$/, "kerak: derazalar va eshiklar"],
   [/^нужно: окна$/, "kerak: derazalar"],
   [/^нужно: двери$/, "kerak: eshiklar"],
+  [/^Цены изменятся пропорционально: коэффициент ([\d.,]+)\. Сумма работ станет ровно ([\d\s.,]+) \$\.$/, "Narxlar mutanosib o'zgaradi: koeffitsiyent $1. Ishlar summasi aynan $2 $ bo'ladi."],
+  [/^и ещё работ: (\d+)$/, "yana ish: $1"],
+  [/^Без цены: (\d+) — им цену задайте вручную$/, "Narxsiz: $1 — ularga narxni qo'lda kiriting"],
+  [/^Сумма разнесена по (\d+) работам$/, "Summa $1 ta ishga taqsimlandi"],
+  [/^Записываю… (\d+) из (\d+)$/, "Yozyapman… $2 dan $1"],
+  [/^Записано (\d+), с ошибкой (\d+)$/, "Yozildi $1, xato bilan $2"],
   [/^окон сейчас ([\d\s.,]+)$/, "hozir deraza $1"],
   [/^дверей сейчас ([\d\s.,]+)$/, "hozir eshik $1"],
   [/^⏳ Сначала должно быть принято: (.+)$/, "⏳ Avval qabul qilinishi kerak: $1"],
@@ -5483,7 +5589,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "029.2";
+const BUILD = "029.3";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
