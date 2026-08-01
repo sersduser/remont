@@ -696,26 +696,172 @@ function schedule(usePauses){
   return { ef, lf, slack, total, critical, by };
 }
 
+/* ── Срок с ограничением параллельности [чат 034] ─────────────────────
+   До 034 срок считался как max(критический путь; чел-дни ÷ бригада). Второе
+   слагаемое отменено решением Дмитрия (029): «не всегда есть прямая
+   зависимость от количества людей… электрики и сантехники мигрируют между
+   бригадами, так как нужны штучно на конкретном этапе». Делить объём на людей
+   нельзя: ремонт упирается не в людей, а во фронты — сколько работ физически
+   можно вести одновременно.
+
+   Два ограничения, оба из полей, которые есть у каждой работы: помещение
+   (в одной комнате не штукатурят и не красят разом) и раздел (специалист
+   штучный, он в одном месте за раз). Ни новой сущности, ни ручного ввода —
+   то же правило, что в решении 031: путь «этого ещё нет» обязан работать. */
+const CAP_ROOM_KEY = "Фронтов_в_помещении";
+const CAP_SEC_KEY  = "Фронтов_на_раздел";
+
+/* Умолчание — один фронт. Это не измерение, а честный минимум: он виден на
+   экране и правится, в отличие от прежней зашитой «бригады из двух», которую
+   человек не видел вовсе. Кривое значение в листе не должно ронять расчёт,
+   поэтому всё, что не число ≥ 1, считается умолчанием. */
+function capOf(key){
+  const v = (D.settings || {})[key];
+  const n = Number(v);
+  return (v === null || v === undefined || String(v).trim() === "" || !(n >= 1)) ? 1 : Math.round(n);
+}
+function capSet(){ return { room: capOf(CAP_ROOM_KEY), sec: capOf(CAP_SEC_KEY) }; }
+
+/* Заведены ли строки параметров в листе настроек. Пока их нет, поля правки
+   не показываем: запись в несуществующую строку возвращает 404 уже после
+   того, как человек нажал (грабля 19 — ключевая колонка листа). */
+function capStored(){
+  const s = D.settings || {};
+  return Object.prototype.hasOwnProperty.call(s, CAP_ROOM_KEY)
+      && Object.prototype.hasOwnProperty.call(s, CAP_SEC_KEY);
+}
+
+/* Списочное планирование. Порядок — по критичности (меньший поздний старт
+   раньше), при равенстве длиннее вперёд, при полном равенстве по коду —
+   иначе расписание меняется от порядка строк в листе и тест не воспроизводим.
+   Время двигается событиями, а не шагами календаря: шаг в четверть дня давал
+   бы ошибку округления на каждой работе.
+
+   Паузы фронт не занимают: пока стяжка сохнет, помещение свободно для работ,
+   которые от неё не зависят. Иначе 28-дневная пауза заперла бы комнату
+   на месяц — а сохнет пол, а не комната. */
+function planRun(capRoom, capSecDefault, capSecBy, cpm){
+  const ws = (D.works || []).filter(w => w.code);
+  const by = {}; ws.forEach(w => { by[w.code] = w; });
+  const dur = w => (Number(w.dur) > 0 ? Number(w.dur) : 0.5);
+  const depsOf = w => String(w.deps || "").split(",").map(s => s.trim())
+    .filter(s => s && s !== "—" && by[s]);
+  const s = cpm || schedule(true);
+  const ls = {}; ws.forEach(w => { ls[w.code] = (s.lf[w.code] || 0) - dur(w); });
+  const capS = k => (capSecBy && capSecBy[k] !== undefined) ? capSecBy[k] : capSecDefault;
+  const left = ws.map(w => w.code).sort((a, b) =>
+    (ls[a] - ls[b]) || (dur(by[b]) - dur(by[a])) || (a < b ? -1 : a > b ? 1 : 0));
+  const fin = {}, start = {}, running = [];
+  let t = 0, guard = 0;
+  while(left.length && guard++ < 4000){
+    const br = {}, bs = {};
+    running.forEach(r => { br[r.room] = (br[r.room] || 0) + 1; bs[r.sec] = (bs[r.sec] || 0) + 1; });
+    let started = false;
+    for(let i = 0; i < left.length; i++){
+      const c = left[i], w = by[c];
+      const ready = depsOf(w).every(d => fin[d] !== undefined && fin[d] + pauseOf(by[d]) <= t + 1e-9);
+      if(!ready) continue;
+      const rm = w.room || "(общие)", sc = w.section || "(без раздела)";
+      if((br[rm] || 0) >= capRoom) continue;
+      if((bs[sc] || 0) >= capS(sc)) continue;
+      br[rm] = (br[rm] || 0) + 1; bs[sc] = (bs[sc] || 0) + 1;
+      start[c] = t; fin[c] = t + dur(w);
+      running.push({ code: c, room: rm, sec: sc, fin: fin[c] });
+      left.splice(i, 1); i--; started = true;
+    }
+    /* Никто не работает и никто не стартовал. Это ещё не тупик: так бывает,
+       когда все оставшиеся работы ждут технологическую паузу — стяжка сохнет,
+       а больше делать нечего. Двигаем время к ближайшей готовности; если
+       двигать не к чему, значит в карте связей кольцо — выходим, посчитав
+       что смогли, и экран честно назовёт число незапланированных. */
+    if(!running.length && !started){
+      let next = Infinity;
+      left.forEach(c => {
+        const ds = depsOf(by[c]);
+        if(!ds.length) return;
+        let rdy = 0, all = true;
+        ds.forEach(d => {
+          if(fin[d] === undefined) all = false;
+          else rdy = Math.max(rdy, fin[d] + pauseOf(by[d]));
+        });
+        if(all && rdy > t) next = Math.min(next, rdy);
+      });
+      if(next === Infinity) break;
+      t = next;
+      continue;
+    }
+    t = Math.min.apply(null, running.map(r => r.fin));
+    for(let i = running.length - 1; i >= 0; i--) if(running[i].fin <= t + 1e-9) running.splice(i, 1);
+  }
+  const codes = Object.keys(fin);
+  const span = codes.length ? Math.max.apply(null, codes.map(c => fin[c])) : 0;
+  return { start: start, fin: fin, makespan: Math.round(span * 100) / 100, stuck: left.length };
+}
+
+/* Что держит срок: на сколько сократится, если у раздела станет фронтом
+   больше. Считается перепланированием, а не прикидкой — «работ много» не
+   значит «держит»: раздел вне критического пути не даёт ничего, сколько
+   людей в него ни ставь. Это и есть ответ на «50 человек за день» в цифрах:
+   видно, кого добавлять, а кого бессмысленно. */
+function termsBottleneck(){
+  const caps = capSet();
+  const cpm = schedule(true);
+  const base = planRun(caps.room, caps.sec, null, cpm).makespan;
+  const secs = [];
+  (D.works || []).filter(w => w.code).forEach(w => {
+    const k = w.section || "(без раздела)";
+    if(secs.indexOf(k) < 0) secs.push(k);
+  });
+  const rows = secs.map(k => {
+    const o = {}; o[k] = caps.sec + 1;
+    const m = planRun(caps.room, caps.sec, o, cpm).makespan;
+    return { sec: k, span: Math.round(m * 10) / 10, gain: Math.round((base - m) * 10) / 10 };
+  }).sort((a, b) => (b.gain - a.gain) || (a.sec < b.sec ? -1 : 1));
+  const rm = planRun(caps.room + 1, caps.sec, null, cpm).makespan;
+  return { base: Math.round(base * 10) / 10, rows: rows,
+           roomSpan: Math.round(rm * 10) / 10,
+           roomGain: Math.round((base - rm) * 10) / 10 };
+}
+
+/* Правка фронтов. Настройки пишет заказчик: бригадиру лист 07_Настройки
+   закрыт с чата 019, и показывать ему форму, которую сервер отобьёт, нельзя
+   (урок 019 — не открывать роли форму, которой она не может воспользоваться). */
+async function termsSaveCaps(){
+  const r = document.getElementById("capRoom"), s = document.getElementById("capSec");
+  const nr = Math.round(Number(r ? r.value : NaN)), ns = Math.round(Number(s ? s.value : NaN));
+  if(!(nr >= 1) || !(ns >= 1)){ toast("Фронтов должно быть не меньше одного", "err"); return; }
+  const btn = document.getElementById("capBtn");
+  if(btn) btn.disabled = true;
+  try{
+    await writeCell("07_Настройки", CAP_ROOM_KEY, "Значение", nr);
+    await writeCell("07_Настройки", CAP_SEC_KEY, "Значение", ns);
+    toast("Фронты записаны");
+    await load();
+    render();
+  }catch(e){ toast(e.message, "err"); if(btn) btn.disabled = false; }
+}
+
 // Где мы во времени: сравниваем пройденное по плану с прошедшими днями
 function timeCalc(){
   const s = schedule(true);
   const s0 = schedule(false);
+  const caps = capSet();
+  const p = planRun(caps.room, caps.sec, null, s);
+  /* Пройдено — по расписанию С ограничениями: план теперь это оно, а не
+     технологический минимум. Считать достигнутое по одному расписанию,
+     а срок по другому — тот же разъезд определений, что дал два разных
+     числа человекодней в 027. */
   const done = (D.works || []).filter(w => w.status === 'Готово' && w.code);
-  const reached = done.length ? Math.max.apply(null, done.map(w => s.ef[w.code] || 0)) : 0;
+  const reached = done.length ? Math.max.apply(null, done.map(w => p.fin[w.code] || 0)) : 0;
   const dates = (D.works || []).map(w => String(w.updated || '').slice(0, 10)).filter(d => /^\d{4}-\d{2}-\d{2}$/.test(d)).sort();
   const start = dates.length ? new Date(dates[0] + 'T00:00:00') : null;
   const elapsed = start ? Math.max(0, Math.round((Date.now() - start.getTime()) / 86400000)) : null;
   const diff = (elapsed === null) ? null : Math.round((reached - elapsed) * 10) / 10;
-  // Критический путь — это технологический минимум: столько займёт ремонт, если
-  // на каждую готовую к работе позицию хватает людей. Реальный срок упирается в руки:
-  // сумма всех длительностей, делённая на размер бригады. Берём больший из двух.
   const sumDur = (D.works || []).reduce((a, w) => a + (Number(w.dur) > 0 ? Number(w.dur) : 0.5), 0);
-  const crew = Number((D.settings || {})['Рабочих_в_бригаде']) || 2;
-  const byCrew = Math.round((sumDur / crew) * 10) / 10;
-  const real = Math.max(Math.round(s.total * 10) / 10, byCrew);
+  const real = Math.round(p.makespan * 10) / 10;
   return { total: Math.round(s.total * 10) / 10, reached: Math.round(reached * 10) / 10, elapsed, diff,
            critical: s.critical, sched: s, startDate: dates[0] || null,
-           sumDur: Math.round(sumDur * 10) / 10, crew, byCrew, real,
+           sumDur: Math.round(sumDur * 10) / 10, caps: caps, plan: p, real: real, stuck: p.stuck,
            pauses: Math.round((s.total - s0.total) * 10) / 10,
            pcov: (D.works || []).filter(w => pauseOf(w) > 0).length };
 }
@@ -3951,31 +4097,62 @@ terms(){
   const t = timeCalc();
   const s = t.sched;
   const by = s.by;
+  const bn = termsBottleneck();
   const crit = t.critical.slice().sort((a, b) => (s.ef[a] || 0) - (s.ef[b] || 0));
   const line = code => {
     const w = by[code]; if(!w) return '';
     return '<div class="work"><div class="t">' + esc(w.name) + '</div>' +
       '<div class="m">' + esc(code) + ' · ' + esc(String(w.room || '').split(' (')[0]) + ' · ' +
-      (Number(w.dur) || 0.5) + ' дн · финиш на ' + (s.ef[code] || 0) + '-й день · ' + esc(w.status || '') + (pauseOf(w) > 0 ? ' · после — пауза ' + pauseOf(w) + ' дн' : '') + '</div></div>';
+      (Number(w.dur) || 0.5) + ' дн · финиш на ' + (t.plan.fin[code] !== undefined ? Math.round((t.plan.fin[code]) * 10) / 10 : (s.ef[code] || 0)) + '-й день · ' + esc(w.status || '') + (pauseOf(w) > 0 ? ' · после — пауза ' + pauseOf(w) + ' дн' : '') + '</div></div>';
   };
   const soon = (D.works || []).filter(w => w.status !== 'Готово' && w.code)
-    .sort((a, b) => (s.ef[a.code] || 0) - (s.ef[b.code] || 0)).slice(0, 12);
+    .sort((a, b) => (t.plan.fin[a.code] || 0) - (t.plan.fin[b.code] || 0)).slice(0, 12);
   const late = t.diff === null ? '' : (t.diff >= 0
     ? ('<div class="r"><span class="k">Опережение</span><span class="v">' + t.diff + ' дн</span></div>')
     : ('<div class="r"><span class="k">Отставание</span><span class="v">' + Math.abs(t.diff) + ' дн</span></div>'));
+  /* Что держит срок. Показываем только то, что реально сокращает: строка
+     «второй кафельщик — 0 дн» создаёт впечатление выбора там, где выбора нет.
+     Разделы с нулевым выигрышем названы одной строкой — не спрятаны: человек
+     должен видеть, что про них не забыли, а посчитали. */
+  const gain = bn.rows.filter(r => r.gain > 0);
+  const flat = bn.rows.filter(r => r.gain <= 0).map(r => r.sec);
+  const gainBox = (gain.length || bn.roomGain > 0)
+    ? ('<div class="sub" style="margin-top:14px">Что держит срок</div><div class="stat">' +
+        gain.map(r => '<div class="r"><span class="k">' + esc(r.sec) + ' · ещё один фронт</span>' +
+          '<span class="v">−' + r.gain + ' дн</span></div>').join('') +
+        (bn.roomGain > 0 ? ('<div class="r"><span class="k">Ещё одна работа в помещении</span><span class="v">−' + bn.roomGain + ' дн</span></div>') : '') +
+      '</div>' +
+      (flat.length ? ('<div class="stat"><span class="k" style="font-size:13px;opacity:.75">' +
+        '<span>Срок не сокращают:</span> <span>' + esc(flat.join(' · ')) + '</span> ' +
+        '<span>— эти разделы не на критическом пути, добавлять в них людей бесполезно.</span></span></div>') : ''))
+    : '<div class="stat"><span class="k" style="font-size:13px;opacity:.75">Ни один дополнительный фронт срок не сокращает: работы упираются в технологию, а не во фронты.</span></div>';
+  /* Параметры фронтов правит заказчик; бригадиру лист настроек закрыт. */
+  const canEdit = D.role !== 'worker' && capStored();
+  const capBox = canEdit
+    ? ('<div class="stat">' +
+        '<div class="r"><span class="k">Работ в помещении одновременно</span>' +
+          '<span class="v"><input id="capRoom" type="number" min="1" step="1" value="' + t.caps.room + '" style="width:64px;padding:6px;border-radius:8px;border:0;background:#2c2c2e;color:#fff;font-size:15px;text-align:center"></span></div>' +
+        '<div class="r"><span class="k">Фронтов на раздел</span>' +
+          '<span class="v"><input id="capSec" type="number" min="1" step="1" value="' + t.caps.sec + '" style="width:64px;padding:6px;border-radius:8px;border:0;background:#2c2c2e;color:#fff;font-size:15px;text-align:center"></span></div>' +
+        '<div class="r"><button id="capBtn" onclick="termsSaveCaps()" style="width:100%;padding:12px;border-radius:12px;border:0;background:#0a84ff;color:#fff;font-size:15px">Записать фронты</button></div>' +
+      '</div>')
+    : (capStored() ? '' : '<div class="stat"><span class="k" style="font-size:13px;opacity:.75">Фронты пока не заданы в настройках объекта — считаю по одному. Это умолчание, а не измерение.</span></div>');
   return '' +
     '<div class="hello">Сроки</div>' +
-    '<div class="sub">Оценка ' + t.real + ' дн при бригаде из ' + t.crew + ' человек</div>' +
+    '<div class="sub">Оценка ' + t.real + ' дн · в помещении ' + t.caps.room + ', на раздел ' + t.caps.sec + '</div>' +
     '<div class="stat">' +
       '<div class="r"><span class="k">Технологический минимум (критический путь)</span><span class="v">' + t.total + ' дн</span></div>' +
       (t.pauses > 0 ? ('<div class="r"><span class="k">в т.ч. технологические паузы</span><span class="v">+' + t.pauses + ' дн</span></div>') : '') +
+      '<div class="r"><span class="k">Срок с ограничением параллельности</span><span class="v">' + t.real + ' дн</span></div>' +
       '<div class="r"><span class="k">Всего работы</span><span class="v">' + t.sumDur + ' чел-дн</span></div>' +
-      '<div class="r"><span class="k">При бригаде ' + t.crew + ' чел.</span><span class="v">' + t.byCrew + ' дн</span></div>' +
       (t.elapsed !== null ? ('<div class="r"><span class="k">Прошло с начала работ</span><span class="v">' + t.elapsed + ' дн</span></div>') : '') +
       '<div class="r"><span class="k">Пройдено по плану</span><span class="v">' + t.reached + ' дн</span></div>' +
       late +
     '</div>' +
-    '<div class="stat"><span class="k">Критический путь — цепочка, которая определяет срок целиком: задержка любой её работы двигает финиш день в день. Остальные работы имеют запас.</span></div>' +
+    (t.stuck ? ('<div class="stat"><span class="k" style="font-size:13px;opacity:.75">Не удалось поставить в план работ: ' + t.stuck + ' — в карте связей кольцо, работа ждёт сама себя.</span></div>') : '') +
+    '<div class="stat"><span class="k">Критический путь — цепочка, которая определяет срок целиком: задержка любой её работы двигает финиш день в день. Остальные работы имеют запас. Срок объекта больше минимума, потому что работы не идут все разом: в одном помещении и у одного раздела фронт ограничен.</span></div>' +
+    gainBox +
+    capBox +
     (t.pcov ? '' : '<div class="stat"><span class="k">Технологические паузы (стяжка сохнет 28 дн, штукатурка 7 дн…) пока не влияют на расчёт: у работ текущей сметы нет привязки к видам справочника. Она появляется у работ, добавленных через «Профиль ремонта».</span></div>') +
     '<div class="sub" style="margin-top:14px">Критический путь · ' + crit.length + ' работ</div>' + crit.map(line).join('') +
     '<div class="sub" style="margin-top:14px">Ближайшие по плану</div>' + soon.map(w => line(w.code)).join('');
@@ -5631,6 +5808,15 @@ let UZ_OBS = null;
 
 /* Точные надписи. Ключ — строка целиком, как она приходит в текстовый узел. */
 const UZ = {
+"Срок с ограничением параллельности":"Parallellik cheklovi bilan muddat","Что держит срок":"Muddatni nima ushlab turadi",
+"Ещё одна работа в помещении":"Xonada yana bitta ish","Работ в помещении одновременно":"Xonada bir vaqtda ishlar soni",
+"Фронтов на раздел":"Bo'lim uchun frontlar","Записать фронты":"Frontlarni yozish","Фронты записаны":"Frontlar yozildi",
+"Фронтов должно быть не меньше одного":"Frontlar soni birdan kam bo'lmasligi kerak",
+"Фронты пока не заданы в настройках объекта — считаю по одному. Это умолчание, а не измерение.":"Frontlar obyekt sozlamalarida hali berilmagan — bittadan hisoblayapman. Bu o'lchov emas, balki standart qiymat.",
+"Ни один дополнительный фронт срок не сокращает: работы упираются в технологию, а не во фронты.":"Hech qanday qo'shimcha front muddatni qisqartirmaydi: ishlar frontga emas, texnologiyaga taqaladi.",
+"Срок не сокращают:":"Muddatni qisqartirmaydi:",
+"— эти разделы не на критическом пути, добавлять в них людей бесполезно.":"— bu bo'limlar kritik yo'lda emas, ularga odam qo'shish foydasiz.",
+"Критический путь — цепочка, которая определяет срок целиком: задержка любой её работы двигает финиш день в день. Остальные работы имеют запас. Срок объекта больше минимума, потому что работы не идут все разом: в одном помещении и у одного раздела фронт ограничен.":"Kritik yo'l — muddatni butunlay belgilaydigan zanjir: undagi har qanday ishning kechikishi tugash sanasini kunma-kun suradi. Qolgan ishlarda zaxira bor. Obyekt muddati minimumdan katta, chunki ishlar bir vaqtda ketmaydi: bitta xonada va bitta bo'limda front cheklangan.",
 "Схема проёмов":"Ochiqlar sxemasi","Построить схему проёмов":"Ochiqlar sxemasini tuzish","Построить":"Tuzish","Строю…":"Tuzilmoqda…",
 "План и факт сходятся везде":"Reja va dalil hamma joyda mos","Новый проём":"Yangi ochiq","Добавить проём":"Ochiq qo'shish","Добавить":"Qo'shish",
 "Что здесь сейчас":"Hozir bu yerda nima bor","Что было на плане БТИ":"BTI rejasida nima bor edi","Что делаем в ремонте":"Ta'mirda nima qilamiz",
@@ -6059,6 +6245,9 @@ const UZ = {
 /* Шаблоны: строка содержит данные (числа, коды, названия) — переводим обвязку,
    данные оставляем на месте. Порядок важен: правила идут сверху вниз. */
 const UZ_RULES = [
+  [/^Оценка ([\d.,]+) дн · в помещении (\d+), на раздел (\d+)$/, "Baho $1 kun · xonada $2, bo'limga $3"],
+  [/^(.+) · ещё один фронт$/, "$1 · yana bitta front"],
+  [/^Не удалось поставить в план работ: (\d+) — в карте связей кольцо, работа ждёт сама себя\.$/, "Rejaga qo'yib bo'lmadi: $1 ta ish — bog'lanishlar xaritasida halqa bor, ish o'zini kutmoqda."],
   /* Строки схемы проёмов [чат 031]: числа внутри, поэтому шаблонами, а не
      точными надписями (правило слоя 020). Формат правил — [регэксп, строка
      замены с $1], как у всех прежних: функция-заменитель здесь получила бы
@@ -6447,7 +6636,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "033.3";
+const BUILD = "034.1";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
