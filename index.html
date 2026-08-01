@@ -998,6 +998,112 @@ function elemVolHint(kind, room){
   return "по схеме: " + n + " из " + all + " · " + q.role + tail;
 }
 
+/* ── Схема-граф проёмов [чат 033] ─────────────────────────────────────
+   Помещения плашками, проёмы линиями: сплошная — дверь, пунктир — открытый
+   проём, перечёркнутая — заложено (факт «нет»). Расхождение с планом БТИ
+   подсвечено, тык по линии открывает то же окно правки, что список в карточке.
+
+   Раскладка автоматическая и честно условная: у нас есть связность, а не
+   геометрия (решение 031). Уровни считаются обходом от входной двери вглубь —
+   тем же ходом, каким считается порядок заливки полов, поэтому схема читается
+   так же, как человек идёт по квартире. Окна отдельными узлами не рисуются:
+   их много и они одинаковы — на плашке стоит счётчик. */
+const G_EXT = { "улица": "улица", "подъезд": "подъезд", "шахта": "шахта" };
+
+/* Уровни от входа: сначала помещение с внешней дверью, дальше — вглубь.
+   Помещения, до которых по схеме не добраться, кладутся в конец: схема не
+   должна прятать то, что не связано, — это само по себе сигнал человеку. */
+function graphLevels(){
+  const rooms = roomList().map(r => r.code);
+  const inside = elemAll().filter(e => rooms.indexOf(e.a) >= 0 && rooms.indexOf(e.b) >= 0);
+  const near = {};
+  rooms.forEach(c => near[c] = []);
+  inside.forEach(e => { near[e.a].push(e.b); near[e.b].push(e.a); });
+  const entry = elemAll().find(e => e.b === "подъезд" && rooms.indexOf(e.a) >= 0);
+  const start = entry ? entry.a : (rooms[0] || null);
+  const lvl = {};
+  if(start){
+    lvl[start] = 0;
+    let wave = [start];
+    while(wave.length){
+      const next = [];
+      wave.forEach(c => (near[c] || []).forEach(n => { if(lvl[n] === undefined){ lvl[n] = lvl[c] + 1; next.push(n); } }));
+      wave = next;
+    }
+  }
+  let tail = Math.max(-1, ...Object.values(lvl)) + 1;
+  rooms.forEach(c => { if(lvl[c] === undefined) lvl[c] = tail; });
+  return lvl;
+}
+
+/* Что за линия у проёма: вид зависит от факта, цвет — от судьбы. */
+function graphLine(e){
+  const f = String(e.fact || "").trim();
+  const fate = String(e.fate || "").trim();
+  const color = fate === "демонтировать" || fate === "заложить" ? "#ff453a"
+    : fate === "заменить" || fate === "перенести" || fate === "установить" || fate === "пробить" ? "#0a84ff"
+    : elemGap(e) ? "#ff9f0a" : "#8e8e93";
+  const dash = f === "проём" ? "6 5" : (f === "нет" ? "2 6" : "");
+  return { color: color, dash: dash, gone: f === "нет" };
+}
+
+function graphSvg(){
+  const rooms = roomList();
+  const els = elemAll();
+  if(!rooms.length || !els.length) return "";
+  const lvl = graphLevels();
+  const byLvl = {};
+  rooms.forEach(r => { (byLvl[lvl[r.code]] = byLvl[lvl[r.code]] || []).push(r); });
+  const levels = Object.keys(byLvl).map(Number).sort((a, b) => a - b);
+  const W = 320, BW = 92, BH = 34, GAPY = 74;
+  const pos = {};
+  levels.forEach((L, li) => {
+    const row = byLvl[L];
+    row.forEach((r, i) => {
+      pos[r.code] = { x: Math.round((i + 0.5) * (W / row.length)), y: 30 + li * GAPY };
+    });
+  });
+  /* Внешние стороны — маленькие метки над входом: подъезд и шахта рисуются,
+     улица нет (это окна, они счётчиком на плашке). */
+  const extEls = els.filter(e => (e.b === "подъезд" || e.b === "шахта") && pos[e.a]);
+  const H = 30 + (levels.length - 1) * GAPY + BH + (extEls.length ? 46 : 20);
+  const shiftY = extEls.length ? 46 : 0;
+  const P = c => ({ x: pos[c].x, y: pos[c].y + shiftY });
+
+  const lines = [];
+  els.forEach(e => {
+    const inside = pos[e.a] && pos[e.b];
+    if(!inside && !(pos[e.a] && (e.b === "подъезд" || e.b === "шахта"))) return;
+    const g = graphLine(e);
+    const a = P(e.a);
+    const b = inside ? P(e.b) : { x: a.x, y: 8 };
+    const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+    lines.push('<line x1="' + a.x + '" y1="' + a.y + '" x2="' + b.x + '" y2="' + b.y + '" stroke="' + g.color +
+      '" stroke-width="2"' + (g.dash ? ' stroke-dasharray="' + g.dash + '"' : "") + ' />' +
+      (g.gone ? '<line x1="' + (mx - 5) + '" y1="' + (my - 5) + '" x2="' + (mx + 5) + '" y2="' + (my + 5) +
+        '" stroke="' + g.color + '" stroke-width="2" />' : "") +
+      '<circle cx="' + mx + '" cy="' + my + '" r="9" fill="rgba(0,0,0,.01)" style="cursor:pointer" onclick="elemEdit(\'' + esc(e.id) + '\')"><title>' +
+      esc(String(e.name || e.id)) + '</title></circle>');
+  });
+  if(extEls.length){
+    const a = P(extEls[0].a);
+    lines.push('<text x="' + a.x + '" y="14" text-anchor="middle" fill="#8e8e93" font-size="10">подъезд</text>');
+  }
+  const boxes = rooms.map(r => {
+    const p = P(r.code);
+    const w = elemCount(r.code, "окно");
+    const nm = String(r.name || r.code).split(" (")[0];
+    const short = nm.length > 13 ? nm.slice(0, 12) + "…" : nm;
+    return '<g style="cursor:pointer" onclick="objGoRoom(\'' + esc(r.code) + '\')">' +
+      '<rect x="' + (p.x - BW / 2) + '" y="' + (p.y - BH / 2) + '" width="' + BW + '" height="' + BH +
+        '" rx="9" fill="#2c2c2e" stroke="#48484a" />' +
+      '<text x="' + p.x + '" y="' + (p.y + (w ? -1 : 4)) + '" text-anchor="middle" fill="#fff" font-size="11">' + esc(short) + '</text>' +
+      (w ? '<text x="' + p.x + '" y="' + (p.y + 11) + '" text-anchor="middle" fill="#8e8e93" font-size="9">окон ' + w + '</text>' : "") +
+      '</g>';
+  }).join("");
+  return '<svg viewBox="0 0 ' + W + ' ' + H + '" width="100%" height="' + Math.min(H * 1.1, 420) +
+    '" style="display:block;margin-top:8px">' + lines.join("") + boxes + '</svg>';
+}
 const objDocs = () => (D.drafts || []).filter(d => /план/i.test(String(d.kind || "")));
 const objPlan = () => { const l = objDocs(); return l.length ? l[l.length - 1] : null; };
 const roomList = () => (D.rooms || []);
@@ -4238,6 +4344,11 @@ object(){
           : "План и факт сходятся везде") + '</div>' +
         '<div class="m" style="margin-top:6px;opacity:.75">Судьба задана у ' + els.filter(e => e.fate).length + ' из ' + els.length +
         '. Объём работ по дверям и окнам считается по этим проёмам.</div>' +
+        /* Схема-граф [чат 033]: расположение придумывает программа — связи
+           верны, география условна. Тык по линии открывает правку проёма. */
+        graphSvg() +
+        '<div class="m" style="opacity:.7">Линия сплошная — дверь, пунктиром — открытый проём, перечёркнутая — заложено. Оранжевым — расхождение с планом БТИ, красным — сносим, синим — ставим. Тык по линии открывает проём, по плашке — помещение.</div>' +
+        '<div class="m" style="opacity:.55">Расположение придумано схемой: связи верны, география условна — плана квартиры мы не рисуем.</div>' +
       '</div>';
   return "" +
     '<div class="hello">Объект</div>' +
@@ -5525,7 +5636,7 @@ const UZ = {
 "Что здесь сейчас":"Hozir bu yerda nima bor","Что было на плане БТИ":"BTI rejasida nima bor edi","Что делаем в ремонте":"Ta'mirda nima qilamiz",
 "Тип и судьбу зададите следующим шагом.":"Turi va taqdirini keyingi qadamda belgilaysiz.",
 "Проём добавлен":"Ochiq qo'shildi","Числа приведены к схеме":"Sonlar sxemaga keltirildi","Расхождения нет":"Farq yo'q",
-"Привести к схеме":"Sxemaga keltirish","схемы проёмов нет — объём по числу":"ochiqlar sxemasi yo'q — hajm son bo'yicha","учтено у:":"hisobga olingan:","Проектирование":"Loyihalash","Согласования":"Kelishuvlar","Капитальный демонтаж":"Kapital demontaj","Кладка и монолит":"G'isht terish va monolit","Гидроизоляция":"Gidroizolyatsiya","Потолки":"Shiftlar","Отопление":"Isitish","Вентиляция и климат":"Ventilyatsiya va iqlim","Слаботочные системы":"Past kuchlanishli tizimlar","Окна и остекление":"Derazalar va oynalash","Мебель и оборудование":"Mebel va jihozlar","Фасад":"Fasad","Кровля":"Tom yopish","Уборка и вывоз":"Tozalash va chiqindi olib chiqish","Гарантийный сервис":"Kafolat xizmati","Ничего не выбрано":"Hech narsa tanlanmagan","План пуст":"Reja bo'sh","к списку помещений":"xonalar ro'yxatiga","объём:":"hajm:","Выбор сохраняется: пройдите остальные помещения, смета соберётся одной кнопкой на общем экране.":"Tanlov saqlanadi: qolgan xonalarni ham o'ting, smeta umumiy ekranda bitta tugma bilan yig'iladi.","судьба не задана":"taqdiri belgilanmagan","нечего делать":"qiladigan narsa yo'q","не решено":"hal qilinmagan",
+"Привести к схеме":"Sxemaga keltirish","схемы проёмов нет — объём по числу":"ochiqlar sxemasi yo'q — hajm son bo'yicha","учтено у:":"hisobga olingan:","Линия сплошная — дверь, пунктиром — открытый проём, перечёркнутая — заложено. Оранжевым — расхождение с планом БТИ, красным — сносим, синим — ставим. Тык по линии открывает проём, по плашке — помещение.":"Uzluksiz chiziq — eshik, punktir — ochiq joy, chizilgan — berkitilgan. Sariq — BTI rejasi bilan farq, qizil — buzamiz, ko'k — o'rnatamiz. Chiziqqa bosilsa ochiq, plashkaga bosilsa xona ochiladi.","Расположение придумано схемой: связи верны, география условна — плана квартиры мы не рисуем.":"Joylashuvni sxema o'zi tanlaydi: bog'lanishlar to'g'ri, geografiya shartli — kvartira rejasini chizmaymiz.","подъезд":"podyezd","Проектирование":"Loyihalash","Согласования":"Kelishuvlar","Капитальный демонтаж":"Kapital demontaj","Кладка и монолит":"G'isht terish va monolit","Гидроизоляция":"Gidroizolyatsiya","Потолки":"Shiftlar","Отопление":"Isitish","Вентиляция и климат":"Ventilyatsiya va iqlim","Слаботочные системы":"Past kuchlanishli tizimlar","Окна и остекление":"Derazalar va oynalash","Мебель и оборудование":"Mebel va jihozlar","Фасад":"Fasad","Кровля":"Tom yopish","Уборка и вывоз":"Tozalash va chiqindi olib chiqish","Гарантийный сервис":"Kafolat xizmati","Ничего не выбрано":"Hech narsa tanlanmagan","План пуст":"Reja bo'sh","к списку помещений":"xonalar ro'yxatiga","объём:":"hajm:","Выбор сохраняется: пройдите остальные помещения, смета соберётся одной кнопкой на общем экране.":"Tanlov saqlanadi: qolgan xonalarni ham o'ting, smeta umumiy ekranda bitta tugma bilan yig'iladi.","судьба не задана":"taqdiri belgilanmagan","нечего делать":"qiladigan narsa yo'q","не решено":"hal qilinmagan",
 "дверь":"eshik","окно":"deraza","проём":"ochiq","нет":"yo'q",
 "не трогаем":"tegmaymiz","заменить":"almashtirish","демонтировать":"demontaj","заложить":"berkitish","пробить":"ochish","перенести":"ko'chirish","установить":"o'rnatish",
 "Нечего строить: нет ни смежности, ни проёмов":"Tuzadigan narsa yo'q: na qo'shnilik, na ochiqlar bor",
@@ -5961,6 +6072,8 @@ const UZ_RULES = [
     "Quyidagi tugma obyektning yetishmayotgan varaqlarini ($1 ta) to’g’ri sarlavhalar bilan yaratadi. Mavjud varaqlar tegilmaydi — ulardagi ma’lumot o’z holicha qoladi."],
   /* Объём по судьбе проёма [чат 033]: число внутри — значит шаблон. */
   [/^по схеме: (\d+) из (\d+)$/, "sxema bo'yicha: $2 tadan $1 tasi"],
+  /* Счётчик окон на плашке графа [чат 033]. */
+  [/^окон (\d+)$/, "deraza $1"],
   /* Итоги профиля ремонта — те же поверхности, что вскрылись в 033. */
   [/^Выбрано (\d+) · на ([\d\s.,]+) USD$/, "Tanlandi: $1 · $2 USD"],
   [/^Выбрано (\d+) · на ([\d\s.,]+) USD · без объёма: (\d+)$/, "Tanlandi: $1 · $2 USD · hajmsiz: $3"],
@@ -6334,7 +6447,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "033.2";
+const BUILD = "033.3";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
