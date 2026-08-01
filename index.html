@@ -4376,8 +4376,79 @@ function showVError(msg){
     </div>`);
 }
 
+/* Переспрос вместо «Не разобрал» [чат 030]. Единый голосовой вход снял привязку
+   разбора к экрану: сервер сам решает, о чём реплика. Но когда он ошибся или
+   человек сказал о том, чего в этом режиме нет, реплика раньше просто пропадала
+   вместе с распознанным текстом. Теперь сервер возвращает ask со списком
+   непробованных режимов, а панель предлагает выбрать — и повторяет разбор
+   ТЕКСТОМ, без новой записи: звук уже распознан, платить за это дважды незачем. */
+const VASK = {
+  rooms:  { t: "Размеры и проёмы",     d: "площадь, высота, окна и двери помещения" },
+  repair: { t: "Какие работы делать",  d: "покрасить, штукатурить, заменить дверь" },
+  acc:    { t: "Учёт по смете",        d: "готовность, статус, закуп материалов" }
+};
+let vAskText = "";
+
+function showVAsk(d){
+  tg?.HapticFeedback?.notificationOccurred("warning");
+  vAskText = String(d.recognized || "");
+  const opts = (Array.isArray(d.options) ? d.options : []).filter(m => VASK[m]);
+  const btns = opts.map(m => `
+    <div class="vitem" onclick="vRetry('${m}')">
+      <div style="flex:1;min-width:0">
+        <div class="vt">${esc(VASK[m].t)}</div>
+        <div class="vd">${esc(VASK[m].d)}</div>
+      </div>
+    </div>`).join("");
+  openVSheet(`
+    <div class="vh">К чему это отнести?</div>
+    <div class="vs">Расслышал, но не понял раздел. Выберите — разберу заново, записывать ничего не буду.</div>
+    ${vAskText ? `<div class="vquote">Расслышал: <b>${esc(vAskText)}</b></div>` : ""}
+    ${btns}
+    <div class="vrow">
+      <button class="vbtn-cancel" onclick="closeVSheet()">Закрыть</button>
+      <button class="vbtn-ok" onclick="startVoice(vMode)">Сказать иначе</button>
+    </div>`);
+}
+
+/* Повтор разбора текстом: звук не пишем заново, шлём распознанное и явный режим.
+   Нода промпта принимает body.text, а Scribe в этом случае отказывает молча
+   (у него onError=continueRegularOutput) — путь проверен прод-тестом 030. */
+async function vRetry(mode){
+  const text = vAskText;
+  if(!text){ startVoice(mode); return; }
+  vMode = String(mode === "acc" ? "" : mode);
+  openVSheet(`<div class="vh">Разбираю заново…</div><div class="vspin"></div>
+    <div class="vs" style="text-align:center">${esc(VASK[mode] ? VASK[mode].t : "")}</div>`);
+  try{
+    const r = await fetch(`${API}/voice`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        initData: INIT, key: KEY, text: text, mode: vMode,
+        room: (typeof PROF === "object" && PROF && PROF.room) ? PROF.room : "",
+        lang: LANG
+      })
+    });
+    const raw = (await r.text()).trim();
+    if(r.status === 401 || r.status === 403) throw new Error("Доступ не подтверждён.");
+    if(!raw) throw new Error("Не удалось разобрать. Попробуйте сказать иначе.");
+    let d; try{ d = JSON.parse(raw); }catch{ throw new Error("Сервер вернул неожиданный ответ."); }
+    d.ask = false;                     // второй круг переспроса не показываем: человек уже выбрал
+    showVResult(d);
+  }catch(e){ showVError(e.message); }
+}
+
 /* Показ распознанного. items===[] → выбраковка (ничего не поняли). */
 function showVResult(d){
+  /* Пустой разбор с ask — не тупик, а развилка: показать её раньше, чем ветки
+     нарисуют своё «Не разобрал» [чат 030]. */
+  if(d && d.ask && Array.isArray(d.options) && d.options.length){
+    const nRooms = Array.isArray(d.rooms) ? d.rooms.length : 0;
+    const nItems = Array.isArray(d.items) ? d.items.length : 0;
+    const nActs  = Array.isArray(d.actions) ? d.actions.length : 0;
+    if(nRooms + nItems + nActs === 0){ showVAsk(d); return; }
+  }
   if(d && d.mode === "rooms" && Array.isArray(d.rooms)){ showVRooms(d); return; }
   if(d && d.mode === "repair" && Array.isArray(d.rooms)){ showVRepair(d); return; }
   if(d && d.mode === "hand" && Array.isArray(d.actions)){ showVHand(d); return; }
@@ -5187,6 +5258,7 @@ const UZ = {
 "Заменить план":"Rejani almashtirish","Не получилось":"Bo'lmadi",
 "Принять пакет":"To'plamni qabul qilish","Оспорить пакет":"To'plamga e'tiroz",
 "Сказать иначе":"Boshqacha aytish","Записать заново":"Qayta yozib olish",
+"К чему это отнести?":"Buni nimaga bog'lash kerak?","Расслышал, но не понял раздел. Выберите — разберу заново, записывать ничего не буду.":"Eshitdim, lekin bo'limni tushunmadim. Tanlang — qaytadan tahlil qilaman, hech narsa yozmayman.","Размеры и проёмы":"O'lchamlar va o'yiqlar","площадь, высота, окна и двери помещения":"xona maydoni, balandligi, derazalar va eshiklar","Какие работы делать":"Qanday ishlar qilinadi","покрасить, штукатурить, заменить дверь":"bo'yash, shuvoq, eshikni almashtirish","Учёт по смете":"Smeta bo'yicha hisob","готовность, статус, закуп материалов":"tayyorlik, holat, material xaridi","Разбираю заново…":"Qaytadan tahlil qilyapman…",
 "Внести в смету":"Smetaga kiritish","внести в смету":"smetaga kiritish",
 "Готовность, %:":"Tayyorlik, %:","объект «Ремонт»":"«Ta'mir» obyekti",
 "Код принят. Вы —":"Kod qabul qilindi. Siz —","Обмеры помещений":"Xonalar o'lchamlari",
@@ -5589,7 +5661,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "029.3";
+const BUILD = "030.1";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
