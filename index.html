@@ -913,6 +913,48 @@ function roomWalls(r){
   return Math.round((p * h - w * S_WIN - d * S_DOOR) * 100) / 100;
 }
 
+/* Тип картинки — по содержимому, а не по слову сервера [чат 032].
+   Ветка /file отдавала настоящий JPEG с заголовком application/octet-stream:
+   узел «Ответить файлом» берёт тип из свойства файла Telegram, а оно пустое.
+   Сервер починен тем же чатом, но панель не должна зависеть от честности
+   заголовка — файлы старых загрузок лежат в Telegram как есть, и заголовок
+   у них появится только при перезаливке. Правило шире случая: если содержимое
+   можно проверить самому, проверка чужого ярлыка не должна быть единственной. */
+const IMG_SIGS = [
+  { t: "image/jpeg", b: [0xFF, 0xD8, 0xFF] },
+  { t: "image/png",  b: [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A] },
+  { t: "image/gif",  b: [0x47, 0x49, 0x46, 0x38] },
+  { t: "image/bmp",  b: [0x42, 0x4D] }
+];
+function fileCT(r){
+  try{ return String((r.headers && r.headers.get("content-type")) || "").split(";")[0].trim().toLowerCase(); }
+  catch(e){ return ""; }
+}
+async function blobHead(blob, n){
+  try{
+    const part = blob.slice(0, n);
+    if(part.arrayBuffer) return new Uint8Array(await part.arrayBuffer());
+    return await new Promise(res => {
+      const fr = new FileReader();
+      fr.onload = () => res(new Uint8Array(fr.result));
+      fr.onerror = () => res(new Uint8Array(0));
+      fr.readAsArrayBuffer(part);
+    });
+  }catch(e){ return new Uint8Array(0); }
+}
+async function sniffImage(blob){
+  if(!blob || !blob.size) return "";
+  const h = await blobHead(blob, 16);
+  for(const s of IMG_SIGS){
+    let ok = h.length >= s.b.length;
+    for(let i = 0; ok && i < s.b.length; i++) if(h[i] !== s.b[i]) ok = false;
+    if(ok) return s.t;
+  }
+  if(h.length >= 12 && h[0] === 0x52 && h[1] === 0x49 && h[2] === 0x46 && h[3] === 0x46 &&
+     h[8] === 0x57 && h[9] === 0x45 && h[10] === 0x42 && h[11] === 0x50) return "image/webp";
+  return "";
+}
+
 async function objShowPlan(){
   const box = document.getElementById("objPlanBox");
   const p = objPlan();
@@ -921,9 +963,12 @@ async function objShowPlan(){
   try{
     const q = "draft=" + encodeURIComponent(p.id) + "&initData=" + encodeURIComponent(INIT) + "&key=" + encodeURIComponent(KEY);
     const r = await fetch(API + "/file?" + q);
-    const t = r.headers.get("content-type") || "";
-    if(!r.ok || t.indexOf("image") !== 0) throw new Error("Сервер не отдал изображение");
-    const b = await r.blob();
+    if(!r.ok){ console.warn("file: HTTP " + r.status); throw new Error("Сервер не отдал изображение"); }
+    const raw = await r.blob();
+    const hdr = fileCT(r);
+    const type = (hdr.indexOf("image/") === 0) ? hdr : await sniffImage(raw);
+    if(!type){ console.warn("file: тип «" + hdr + "», байт " + ((raw && raw.size) || 0)); throw new Error("Сервер не отдал изображение"); }
+    const b = (raw.type === type) ? raw : new Blob([raw], { type: type });
     const u = URL.createObjectURL(b);
     box.innerHTML = '<img src="' + u + '" alt="План БТИ" style="width:100%;border-radius:12px;display:block">' +
       '<div class="m" style="margin-top:6px">Загружен ' + esc(p.at || "") + " · " + esc(p.who || "") + "</div>";
@@ -5431,6 +5476,8 @@ const UZ = {
 "Человекодней за 7 дней (подтверждённых)":"7 kundagi odam-kunlar (tasdiqlangan)",
 "— загляните в календарь":"— kalendarga qarang","Напишите задание":"Topshiriqni yozing",
 "Загружаю план…":"Reja yuklanmoqda…","План не открылся":"Reja ochilmadi",
+"Сервер не отдал изображение":"Server suratni bermadi",
+"План не открылся: Сервер не отдал изображение":"Reja ochilmadi: Server suratni bermadi",
 "В прайсе пока нет ни одной позиции.":"Narxlar ro'yxatida hozircha bitta ham pozitsiya yo'q.",
 "Не удалось загрузить.":"Yuklanmadi.",
 "Проверьте интернет и откройте ещё раз.":"Internetni tekshirib yana oching.",
@@ -5998,7 +6045,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "031.1";
+const BUILD = "032.1";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
