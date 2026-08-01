@@ -4884,9 +4884,93 @@ function roomNewCode(name){
   return base + "X";
 }
 
+/* ── Голос про проёмы [чат 032] ────────────────────────────────────────
+   Сервер знает словарь («дверь · окно · проём · нет», семь судеб), но не знает
+   схемы объекта и не должен: лист элементов необязательный, а batchGet
+   «Голоса» падает целиком, если листа нет (грабля 20). Поэтому сторону
+   сопоставляет панель — у неё свежие D.elements и D.adjacency, и здесь же
+   живёт признак расхождения плана с фактом (одно место на сводную величину,
+   урок 027). Сказанное не пишется молча: конфликт и новый проём приходят
+   неотмеченными — те же ворота переспроса, что у обмеров (решение 016). */
+function vrNorm(s){
+  return String(s == null ? "" : s).toLowerCase().replace(/ё/g, "е")
+    .replace(/\(.*?\)/g, " ").replace(/[^a-zа-я0-9 ]/gi, " ").replace(/\s+/g, " ").trim();
+}
+/* Группы названий — те же, что у ноды «Собрать items»: человек говорит
+   «в туалет», а в листе стоит «Санузел». Дублирование осознанное и узкое:
+   правда о помещениях по-прежнему одна — лист 06_Помещения, здесь только
+   синонимы для сопоставления, и они нужны на случай, когда модель не
+   проставила код стороны. Не найдётся ничего — панель честно скажет «не
+   понял», а не выберет соседа наугад. */
+const VR_GROUPS = [
+  ["зал","гостиная","гостинная","холл","mehmonxona","zal"],
+  ["спальня","спальная","yotoqxona"],
+  ["кухня","oshxona"],
+  ["ванная","ванна","душевая","hammom","vanna"],
+  ["туалет","уборная","санузел","hojatxona","tualet"],
+  ["коридор","прихожая","dahliz","koridor"],
+  ["лоджия","балкон","balkon","ayvon","lodjiya"],
+  ["третья комната","третья","детская","кабинет","bolalar","kabinet"]
+];
+function vrGroup(t){
+  t = vrNorm(t);
+  if(!t) return -1;
+  for(let i = 0; i < VR_GROUPS.length; i++)
+    for(const w of VR_GROUPS[i]) if(t.indexOf(w) >= 0) return i;
+  return -1;
+}
+function vrSide(x){
+  const said = vrNorm(x.side_code || x.side);
+  if(!said) return "";
+  if(/улиц|двор|наружу|снаруж/.test(said)) return "улица";
+  if(/подъезд|лестнич|тамбур|площадк/.test(said)) return "подъезд";
+  const byCode = roomList().find(r => vrNorm(r.code) === said);
+  if(byCode) return String(byCode.code);
+  const byName = roomList().find(r => {
+    const n = vrNorm(r.name);
+    return n && (n === said || n.indexOf(said) === 0 || said.indexOf(n) === 0);
+  });
+  if(byName) return String(byName.code);
+  const g = vrGroup(said);
+  if(g < 0) return "";
+  const byGroup = roomList().find(r => vrGroup(r.name) === g);
+  return byGroup ? String(byGroup.code) : "";
+}
+function vrElems(r){
+  const list = Array.isArray(r.elements) ? r.elements : [];
+  return list.map(x => {
+    const side = vrSide(x);
+    const near = side ? elemOf(r.code).filter(e => elemSide(e, r.code) === side) : [];
+    const cur = near.length === 1 ? near[0] : null;
+    const ch = [];
+    const put = (col, key, val) => {
+      if(!val) return;
+      const was = String((cur || {})[key] || "").trim();
+      if(was === val) return;                       // сказанное уже стоит — менять нечего
+      ch.push({ col: col, key: key, now: val, was: was, conflict: !!cur && was !== "", _sel: !(cur && was !== "") });
+    };
+    put("Тип_факт", "fact", x.fact);
+    put("Судьба", "fate", x.fate);
+    put("Тип_план", "plan", x.plan);
+    return {
+      said: String(x.side || x.side_code || ""), side: side,
+      id: cur ? cur.id : "", many: near.length > 1,
+      isNew: !near.length && !!side, unknown: !side,
+      changes: ch, _sel: false
+    };
+  }).filter(e => e.changes.length || e.unknown || e.many);
+}
+/* Подпись без предлога: «Проём → Кухня». Падежи в панели не склоняются нигде,
+   а «проём в Кухня» читается как ошибка интерфейса. */
+function vrSideLabel(side, said){
+  if(side === "улица" || side === "подъезд") return side;
+  const r = roomList().find(x => String(x.code) === side);
+  return r ? String(r.name || side).split(" (")[0] : (said || side);
+}
+
 function showVRooms(d){
   const list = Array.isArray(d.rooms) ? d.rooms : [];
-  vRooms = list.map(r => ({ ...r, fields: (r.fields || []).map(f => ({ ...f, _sel: !f.conflict })) }));
+  vRooms = list.map(r => ({ ...r, fields: (r.fields || []).map(f => ({ ...f, _sel: !f.conflict })), elems: vrElems(r) }));
   const quote = d.recognized ? `<div class="vquote">Расслышал: <b>${esc(d.recognized)}</b></div>` : "";
   if(!list.length){
     tg?.HapticFeedback?.notificationOccurred("warning");
@@ -4910,7 +4994,27 @@ function showVRooms(d){
           <div class="vv">${esc(f.label)}: <b>${esc(String(f.now))}</b>${f.conflict ? ` <span style="color:#ff9f0a">(было ${esc(String(f.was))} — заменить?)</span>` : ""}</div>
         </div>
       </div>`).join("");
-    return `<div style="margin-bottom:10px">${head}${fl}</div>`;
+    const el = (r.elems || []).map((e, j) => {
+      const where = vrSideLabel(e.side, e.said);
+      if(e.unknown) return `<div class="vitem"><div class="vchk" style="opacity:.3">?</div><div style="flex:1;min-width:0"><div class="vv" style="color:#ff9f0a">Не понял, куда ведёт проём: ${esc(e.said)}</div></div></div>`;
+      if(e.many) return `<div class="vitem"><div class="vchk" style="opacity:.3">?</div><div style="flex:1;min-width:0"><div class="vv" style="color:#ff9f0a">Проёмов → ${where} несколько — поправьте в карточке помещения</div></div></div>`;
+      /* Разметка разводит интерфейс и данные по разным текстовым узлам:
+         «Проём →» и «судьба:» — словарь, «Кухня» и «заложить» — значения.
+         Слой переводит узлами, и слипшаяся строка «Проём → Кухня — судьба:»
+         осталась бы наполовину русской (урок 021 про остаток кириллицы). */
+      const what = e.changes.map(c => `${esc(c.key === "fate" ? "судьба:" : (c.key === "plan" ? "на плане:" : "сейчас:"))} <b>${esc(c.now)}</b>${c.was ? ` <span style="color:#ff9f0a">было: <b>${esc(c.was)}</b></span>` : ""}`).join(" · ");
+      const mark = e.isNew ? ' <span style="color:#ff9f0a">· нового проёма нет в схеме, заведу</span>' : "";
+      const sel = e.isNew ? e._sel : e.changes.some(c => c._sel);
+      return `
+      <div class="vitem${sel ? " sel" : ""}" data-e="${i}-${j}" onclick="toggleVElem(${i},${j})">
+        <div class="vchk">✓</div>
+        <div style="flex:1;min-width:0">
+          <div class="vv">Проём → <b>${esc(where)}</b> · ${what}${mark}</div>
+        </div>
+      </div>`;
+    }).join("");
+    const elHead = (r.elems || []).length ? '<div class="vd" style="margin:6px 0 2px">Проёмы</div>' : "";
+    return `<div style="margin-bottom:10px">${head}${fl}${elHead}${el}</div>`;
   }).join("");
   openVSheet(`
     <div class="vh">Обмеры помещений</div>
@@ -4922,6 +5026,16 @@ function showVRooms(d){
       <button class="vbtn-cancel" onclick="closeVSheet()">Отмена</button>
       <button class="vbtn-ok" id="vrapply" onclick="applyVoiceRooms()">Записать отмеченное</button>
     </div>`);
+}
+
+function toggleVElem(i, j){
+  const e = vRooms[i].elems[j];
+  if(e.unknown || e.many) return;                  // выбирать не из чего
+  const on = e.isNew ? !e._sel : !e.changes.some(c => c._sel);
+  e._sel = on;
+  e.changes.forEach(c => { c._sel = on; });
+  const el = document.querySelector(`.vitem[data-e="${i}-${j}"]`);
+  if(el) el.classList.toggle("sel", on);
 }
 
 function toggleVRoom(i, j){
@@ -4936,7 +5050,10 @@ function toggleVRoom(i, j){
    append кладёт значения как есть, а числу положено быть числом. */
 async function applyVoiceRooms(){
   const btn = document.getElementById("vrapply");
-  const chosen = vRooms.map(r => ({ ...r, fields: r.fields.filter(f => f._sel) })).filter(r => r.fields.length || r.isNew);
+  const chosen = vRooms
+    .map(r => ({ ...r, fields: r.fields.filter(f => f._sel),
+                 elems: (r.elems || []).filter(e => e.isNew ? e._sel : e.changes.some(c => c._sel)) }))
+    .filter(r => r.fields.length || r.elems.length || r.isNew);
   if(!chosen.length){ toast("Ничего не отмечено", "wait"); return; }
   if(btn){ btn.disabled = true; btn.textContent = "Записываю…"; }
   let done = 0, fail = 0, added = 0;
@@ -4956,6 +5073,37 @@ async function applyVoiceRooms(){
         await writeCell("06_Помещения", code, f.col, String(f.now).replace(".", ","));
         done++;
       }catch(e){ fail++; }
+    }
+  }
+  /* Проёмы: правка существующего ребра — обычный writeCell, новый проём
+     заводится строкой сразу со сказанными полями (append + правка стоили бы
+     двух записей ради одного факта). Пока данные не перечитаны, добавленное
+     ребро кладётся в D.elements: иначе второй новый проём в той же реплике
+     получил бы тот же id. */
+  for(const r of chosen){
+    if(!r.code) continue;
+    for(const e of (r.elems || [])){
+      const sel = e.changes.filter(c => c._sel);
+      try{
+        if(e.isNew){
+          const id = elemNextId();
+          const val = k => (sel.find(c => c.key === k) || {}).now || "";
+          await crewAppend("13_Элементы", [{
+            "id": id, "Сторона_A": r.code, "Сторона_B": e.side,
+            "Тип_план": val("plan"), "Тип_факт": val("fact") || "дверь", "Судьба": val("fate"),
+            "Название": (roomList().find(x => String(x.code) === r.code) || {}).name + " ↔ " + vrSideLabel(e.side, e.said),
+            "Ширина_м": "", "Высота_м": "", "Примечание": "добавлен голосом", "Обновлено": chgStamp(),
+          }]);
+          (D.elements = D.elements || []).push({ id: id, a: r.code, b: e.side,
+            plan: val("plan"), fact: val("fact") || "дверь", fate: val("fate") });
+          done++;
+        }else if(e.id){
+          for(const c of sel){
+            await writeCell("13_Элементы", e.id, c.col, c.now);
+            done++;
+          }
+        }
+      }catch(err){ fail++; }
     }
   }
   closeVSheet();
@@ -5477,6 +5625,8 @@ const UZ = {
 "— загляните в календарь":"— kalendarga qarang","Напишите задание":"Topshiriqni yozing",
 "Загружаю план…":"Reja yuklanmoqda…","План не открылся":"Reja ochilmadi",
 "Сервер не отдал изображение":"Server suratni bermadi",
+"Проёмы":"Ochiqlar","Проём →":"Ochiq →","улица":"ko'cha","подъезд":"podyezd","судьба:":"taqdiri:","сейчас:":"hozir:","на плане:":"rejada:","было:":"edi:",
+"Пол, м²:":"Pol, m²:","Периметр, м:":"Perimetr, m:","Высота, м:":"Balandlik, m:","Окон:":"Deraza:","Дверей:":"Eshik:","Тип помещения:":"Xona turi:",
 "План не открылся: Сервер не отдал изображение":"Reja ochilmadi: Server suratni bermadi",
 "В прайсе пока нет ни одной позиции.":"Narxlar ro'yxatida hozircha bitta ham pozitsiya yo'q.",
 "Не удалось загрузить.":"Yuklanmadi.",
@@ -5786,6 +5936,9 @@ const UZ_RULES = [
   [/^дверей сейчас ([\d\s.,]+)$/, "hozir eshik $1"],
   [/^⏳ Сначала должно быть принято: (.+)$/, "⏳ Avval qabul qilinishi kerak: $1"],
   [/^План не открылся: (.+)$/, "Reja ochilmadi: $1"],
+  [/^Не понял, куда ведёт проём: (.+)$/, "Ochiq qayerga olib borishini tushunmadim: $1"],
+  [/^Проёмов → (.+) несколько — поправьте в карточке помещения$/, "→ $1 bir nechta ochiq bor — xona kartochkasida to'g'rilang"],
+  [/^· нового проёма нет в схеме, заведу$/, "· sxemada bunday ochiq yo'q, qo'shaman"],
   [/^Готово, (.+)! Вы в бригаде\. Открываю панель…$/, "Tayyor, $1! Siz brigadadasiz. Panel ochilmoqda…"],
   [/^ориентир по рынку (.+)$/, "bozor mo'ljali $1"],
   [/^источник: (.+)$/, "manba: $1"],
@@ -6045,7 +6198,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "032.1";
+const BUILD = "032.2";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
