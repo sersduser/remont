@@ -928,14 +928,22 @@ function elemType(e){
 }
 const elemOuter = e => ELEM_OUT.indexOf(String((e && e.b) || "")) >= 0 || ELEM_OUT.indexOf(String((e && e.a) || "")) >= 0;
 
-/* Проёмы помещения, которые обслуживает работа с такой базой. Неизвестная
-   роль даёт пустой список, а не все проёмы: выдуманное уточнение не должно
-   молча превращаться в «посчитать всё». */
+/* Проёмы, которые обслуживает работа с такой базой. Неизвестная роль даёт
+   пустой список, а не все проёмы: выдуманное уточнение не должно молча
+   превращаться в «посчитать всё».
+
+   Проём считается ОДИН РАЗ — за первой стороной (`a`), а не с обеих. Дверь
+   между коридором и залом видна в карточках обоих помещений (она ребро, решение
+   031), но снимают и ставят её один раз: считая с обеих сторон, смета удвоила
+   бы демонтаж — на боевых данных пилота это и вскрылось. Работы, которым нужны
+   обе стороны (облицовка, откосы), живут на прежней базе без уточнения —
+   там число проёмов помещения по-прежнему считает дверь с каждой стороны. */
+function elemMine(code){ return elemAll().filter(e => e.a === code); }
 function elemPick(code, src, role, side){
   const want = ELEM_SRC[src];
   const fates = ELEM_ROLE[role];
   if(!fates) return [];
-  return elemOf(code).filter(e =>
+  return elemMine(code).filter(e =>
     (want === null || elemType(e) === want) &&
     fates.indexOf(String(e.fate || "").trim()) >= 0 &&
     (!side || (side === "наруж" ? elemOuter(e) : !elemOuter(e))));
@@ -974,8 +982,20 @@ function elemVolHint(kind, room){
   if(!q || !room) return "";
   if(!elemOf(room.code).length) return "схемы проёмов нет — объём по числу";
   const want = ELEM_SRC[q.src];
-  const all = elemOf(room.code).filter(e => want === null || elemType(e) === want).length;
-  return "по схеме: " + elemPick(room.code, q.src, q.role, q.side).length + " из " + all + " · " + q.role;
+  const all = elemMine(room.code).filter(e => want === null || elemType(e) === want).length;
+  const n = elemPick(room.code, q.src, q.role, q.side).length;
+  let tail = "";
+  /* Проём соседа: работа по нему уже посчитана там, и человек должен видеть
+     где — иначе ноль в его карточке выглядит как потеря работы. */
+  if(!n){
+    const near = elemAll().filter(e => e.b === room.code && (want === null || elemType(e) === want) &&
+      (ELEM_ROLE[q.role] || []).indexOf(String(e.fate || "").trim()) >= 0);
+    if(near.length){
+      const r = (D.rooms || []).find(x => x.code === near[0].a);
+      tail = " · учтено у: " + (r ? String(r.name || near[0].a).split(" (")[0] : near[0].a);
+    }
+  }
+  return "по схеме: " + n + " из " + all + " · " + q.role + tail;
 }
 
 const objDocs = () => (D.drafts || []).filter(d => /план/i.test(String(d.kind || "")));
@@ -5505,7 +5525,7 @@ const UZ = {
 "Что здесь сейчас":"Hozir bu yerda nima bor","Что было на плане БТИ":"BTI rejasida nima bor edi","Что делаем в ремонте":"Ta'mirda nima qilamiz",
 "Тип и судьбу зададите следующим шагом.":"Turi va taqdirini keyingi qadamda belgilaysiz.",
 "Проём добавлен":"Ochiq qo'shildi","Числа приведены к схеме":"Sonlar sxemaga keltirildi","Расхождения нет":"Farq yo'q",
-"Привести к схеме":"Sxemaga keltirish","схемы проёмов нет — объём по числу":"ochiqlar sxemasi yo'q — hajm son bo'yicha","Проектирование":"Loyihalash","Согласования":"Kelishuvlar","Капитальный демонтаж":"Kapital demontaj","Кладка и монолит":"G'isht terish va monolit","Гидроизоляция":"Gidroizolyatsiya","Потолки":"Shiftlar","Отопление":"Isitish","Вентиляция и климат":"Ventilyatsiya va iqlim","Слаботочные системы":"Past kuchlanishli tizimlar","Окна и остекление":"Derazalar va oynalash","Мебель и оборудование":"Mebel va jihozlar","Фасад":"Fasad","Кровля":"Tom yopish","Уборка и вывоз":"Tozalash va chiqindi olib chiqish","Гарантийный сервис":"Kafolat xizmati","Ничего не выбрано":"Hech narsa tanlanmagan","План пуст":"Reja bo'sh","к списку помещений":"xonalar ro'yxatiga","объём:":"hajm:","Выбор сохраняется: пройдите остальные помещения, смета соберётся одной кнопкой на общем экране.":"Tanlov saqlanadi: qolgan xonalarni ham o'ting, smeta umumiy ekranda bitta tugma bilan yig'iladi.","судьба не задана":"taqdiri belgilanmagan","нечего делать":"qiladigan narsa yo'q","не решено":"hal qilinmagan",
+"Привести к схеме":"Sxemaga keltirish","схемы проёмов нет — объём по числу":"ochiqlar sxemasi yo'q — hajm son bo'yicha","учтено у:":"hisobga olingan:","Проектирование":"Loyihalash","Согласования":"Kelishuvlar","Капитальный демонтаж":"Kapital demontaj","Кладка и монолит":"G'isht terish va monolit","Гидроизоляция":"Gidroizolyatsiya","Потолки":"Shiftlar","Отопление":"Isitish","Вентиляция и климат":"Ventilyatsiya va iqlim","Слаботочные системы":"Past kuchlanishli tizimlar","Окна и остекление":"Derazalar va oynalash","Мебель и оборудование":"Mebel va jihozlar","Фасад":"Fasad","Кровля":"Tom yopish","Уборка и вывоз":"Tozalash va chiqindi olib chiqish","Гарантийный сервис":"Kafolat xizmati","Ничего не выбрано":"Hech narsa tanlanmagan","План пуст":"Reja bo'sh","к списку помещений":"xonalar ro'yxatiga","объём:":"hajm:","Выбор сохраняется: пройдите остальные помещения, смета соберётся одной кнопкой на общем экране.":"Tanlov saqlanadi: qolgan xonalarni ham o'ting, smeta umumiy ekranda bitta tugma bilan yig'iladi.","судьба не задана":"taqdiri belgilanmagan","нечего делать":"qiladigan narsa yo'q","не решено":"hal qilinmagan",
 "дверь":"eshik","окно":"deraza","проём":"ochiq","нет":"yo'q",
 "не трогаем":"tegmaymiz","заменить":"almashtirish","демонтировать":"demontaj","заложить":"berkitish","пробить":"ochish","перенести":"ko'chirish","установить":"o'rnatish",
 "Нечего строить: нет ни смежности, ни проёмов":"Tuzadigan narsa yo'q: na qo'shnilik, na ochiqlar bor",
@@ -6314,7 +6334,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "033.1";
+const BUILD = "033.2";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
