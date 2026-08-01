@@ -822,6 +822,64 @@ const ROOM_FIELDS = [
    ПРЕДЛАГАЕТ: пересчёт стен всегда подтверждает человек. */
 const S_WIN = 3.1, S_DOOR = 1.7;
 
+/* ══════════════════════════════════════════════════════════════
+   СХЕМА ПРОЁМОВ [чат 031] — дверь и окно перестали быть числом
+   Требования Дмитрия: «у многих расходится план с фактом… чтобы создавалась
+   собственная схема и потом голосом её можно было регулировать» и «4 замены
+   дверей — неправильно: в коридоре 5 дверей, входная не трогается, в зал и
+   в третью заменяется, в туалет демонтируется, в ванную переносится».
+   Одно число не может нести пять разных ответов, поэтому проём стал вещью.
+
+   Проём — РЕБРО: у него две стороны, и внутренняя дверь принадлежит паре
+   помещений, а не одному. Тогда «дверь в кухню заложена» правится один раз
+   и видна с обеих сторон — та же логика, что у двустороннего графа
+   смежности (решение 016). Разбор — 02_Разборы/16.
+   ══════════════════════════════════════════════════════════════ */
+const ELEM_FACTS = ["дверь", "окно", "проём", "нет"];
+const ELEM_FATES = ["не трогаем", "заменить", "демонтировать", "заложить", "пробить", "перенести", "установить"];
+const ELEM_AREA  = { "дверь": S_DOOR, "окно": S_WIN, "проём": S_DOOR };
+
+const elemAll  = () => (D.elements || []);
+const elemOf   = (code) => elemAll().filter(e => e.a === code || e.b === code);
+const elemSide = (e, code) => (e.a === code ? e.b : e.a);
+function elemSideName(e, code){
+  const s = elemSide(e, code);
+  const r = (D.rooms || []).find(x => x.code === s);
+  return r ? String(r.name || s).split(" (")[0] : String(s || "—");
+}
+/* Расхождение план/факт не хранится полем и не приходит с сервера: признак,
+   по которому считается сводная величина, записывается один раз (урок 027 —
+   определение «решено» разъехалось между сервером и панелью). */
+const elemGap   = (e) => !!(e.plan && e.fact && e.plan !== e.fact);
+const elemGaps  = () => elemAll().filter(elemGap);
+const elemCount = (code, fact) => elemOf(code).filter(e => e.fact === fact).length;
+
+/* Площадь настоящих проёмов помещения: свои размеры, если заданы, иначе
+   типовые. Пока схемы нет — null, и стены считаются прежней формулой. */
+function elemArea(code){
+  const list = elemOf(code).filter(e => e.fact && e.fact !== "нет");
+  if(!elemOf(code).length) return null;
+  let s = 0;
+  for(const e of list){
+    const w = Number(e.w), h = Number(e.h);
+    s += (w > 0 && h > 0) ? (w * h) : (ELEM_AREA[e.fact] || 0);
+  }
+  return Math.round(s * 100) / 100;
+}
+
+/* Что схема говорит про числа проёмов помещения. Числа в 06_Помещения
+   остаются источником объёмов работ, поэтому схема их не переписывает молча,
+   а показывает расхождение и предлагает пересчитать — тот же переспрос, что
+   у обмеров (решение 016). */
+function elemDelta(r){
+  if(!r || !elemOf(r.code).length) return null;
+  const w = elemCount(r.code, "окно"), d = elemCount(r.code, "дверь");
+  const same = (a, b) => !(a === null || a === undefined || String(a).trim() === "") && Number(a) === b;
+  const needW = !same(r.windows, w), needD = !same(r.doors, d);
+  return (needW || needD) ? { w: w, d: d, needW: needW, needD: needD } : null;
+}
+
+
 const objDocs = () => (D.drafts || []).filter(d => /план/i.test(String(d.kind || "")));
 const objPlan = () => { const l = objDocs(); return l.length ? l[l.length - 1] : null; };
 const roomList = () => (D.rooms || []);
@@ -846,6 +904,12 @@ function roomWalls(r){
   if(empty(r.windows) || empty(r.doors)) return null;
   const w = Number(r.windows), d = Number(r.doors);
   if(!(w >= 0) || !(d >= 0)) return null;
+  /* Схема проёмов заведена — вычитаем настоящие проёмы, а не типовые числа
+     [чат 031]: у арки между залом и лоджией своя площадь, и до 031 она не
+     вычиталась вовсе (аркой не считается ни окно, ни дверь). Своя ширина и
+     высота проёма главнее типовой площади. */
+  const ea = elemArea(r.code);
+  if(ea !== null) return Math.round((p * h - ea) * 100) / 100;
   return Math.round((p * h - w * S_WIN - d * S_DOOR) * 100) / 100;
 }
 
@@ -1086,6 +1150,220 @@ async function roomSaveZero(code, col){
     await load();
     render();
   }catch(e){ toast(e.message, "err"); }
+}
+
+/* ── Правка проёма [чат 031] ──────────────────────────────────────────
+   Судьба отделена от факта нарочно: факт — что застали, судьба — что делаем.
+   Смешать их значит потерять «дверь есть, но мы её не трогаем» — а именно это
+   Дмитрий сказал про входную. Пишем по одному полю: у каждой правки свой след
+   в журнале, как у всякой записи через /update. */
+let ELEM_BUSY = false;
+
+/* Блок проёмов в карточке помещения. Показывает вещь, а не число: куда ведёт,
+   что здесь сейчас, что делаем — и отдельной строкой расхождение с планом БТИ. */
+function elemBlock(r){
+  const list = elemOf(r.code);
+  const gaps = list.filter(elemGap).length;
+  const d = elemDelta(r);
+  if(!list.length){
+    return '<div class="m" style="margin-top:8px">Проёмы этого помещения не заведены ' +
+      '<button onclick="elemAdd(\'' + esc(r.code) + '\')" style="margin-left:6px;padding:6px 10px;border-radius:9px;border:0;background:#3a3a3c;color:#fff;font-size:13px">Добавить проём</button></div>';
+  }
+  const rows = list.map(e => {
+    const fate = e.fate ? e.fate : (e.fact === "нет" ? "нечего делать" : "судьба не задана");
+    return '<div onclick="elemEdit(\'' + esc(e.id) + '\')" style="margin-top:6px;padding:8px 10px;border-radius:10px;background:rgba(255,255,255,.06);cursor:pointer">' +
+      '<div>' + esc(String(e.fact || "?")) + ' · ' + esc(elemSideName(e, r.code)) + '</div>' +
+      '<div class="m">' + esc(fate) +
+        (elemGap(e) ? ' · <span style="color:#ff9f0a">на плане ' + esc(e.plan) + '</span>' : '') + '</div></div>';
+  }).join("");
+  const numLine = d
+    ? '<div class="m" style="margin-top:6px;color:#ff9f0a">По схеме окон ' + d.w + ', дверей ' + d.d +
+      ' — в обмерах ' + fmt(r.windows === null || r.windows === undefined || r.windows === "" ? 0 : r.windows) + ' и ' +
+      fmt(r.doors === null || r.doors === undefined || r.doors === "" ? 0 : r.doors) +
+      ' <button onclick="elemApplyNums(\'' + esc(r.code) + '\')" style="margin-left:6px;padding:6px 10px;border-radius:9px;border:0;background:#3a3a3c;color:#fff;font-size:13px">Привести к схеме</button></div>'
+    : "";
+  return '<div class="m" style="margin-top:8px">Проёмы: ' + list.length +
+      (gaps ? ' · расходятся с планом: ' + gaps : '') +
+      ' <button onclick="elemAdd(\'' + esc(r.code) + '\')" style="margin-left:6px;padding:6px 10px;border-radius:9px;border:0;background:#3a3a3c;color:#fff;font-size:13px">Добавить</button></div>' +
+    rows + numLine;
+}
+
+function elemEdit(id){
+  const e = elemAll().find(x => x.id === id);
+  if(!e) return;
+  const btn = (field, val, cur) =>
+    '<button onclick="elemSet(\'' + esc(id) + '\',\'' + field + '\',\'' + esc(val) + '\')" ' +
+      'style="padding:9px 12px;border-radius:10px;border:0;font-size:14px;margin:0 6px 6px 0;' +
+      (val === cur ? 'background:#0a84ff;color:#fff' : 'background:#3a3a3c;color:#fff') + '">' + esc(val) + '</button>';
+  const nm = String(e.name || e.id);
+  openVSheet(
+    '<div class="vh">' + esc(nm) + '</div>' +
+    '<div class="vs">' + esc(String(e.a || "")) + ' ↔ ' + esc(String(e.b || "")) +
+      (elemGap(e) ? ' · по плану ' + esc(e.plan) + ', по факту ' + esc(e.fact) : '') + '</div>' +
+    '<div class="vd" style="margin-top:8px">Что здесь сейчас</div>' +
+    '<div>' + ELEM_FACTS.map(v => btn('Тип_факт', v, e.fact)).join('') + '</div>' +
+    '<div class="vd" style="margin-top:10px">Что было на плане БТИ</div>' +
+    '<div>' + ELEM_FACTS.map(v => btn('Тип_план', v, e.plan)).join('') + '</div>' +
+    '<div class="vd" style="margin-top:10px">Что делаем в ремонте</div>' +
+    '<div>' + ELEM_FATES.map(v => btn('Судьба', v, e.fate)).join('') +
+      '<button onclick="elemSet(\'' + esc(id) + '\',\'Судьба\',\'\')" style="padding:9px 12px;border-radius:10px;border:0;background:#3a3a3c;color:#fff;font-size:14px;margin:0 6px 6px 0">не решено</button></div>' +
+    (e.note ? '<div class="vd" style="margin-top:10px">' + esc(e.note) + '</div>' : '') +
+    '<div class="vrow"><button class="vbtn-cancel" onclick="closeVSheet()">Закрыть</button></div>');
+}
+
+async function elemSet(id, field, value){
+  if(ELEM_BUSY) return;                       // замок от двойного тапа
+  ELEM_BUSY = true;
+  try{
+    await writeCell("13_Элементы", id, field, value);
+    const e = elemAll().find(x => x.id === id);
+    if(e){ e[field === "Тип_факт" ? "fact" : (field === "Тип_план" ? "plan" : "fate")] = value; }
+    toast("Записано");
+    closeVSheet();
+    render();
+  }catch(err){ toast(err.message, "err"); }
+  ELEM_BUSY = false;
+}
+
+/* Новый проём. Сторону B выбирают из соседей помещения плюс «улица» и
+   «подъезд»: проём в никуда невозможен — окно ведёт на улицу, входная дверь
+   в подъезд, и пустая сторона сломала бы обход графа. */
+function elemAdd(code){
+  const near = ((D.adjacency || []).find(a => a.code === code) || {}).near || [];
+  const opts = near.concat(["улица", "подъезд"]);
+  const rn = (c) => { const r = (D.rooms || []).find(x => x.code === c); return r ? String(r.name || c).split(" (")[0] : c; };
+  openVSheet(
+    '<div class="vh">Новый проём</div>' +
+    '<div class="vs">' + esc(rn(code)) + ' — куда он ведёт?</div>' +
+    '<div>' + opts.map(o =>
+      '<button onclick="elemNew(\'' + esc(code) + '\',\'' + esc(o) + '\')" style="padding:10px 13px;border-radius:10px;border:0;background:#3a3a3c;color:#fff;font-size:14px;margin:0 6px 6px 0">' +
+        esc(rn(o)) + '</button>').join('') + '</div>' +
+    '<div class="vd" style="margin-top:8px">Тип и судьбу зададите следующим шагом.</div>' +
+    '<div class="vrow"><button class="vbtn-cancel" onclick="closeVSheet()">Отмена</button></div>');
+}
+
+function elemNextId(){
+  let mx = 0;
+  elemAll().forEach(e => { const m = String(e.id || "").match(/^EL-(\d+)$/); if(m) mx = Math.max(mx, Number(m[1])); });
+  return "EL-" + String(mx + 1).padStart(2, "0");
+}
+
+async function elemNew(a, b){
+  if(ELEM_BUSY) return;
+  ELEM_BUSY = true;
+  const id = elemNextId();
+  const rn = (c) => { const r = (D.rooms || []).find(x => x.code === c); return r ? String(r.name || c).split(" (")[0] : c; };
+  try{
+    await crewAppend("13_Элементы", [{
+      "id": id, "Сторона_A": a, "Сторона_B": b,
+      "Тип_план": "", "Тип_факт": "дверь", "Судьба": "",
+      "Название": rn(a) + " ↔ " + rn(b), "Ширина_м": "", "Высота_м": "",
+      "Примечание": "добавлен вручную", "Обновлено": chgStamp(),
+    }]);
+    toast("Проём добавлен");
+    closeVSheet();
+    await load();
+    render();
+  }catch(e){ toast(e.message, "err"); }
+  ELEM_BUSY = false;
+}
+
+/* Построение схемы из того, что уже введено [чат 031]. Распознавать план БТИ
+   картинкой мы не умеем и не обещаем: план уже прожит человеком, когда он
+   вводил обмеры и смежность. По ребру графа — внутренний проём, по числу окон
+   — окна на улицу, лишние двери сверх числа соседей — внешние. Тип угадывается
+   числами: пока у обеих сторон осталась неизрасходованная дверь — это дверь,
+   иначе проём. Заготовка не претендует на истину, она даёт что править. */
+function elemPlan(){
+  const rooms = roomList();
+  const left = {};
+  rooms.forEach(r => { left[r.code] = { d: Number(r.doors) || 0, w: Number(r.windows) || 0 }; });
+  const seen = {}, out = [];
+  const pairs = [];
+  (D.adjacency || []).forEach(a => (a.near || []).forEach(b => {
+    const k = [a.code, b].sort().join("|");
+    if(seen[k]) return;
+    seen[k] = 1; pairs.push(k.split("|"));
+  }));
+  pairs.sort((x, y) => (x[0] + x[1]).localeCompare(y[0] + y[1], "ru"));
+  pairs.forEach(p => {
+    const a = p[0], b = p[1];
+    const la = left[a] || { d: 0 }, lb = left[b] || { d: 0 };
+    const isDoor = la.d > 0 && lb.d > 0;
+    if(isDoor){ la.d--; lb.d--; }
+    out.push({ a: a, b: b, fact: isDoor ? "дверь" : "проём" });
+  });
+  rooms.forEach(r => {
+    const l = left[r.code] || { d: 0, w: 0 };
+    for(let i = 0; i < l.w; i++) out.push({ a: r.code, b: "улица", fact: "окно" });
+    for(let i = 0; i < l.d; i++) out.push({ a: r.code, b: "подъезд", fact: "дверь" });
+  });
+  return out;
+}
+
+function elemBuild(){
+  const plan = elemPlan();
+  if(!plan.length){ toast("Нечего строить: нет ни смежности, ни проёмов", "err"); return; }
+  const rn = (c) => { const r = (D.rooms || []).find(x => x.code === c); return r ? String(r.name || c).split(" (")[0] : c; };
+  const rows = plan.slice(0, 14).map(p =>
+    '<div class="vitem sel"><div class="vchk">✓</div><div style="flex:1;min-width:0">' +
+      '<div class="vv">' + esc(rn(p.a)) + ' ↔ ' + esc(rn(p.b)) + '</div>' +
+      '<div class="vd">' + esc(p.fact) + '</div></div></div>').join("");
+  openVSheet(
+    '<div class="vh">Схема проёмов</div>' +
+    '<div class="vs">Соберу ' + plan.length + ' проёмов из смежности помещений и чисел окон и дверей. ' +
+      'План и факт совпадут — расхождения вы назовёте потом, голосом или руками.</div>' +
+    '<div id="vlist">' + rows + '</div>' +
+    (plan.length > 14 ? '<div class="vd">и ещё: ' + (plan.length - 14) + '</div>' : '') +
+    '<div class="vrow">' +
+      '<button class="vbtn-cancel" onclick="closeVSheet()">Отмена</button>' +
+      '<button class="vbtn-ok" id="elemGo" onclick="elemBuildGo()">Построить</button>' +
+    '</div>');
+}
+
+async function elemBuildGo(){
+  const btn = document.getElementById("elemGo");
+  if(ELEM_BUSY || (btn && btn.disabled)) return;      // замок от двойного тапа
+  ELEM_BUSY = true;
+  if(btn){ btn.disabled = true; btn.textContent = "Строю…"; }
+  const plan = elemPlan();
+  const rn = (c) => { const r = (D.rooms || []).find(x => x.code === c); return r ? String(r.name || c).split(" (")[0] : c; };
+  let n = 0;
+  const rows = plan.map(p => {
+    n++;
+    return {
+      "id": "EL-" + String(n).padStart(2, "0"), "Сторона_A": p.a, "Сторона_B": p.b,
+      "Тип_план": p.fact, "Тип_факт": p.fact, "Судьба": "",
+      "Название": rn(p.a) + " ↔ " + rn(p.b), "Ширина_м": "", "Высота_м": "",
+      "Примечание": "схема построена из смежности", "Обновлено": chgStamp(),
+    };
+  });
+  try{
+    await crewAppend("13_Элементы", rows);
+    closeVSheet();
+    toast("Схема построена: " + rows.length + " проёмов");
+    await load();
+    render();
+  }catch(e){ toast(e.message, "err"); }
+  ELEM_BUSY = false;
+}
+
+/* Пересчёт чисел окон и дверей по схеме. Как и стены, предлагается кнопкой:
+   на этих числах стоят объёмы работ по откосам, подоконникам и наличникам. */
+async function elemApplyNums(code){
+  const r = roomList().find(x => x.code === code);
+  const d = elemDelta(r);
+  if(!r || !d){ toast("Расхождения нет", "err"); return; }
+  if(ELEM_BUSY) return;
+  ELEM_BUSY = true;
+  try{
+    if(d.needW) await writeCell("06_Помещения", code, "Окон_шт", String(d.w));
+    if(d.needD) await writeCell("06_Помещения", code, "Дверей_шт", String(d.d));
+    toast("Числа приведены к схеме");
+    await load();
+    render();
+  }catch(e){ toast(e.message, "err"); }
+  ELEM_BUSY = false;
 }
 
 /* Переход из подсказки к карточке помещения [чат 029]. Требование Дмитрия:
@@ -2180,6 +2458,10 @@ const OBJ_SHEETS = [
   { sheet: "10_Приёмка", header: ["id","Время","Заявитель","Код","Поле","Значение","Статус","Решил","Комментарий"] },
   { sheet: "11_Изменения", header: ["id","Время","Инициатор","Вид","Код_работы","Что_меняем","Было","Стало","Дельта_USD","Дельта_дней","Статус","Решил","Комментарий"] },
   { sheet: "12_Смежность", header: ["Код","Помещение","Смежные","Примечание"] },
+  /* 13_Элементы [чат 031] — схема проёмов. У нового объекта заводится сразу,
+     у существующих остаётся необязательным: сервер не требует его в need_setup,
+     иначе все объекты разом стали бы «не подготовленными». */
+  { sheet: "13_Элементы", header: ["id","Сторона_A","Сторона_B","Тип_план","Тип_факт","Судьба","Название","Ширина_м","Высота_м","Примечание","Обновлено"] },
 ];
 let OBJ_BUSY = false;
 function renderSetup(d){
@@ -3769,12 +4051,29 @@ object(){
          как первый ввод. */
       inpFor("Окон_шт", "win_" + r.code, need(r.windows) ? "сколько окон" : "окон сейчас " + fmt(r.windows)) +
       inpFor("Дверей_шт", "dr_" + r.code, need(r.doors) ? "сколько дверей" : "дверей сейчас " + fmt(r.doors)) +
+      elemBlock(r) +
       '<div class="m" style="margin-top:8px">Из чего попадаем в помещение:</div><div>' + adjChips(r.code) + "</div>" +
       "</div>";
   }).join("");
   const planBox = plan
     ? '<div id="objPlanBox" class="stat"><div class="m">План БТИ загружен — открываю…</div></div>'
     : '<div class="stat"><span class="k">План БТИ ещё не загружен. Сфотографируйте его — он нужен глазам, размеры приедут голосом.</span></div>';
+  /* Схема проёмов [чат 031]: пока её нет — предлагаем построить из введённого;
+     когда есть — показываем, где план БТИ разошёлся с фактом. Ради этой строки
+     всё и затевалось: «у многих расходится план с фактом». */
+  const els = elemAll(), egaps = elemGaps();
+  const schemaBox = !els.length
+    ? '<div class="stat"><span class="k">Схема проёмов не заведена. Соберу её из смежности помещений и чисел окон и дверей — дальше правится голосом и руками: где дверь заложена, где вместо окна арка, что меняем, а что не трогаем.</span>' +
+      '<button onclick="elemBuild()" style="width:100%;margin-top:10px;padding:11px;border-radius:11px;border:0;background:#0a84ff;color:#fff;font-size:15px">Построить схему проёмов</button></div>'
+    : '<div class="stat">' +
+        '<div class="r"><span class="k">Схема проёмов</span><span class="v">' + els.length + '</span></div>' +
+        '<div class="m">' + (egaps.length
+          ? ('Расходятся с планом БТИ: ' + egaps.length + ' — ' + egaps.slice(0, 4).map(e => esc(String(e.name || e.id))).join(", ") +
+             (egaps.length > 4 ? " и ещё " + (egaps.length - 4) : ""))
+          : "План и факт сходятся везде") + '</div>' +
+        '<div class="m" style="margin-top:6px;opacity:.75">Судьба задана у ' + els.filter(e => e.fate).length + ' из ' + els.length +
+        '. Объём работ по дверям и окнам считается по этим проёмам.</div>' +
+      '</div>';
   return "" +
     '<div class="hello">Объект</div>' +
     '<div class="sub">' + rooms.length + " помещений" + (gap.length ? (" · в " + gap.length + " не заданы проёмы") : " · обмеры полны") + "</div>" +
@@ -3783,6 +4082,7 @@ object(){
       '<button class="tile" onclick="objPick()"><span class="ic">🗺️</span><span class="nm">' + (plan ? "Заменить план" : "Загрузить план") + '</span><div class="h">фото плана БТИ</div></button>' +
     "</div>" +
     planBox +
+    schemaBox +
     (gap.length ? ('<div class="warnbox" id="objGap">' +
       '<div>Пока не заданы окна и двери, объёмы работ по откосам, подоконникам и наличникам считаются наугад.</div>' +
       gap.map(r => '<div onclick="objGoRoom(\'' + esc(r.code) + '\')" style="margin-top:6px;padding:8px 10px;border-radius:10px;background:rgba(255,255,255,.06);cursor:pointer">' +
@@ -4907,6 +5207,21 @@ let UZ_OBS = null;
 
 /* Точные надписи. Ключ — строка целиком, как она приходит в текстовый узел. */
 const UZ = {
+"Схема проёмов":"Ochiqlar sxemasi","Построить схему проёмов":"Ochiqlar sxemasini tuzish","Построить":"Tuzish","Строю…":"Tuzilmoqda…",
+"План и факт сходятся везде":"Reja va dalil hamma joyda mos","Новый проём":"Yangi ochiq","Добавить проём":"Ochiq qo'shish","Добавить":"Qo'shish",
+"Что здесь сейчас":"Hozir bu yerda nima bor","Что было на плане БТИ":"BTI rejasida nima bor edi","Что делаем в ремонте":"Ta'mirda nima qilamiz",
+"Тип и судьбу зададите следующим шагом.":"Turi va taqdirini keyingi qadamda belgilaysiz.",
+"Проём добавлен":"Ochiq qo'shildi","Числа приведены к схеме":"Sonlar sxemaga keltirildi","Расхождения нет":"Farq yo'q",
+"Привести к схеме":"Sxemaga keltirish","судьба не задана":"taqdiri belgilanmagan","нечего делать":"qiladigan narsa yo'q","не решено":"hal qilinmagan",
+"дверь":"eshik","окно":"deraza","проём":"ochiq","нет":"yo'q",
+"не трогаем":"tegmaymiz","заменить":"almashtirish","демонтировать":"demontaj","заложить":"berkitish","пробить":"ochish","перенести":"ko'chirish","установить":"o'rnatish",
+"Нечего строить: нет ни смежности, ни проёмов":"Tuzadigan narsa yo'q: na qo'shnilik, na ochiqlar bor",
+"Проёмы этого помещения не заведены":"Bu xonaning ochiqlari kiritilmagan",
+"улица":"ko'cha","подъезд":"podezd",
+"на плане дверь":"rejada eshik","на плане окно":"rejada deraza","на плане проём":"rejada ochiq","на плане нет":"rejada yo'q",
+"сумма договора, $":"shartnoma summasi, $",
+"Схема проёмов не заведена. Соберу её из смежности помещений и чисел окон и дверей — дальше правится голосом и руками: где дверь заложена, где вместо окна арка, что меняем, а что не трогаем.":"Ochiqlar sxemasi kiritilmagan. Uni xonalar qo'shniligi va deraza-eshik sonidan yig'aman — keyin ovoz va qo'l bilan tuzatiladi: qayerda eshik berkitilgan, qayerda deraza o'rniga ravoq, nimani almashtiramiz, nimaga tegmaymiz.",
+"План БТИ загружен — открываю…":"BTI rejasi yuklangan — ochilmoqda…",
 "Изменить время":"Vaqtni o'zgartirish","В том числе изменения":"Shu jumladan o'zgarishlar","Заявить":"Bildirish","Принять правку":"Tuzatishni qabul qilish",
 "Оспорить правку":"Tuzatishga e'tiroz","Время то же самое — менять нечего":"Vaqt o'sha — o'zgartiradigan narsa yo'q",
 "По этой отметке уже заявлена правка":"Bu belgi bo'yicha tuzatish allaqachon bildirilgan",
@@ -5316,6 +5631,28 @@ const UZ = {
 /* Шаблоны: строка содержит данные (числа, коды, названия) — переводим обвязку,
    данные оставляем на месте. Порядок важен: правила идут сверху вниз. */
 const UZ_RULES = [
+  /* Строки схемы проёмов [чат 031]: числа внутри, поэтому шаблонами, а не
+     точными надписями (правило слоя 020). Формат правил — [регэксп, строка
+     замены с $1], как у всех прежних: функция-заменитель здесь получила бы
+     первым доводом саму строку совпадения, а не массив, и вместо числа в текст
+     подставилась бы буква (поймано метрикой покрытия). */
+  /* Число листов объекта выросло с 12 до 13 [чат 031], и точная надпись про
+     «12 штук» перестала совпадать со словарём. Шаблон вместо неё — чтобы
+     следующий лист не потребовал править словарь снова (урок 020: правка
+     русской надписи без словаря молча теряет перевод). */
+  [/^Кнопка ниже создаст недостающие листы объекта \((\d+) штук\) с правильными шапками\. Существующие листы не тронутся — их данные останутся как есть\.$/,
+    "Quyidagi tugma obyektning yetishmayotgan varaqlarini ($1 ta) to’g’ri sarlavhalar bilan yaratadi. Mavjud varaqlar tegilmaydi — ulardagi ma’lumot o’z holicha qoladi."],
+  [/^Проёмы: (\d+)$/, "Ochiqlar: $1"],
+  [/^Проёмы: (\d+) · расходятся с планом: (\d+)$/, "Ochiqlar: $1 · reja bilan farq qiladi: $2"],
+  [/^Расходятся с планом БТИ: (\d+) — (.+)$/, "BTI rejasi bilan farq qiladi: $1 — $2"],
+  [/^Судьба задана у (\d+) из (\d+)\. Объём работ по дверям и окнам считается по этим проёмам\.$/,
+    "Taqdiri $2 tadan $1 tasida belgilangan. Eshik va derazalar bo\u2019yicha ish hajmi shu ochiqlar bo\u2019yicha hisoblanadi."],
+  [/^Схема построена: (\d+) проёмов$/, "Sxema tuzildi: $1 ochiq"],
+  [/^Соберу (\d+) проёмов из смежности помещений и чисел окон и дверей\. (.+)$/,
+    "$1 ta ochiqni xonalar qo\u2019shniligi va deraza-eshik sonidan yig\u2019aman. $2"],
+  [/^По схеме окон (\d+), дверей (\d+) — в обмерах ([\d.,]+) и ([\d.,]+)$/,
+    "Sxema bo\u2019yicha deraza $1, eshik $2 — o\u2019lchovlarda $3 va $4"],
+
   /* Ночная отметка [чат 028]: окно называет сутки, куда она ляжет. День внутри
      строки — служебное слово, поэтому шаблон разбирает оба варианта отдельно,
      а не отдаёт «сегодня/вчера» общей подстановке. */
@@ -5661,7 +5998,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "030.1";
+const BUILD = "031.1";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
