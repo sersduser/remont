@@ -1358,6 +1358,11 @@ function planMarks(){
    не то же самое, что отсутствующее»). */
 const planHas = (m, kind, id) => Object.prototype.hasOwnProperty.call(m[kind] || {}, id);
 const planMarked = m => Object.keys((m || {}).rooms || {}).length;
+/* Подпись помещения без служебного «(пом. N)» — как на графе [чат 039]:
+   восемь длинных плашек на одном плане наезжают друг на друга, а номер
+   помещения человеку на плане не нужен. У проёмов скобка значимая
+   («Зал ↔ Кухня (заложена)») и не срезается. */
+const planShort = s => String(s || "").split(" (")[0];
 
 async function planMarksSave(m){
   const val = JSON.stringify({ v: 1, img: m.img || "", rooms: m.rooms || {}, elems: m.elems || {} });
@@ -1377,7 +1382,7 @@ async function planMarksSave(m){
    и ничего не блокирует (решение 031: путь «этого ещё нет» обязан работать). */
 function planQueue(m){
   const q = [];
-  roomList().forEach(r => { if(!planHas(m, "rooms", r.code)) q.push({ t: "rooms", id: r.code, name: String(r.name || r.code) }); });
+  roomList().forEach(r => { if(!planHas(m, "rooms", r.code)) q.push({ t: "rooms", id: r.code, name: planShort(r.name || r.code) }); });
   elemAll().forEach(e => { if(!planHas(m, "elems", String(e.id))) q.push({ t: "elems", id: String(e.id), name: String(e.name || e.id) }); });
   return q;
 }
@@ -1404,7 +1409,7 @@ function planLayer(m){
     ' style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none">' + lines + dots + '</svg>';
   const tags = Object.keys(R).map(code => {
     const r = roomList().filter(x => x.code === code)[0];
-    const p = R[code], nm = r ? String(r.name || code) : code;
+    const p = R[code], nm = r ? planShort(r.name || code) : code;
     return '<div style="position:absolute;left:' + (p[0] * 100) + '%;top:' + (p[1] * 100) + '%;' +
       'transform:translate(-50%,-50%);background:rgba(28,28,30,.86);color:#fff;font-size:11px;' +
       'padding:3px 7px;border-radius:8px;white-space:nowrap;pointer-events:none">' + esc(nm) + '</div>';
@@ -1435,10 +1440,14 @@ function planMarkDraw(){
   }
   const cur = PMQ[PMI] || null;
   const left = PMQ.length - PMI;
+  /* Пройденная очередь и пустая очередь — разные вещи: пропущенное никуда
+     не делось, и человек должен видеть, что записывает не всё [чат 039]. */
   const head = cur
     ? '<div class="vs">Отметьте на плане: <b>' + esc(cur.name) + '</b></div>' +
       '<div class="m" style="margin-bottom:8px">Осталось отметить: ' + left + '</div>'
-    : '<div class="vs">Всё отмечено. Нажмите «Готово», чтобы записать.</div>';
+    : (PMQ.length
+      ? '<div class="vs">Пропущено: ' + PMQ.length + '. Их можно отметить позже — кнопкой «Дополнить разметку». Нажмите «Готово», чтобы записать отмеченное.</div>'
+      : '<div class="vs">Всё отмечено. Нажмите «Готово», чтобы записать.</div>');
   box.innerHTML =
     '<div class="vh" style="color:#fff">Разметка плана</div>' + head +
     '<div id="pmkWrap" style="position:relative">' +
@@ -1450,11 +1459,57 @@ function planMarkDraw(){
       (cur ? '<button class="vbtn-cancel" onclick="planMarkSkip()">Пропустить</button>' : "") +
       '<button class="vbtn-ok" id="pmkOk" onclick="planMarkDone()">Готово</button>' +
     '</div>' +
-    '<div class="m" style="margin-top:8px">Тычок ставит метку. Пока не нажато «Готово», в лист не уходит ничего.</div>';
+    '<div class="m" style="margin-top:8px">Тычок ставит метку. Пока не нажато «Готово», в лист не уходит ничего.</div>' +
+    planMarkChips();
   const img = document.getElementById("pmkImg");
   if(img) img.onclick = planMarkTap;
 }
-function planMarkSkip(){ PMI++; planMarkDraw(); }
+/* «Пропустить» переносит пункт в конец очереди, а не сдвигает индекс мимо
+   него [чат 039]. Раньше пропущенное в этом сеансе больше не предлагалось,
+   и вернуться к нему можно было только следующим заходом. Защита от кольца:
+   когда всё оставшееся уже пропускали, очередь считается пройденной —
+   человек видит итог и записывает, а не ходит по кругу. */
+function planMarkSkip(){
+  if(PMI >= PMQ.length) return;
+  const c = PMQ.splice(PMI, 1)[0];
+  c.sk = 1;
+  PMQ.push(c);
+  if(PMQ.slice(PMI).every(x => x.sk)) PMI = PMQ.length;
+  planMarkDraw();
+}
+/* Правка поставленной метки [чат 039, дыра 037.2]. Касание пункта в списке
+   снимает метку и ставит пункт текущим: ткнул по плану заново — переставил,
+   нажал «Пропустить» — оставил снятым. Пункт вставляется на место текущего,
+   а не в конец, — иначе человек не понял бы, куда делось то, что он выбрал. */
+function planMarkRedo(kind, id){
+  if(!PMK) return;
+  const key = String(id);
+  const r = kind === "rooms" ? roomList().filter(x => String(x.code) === key)[0] : null;
+  const e = kind === "elems" ? elemAll().filter(x => String(x.id) === key)[0] : null;
+  const name = r ? planShort(r.name || key) : (e ? String(e.name || key) : key);
+  delete PMK[kind][key];
+  PMQ = PMQ.filter(x => !(x.t === kind && String(x.id) === key));
+  if(PMI > PMQ.length) PMI = PMQ.length;
+  PMQ.splice(PMI, 0, { t: kind, id: key, name: name });
+  planMarkDraw();
+}
+/* Список отмеченного под планом: он же — единственный путь к правке. */
+function planMarkChips(){
+  if(!PMK) return "";
+  const items = [];
+  roomList().forEach(r => {
+    if(planHas(PMK, "rooms", r.code)) items.push({ t: "rooms", id: String(r.code), name: planShort(r.name || r.code) });
+  });
+  elemAll().forEach(e => {
+    if(planHas(PMK, "elems", String(e.id))) items.push({ t: "elems", id: String(e.id), name: String(e.name || e.id) });
+  });
+  if(!items.length) return "";
+  return '<div class="m" style="margin-top:10px">Отмечено: ' + items.length + " — коснитесь, чтобы переставить</div>" +
+    '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px">' +
+    items.map(x => '<button onclick="planMarkRedo(\'' + x.t + '\',\'' + esc(x.id) + '\')" ' +
+      'style="padding:6px 10px;border-radius:9px;border:0;background:#2c2c2e;color:#fff;font-size:13px">' +
+      esc(x.name) + "</button>").join("") + "</div>";
+}
 /* Координаты берём относительно самой картинки, а не окна: страница
    прокручивается, и разница вылезла бы только на длинном плане. */
 function planMarkTap(ev){
@@ -6471,6 +6526,15 @@ const UZ_RULES = [
      русской надписи без словаря молча теряет перевод). */
   [/^Кнопка ниже создаст недостающие листы объекта \((\d+) штук\) с правильными шапками\. Существующие листы не тронутся — их данные останутся как есть\.$/,
     "Quyidagi tugma obyektning yetishmayotgan varaqlarini ($1 ta) to’g’ri sarlavhalar bilan yaratadi. Mavjud varaqlar tegilmaydi — ulardagi ma’lumot o’z holicha qoladi."],
+  /* Разметка плана [чат 039]. Все четыре надписи несут число внутри, поэтому
+     живут здесь, а не в словаре точных строк: две первые остались непереведёнными
+     с 037 — правило «надпись со счётчиком обязана быть шаблоном» всплывает
+     четвёртый раз. */
+  [/^Осталось отметить: (\d+)$/, "Belgilash qoldi: $1"],
+  [/^Отмечено помещений: (\d+) из (\d+)$/, "Belgilangan xonalar: $2 tadan $1 tasi"],
+  [/^Отмечено: (\d+) — коснитесь, чтобы переставить$/, "Belgilandi: $1 — ko'chirish uchun bosing"],
+  [/^Пропущено: (\d+)\. Их можно отметить позже — кнопкой «Дополнить разметку»\. Нажмите «Готово», чтобы записать отмеченное\.$/,
+    "O'tkazib yuborildi: $1 ta. Ularni keyinroq «Belgilashni to'ldirish» tugmasi bilan belgilash mumkin. Belgilanganini yozish uchun «Tayyor» tugmasini bosing."],
   /* Объём по судьбе проёма [чат 033]: число внутри — значит шаблон. */
   [/^по схеме: (\d+) из (\d+)$/, "sxema bo'yicha: $2 tadan $1 tasi"],
   /* Счётчик окон на плашке графа [чат 033]. */
@@ -6848,7 +6912,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "037.2";
+const BUILD = "039.1";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
