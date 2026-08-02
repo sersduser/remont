@@ -1325,6 +1325,167 @@ async function sniffImage(blob){
   return "";
 }
 
+/* ══════════════════════════════════════════════════════════════
+   РАЗМЕТКА ПЛАНА БТИ [чат 037, разбор 19]
+   Схема-граф рисует связность, а не географию: «корректная, но не то, что
+   хотелось бы» (живой проход 02.08). Разметка добавляет недостающий слой —
+   место. Человек тыкает пальцем в план, где какая комната и где какая дверь;
+   план по-прежнему НЕ распознаётся (маяк §7) — система только запоминает
+   тычки.
+
+   Координаты — доли от размера картинки (0…1), а не пиксели: панель
+   показывает план в разной ширине на разных телефонах, а доли это переживают.
+
+   Хранение — одной строкой `План_разметка` в `07_Настройки`. Лист открыт
+   на дописывание ролям admin и owner с чата 036, правка строки работает
+   с давних пор: значит и завести разметку, и менять её можно уже сегодня,
+   без единой правки нод (новый лист потребовал бы её — грабля 36). */
+const PLAN_MARK_KEY = "План_разметка";
+let PLAN_URL = "";                     // blob-адрес загруженного плана
+let PMK = null, PMQ = [], PMI = 0;     // рабочая разметка, очередь, место в ней
+
+function planMarks(){
+  const raw = (D.settings || {})[PLAN_MARK_KEY];
+  const empty = { v: 1, img: "", rooms: {}, elems: {} };
+  if(raw == null || String(raw) === "") return empty;
+  try{
+    const o = JSON.parse(String(raw));
+    return { v: o.v || 1, img: String(o.img || ""), rooms: o.rooms || {}, elems: o.elems || {} };
+  }catch(e){ return { v: 1, img: "", rooms: {}, elems: {}, broken: true }; }
+}
+/* Метка в левом верхнем углу — это [0,0], и она существует. Проверять
+   наличие ключа, а не истинность значения (родня грабли 22: «пустое —
+   не то же самое, что отсутствующее»). */
+const planHas = (m, kind, id) => Object.prototype.hasOwnProperty.call(m[kind] || {}, id);
+const planMarked = m => Object.keys((m || {}).rooms || {}).length;
+
+async function planMarksSave(m){
+  const val = JSON.stringify({ v: 1, img: m.img || "", rooms: m.rooms || {}, elems: m.elems || {} });
+  const S = D.settings || (D.settings = {});
+  if(Object.prototype.hasOwnProperty.call(S, PLAN_MARK_KEY)){
+    await writeCell("07_Настройки", PLAN_MARK_KEY, "Значение", val);
+  }else{
+    await crewAppend("07_Настройки", [{ "Параметр": PLAN_MARK_KEY, "Значение": val,
+      "Комментарий": "разметка плана БТИ; доли от размера картинки, 0…1" }]);
+  }
+  S[PLAN_MARK_KEY] = val;
+  return true;
+}
+
+/* Очередь разметки: сперва помещения, потом проёмы. Размеченное в очередь
+   не попадает — незавершённая разметка продолжается с того места, где встала,
+   и ничего не блокирует (решение 031: путь «этого ещё нет» обязан работать). */
+function planQueue(m){
+  const q = [];
+  roomList().forEach(r => { if(!planHas(m, "rooms", r.code)) q.push({ t: "rooms", id: r.code, name: String(r.name || r.code) }); });
+  elemAll().forEach(e => { if(!planHas(m, "elems", String(e.id))) q.push({ t: "elems", id: String(e.id), name: String(e.name || e.id) }); });
+  return q;
+}
+
+/* Слой поверх картинки: линии проёмов между размеченными помещениями,
+   точки у проёмов со своей меткой, плашки помещений. Цвета и штрих те же,
+   что у графа (graphLine) — один язык на обоих видах. */
+function planLayer(m){
+  const R = m.rooms || {}, E = m.elems || {};
+  const els = elemAll();
+  const lines = els.filter(e => R[e.a] && R[e.b]).map(e => {
+    const g = graphLine(e), a = R[e.a], b = R[e.b];
+    const x1 = a[0] * 100, y1 = a[1] * 100, x2 = b[0] * 100, y2 = b[1] * 100;
+    return '<line x1="' + x1 + '" y1="' + y1 + '" x2="' + x2 + '" y2="' + y2 + '" stroke="' + g.color +
+      '" stroke-width="2" vector-effect="non-scaling-stroke"' + (g.dash ? ' stroke-dasharray="' + g.dash + '"' : "") + ' />';
+  }).join("");
+  const dots = Object.keys(E).map(id => {
+    const p = E[id], e = els.filter(x => String(x.id) === String(id))[0];
+    const g = e ? graphLine(e) : { color: "#0a84ff" };
+    return '<circle cx="' + (p[0] * 100) + '" cy="' + (p[1] * 100) + '" r="1.4" fill="' + g.color +
+      '" stroke="#000" stroke-width="0.3" />';
+  }).join("");
+  const svg = '<svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true"' +
+    ' style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none">' + lines + dots + '</svg>';
+  const tags = Object.keys(R).map(code => {
+    const r = roomList().filter(x => x.code === code)[0];
+    const p = R[code], nm = r ? String(r.name || code) : code;
+    return '<div style="position:absolute;left:' + (p[0] * 100) + '%;top:' + (p[1] * 100) + '%;' +
+      'transform:translate(-50%,-50%);background:rgba(28,28,30,.86);color:#fff;font-size:11px;' +
+      'padding:3px 7px;border-radius:8px;white-space:nowrap;pointer-events:none">' + esc(nm) + '</div>';
+  }).join("");
+  return svg + tags;
+}
+
+function planMarkStart(){
+  if(!PLAN_URL){ toast("План ещё не загрузился", "wait"); return; }
+  PMK = planMarks();
+  PMQ = planQueue(PMK);
+  PMI = 0;
+  planMarkDraw();
+}
+function planMarkClose(){
+  const box = document.getElementById("pmkBox");
+  if(box) box.remove();
+  PMK = null; PMQ = []; PMI = 0;
+}
+function planMarkDraw(){
+  let box = document.getElementById("pmkBox");
+  if(!box){
+    box = document.createElement("div");
+    box.id = "pmkBox";
+    box.style.cssText = "position:fixed;inset:0;z-index:9997;background:#000;overflow-y:auto;" +
+      "padding:14px 14px calc(16px + env(safe-area-inset-bottom,0px))";
+    document.body.appendChild(box);
+  }
+  const cur = PMQ[PMI] || null;
+  const left = PMQ.length - PMI;
+  const head = cur
+    ? '<div class="vs">Отметьте на плане: <b>' + esc(cur.name) + '</b></div>' +
+      '<div class="m" style="margin-bottom:8px">Осталось отметить: ' + left + '</div>'
+    : '<div class="vs">Всё отмечено. Нажмите «Готово», чтобы записать.</div>';
+  box.innerHTML =
+    '<div class="vh" style="color:#fff">Разметка плана</div>' + head +
+    '<div id="pmkWrap" style="position:relative">' +
+      '<img id="pmkImg" src="' + PLAN_URL + '" alt="План БТИ" style="width:100%;display:block;border-radius:12px">' +
+      planLayer(PMK) +
+    '</div>' +
+    '<div class="vrow" style="margin-top:12px">' +
+      '<button class="vbtn-cancel" onclick="planMarkClose()">Отмена</button>' +
+      (cur ? '<button class="vbtn-cancel" onclick="planMarkSkip()">Пропустить</button>' : "") +
+      '<button class="vbtn-ok" id="pmkOk" onclick="planMarkDone()">Готово</button>' +
+    '</div>' +
+    '<div class="m" style="margin-top:8px">Тычок ставит метку. Пока не нажато «Готово», в лист не уходит ничего.</div>';
+  const img = document.getElementById("pmkImg");
+  if(img) img.onclick = planMarkTap;
+}
+function planMarkSkip(){ PMI++; planMarkDraw(); }
+/* Координаты берём относительно самой картинки, а не окна: страница
+   прокручивается, и разница вылезла бы только на длинном плане. */
+function planMarkTap(ev){
+  const cur = PMQ[PMI];
+  if(!cur || !PMK) return;
+  const r = ev.currentTarget.getBoundingClientRect();
+  if(!r.width || !r.height) return;
+  const x = Math.min(1, Math.max(0, (ev.clientX - r.left) / r.width));
+  const y = Math.min(1, Math.max(0, (ev.clientY - r.top) / r.height));
+  PMK[cur.t][cur.id] = [Math.round(x * 1000) / 1000, Math.round(y * 1000) / 1000];
+  PMI++;
+  planMarkDraw();
+}
+async function planMarkDone(){
+  if(!PMK) return;
+  const btn = document.getElementById("pmkOk");
+  if(btn){ btn.disabled = true; btn.textContent = "Записываю…"; }
+  try{
+    const p = objPlan();
+    PMK.img = p ? String(p.file_id || p.id || "") : "";
+    await planMarksSave(PMK);
+    toast("Разметка плана записана");
+    planMarkClose();
+    await load();
+    render();
+  }catch(e){
+    toast(e.message, "err");
+    if(btn){ btn.disabled = false; btn.textContent = "Готово"; }
+  }
+}
+
 async function objShowPlan(){
   const box = document.getElementById("objPlanBox");
   const p = objPlan();
@@ -1340,8 +1501,25 @@ async function objShowPlan(){
     if(!type){ console.warn("file: тип «" + hdr + "», байт " + ((raw && raw.size) || 0)); throw new Error("Сервер не отдал изображение"); }
     const b = (raw.type === type) ? raw : new Blob([raw], { type: type });
     const u = URL.createObjectURL(b);
-    box.innerHTML = '<img src="' + u + '" alt="План БТИ" style="width:100%;border-radius:12px;display:block">' +
-      '<div class="m" style="margin-top:6px">Загружен ' + esc(p.at || "") + " · " + esc(p.who || "") + "</div>";
+    /* Адрес картинки живёт до конца сеанса: экран разметки берёт его отсюда
+       и не качает план второй раз [чат 037]. */
+    PLAN_URL = u;
+    const mk = planMarks();
+    const marked = planMarked(mk);
+    const total = roomList().length;
+    const stale = mk.img && p && String(mk.img) !== String(p.file_id || p.id || "");
+    box.innerHTML = '<div style="position:relative">' +
+        '<img src="' + u + '" alt="План БТИ" style="width:100%;border-radius:12px;display:block">' +
+        (marked ? planLayer(mk) : "") +
+      "</div>" +
+      '<div class="m" style="margin-top:6px">Загружен ' + esc(p.at || "") + " · " + esc(p.who || "") + "</div>" +
+      (stale ? '<div class="m" style="color:#ff9f0a">Метки остались от прежнего снимка плана — проверьте их.</div>' : "") +
+      '<div class="m" style="margin-top:4px">' + (marked
+        ? ("Отмечено помещений: " + marked + " из " + total)
+        : "Помещения на плане не отмечены. Разметка — это тычки пальцем: где какая комната и где какая дверь.") + "</div>" +
+      '<button onclick="planMarkStart()" style="width:100%;margin-top:8px;padding:11px;border-radius:11px;' +
+        'border:0;background:#2c2c2e;color:#fff;font-size:15px">' +
+        (marked ? "Дополнить разметку" : "Разметить план") + "</button>";
   }catch(e){
     box.innerHTML = '<div class="m" style="color:#ff453a">План не открылся: ' + esc(e.message) + "</div>";
   }
@@ -5258,7 +5436,7 @@ function toggleVItem(i){
 /* Применяем выбранные — по одной записи через тот же /update. */
 async function applyVoice(){
   const chosen = vItems.filter(x => x._sel);
-  if(!chosen.length){ toast("Ничего не отмечено", "wait"); return; }
+  if(!chosen.length){ toast("Ничего не отмечено — коснитесь строки, чтобы отметить", "wait"); return; }
   const btn = document.getElementById("vapply");
   if(btn){ btn.disabled = true; btn.textContent = "Записываю…"; }
   let done = 0, fail = 0;
@@ -5393,6 +5571,12 @@ function showVRooms(d){
     return;
   }
   const conflicts = vRooms.reduce((s, r) => s + r.fields.filter(f => f.conflict).length, 0);
+  /* Сколько строк пришло отмеченными [чат 037]. Ноль означает, что всё
+     сказанное уже стоит в объекте: окно обязано сказать это словами,
+     а кнопке фильтра тут нечего делать. */
+  const selN = vRooms.reduce((s, r) => s
+    + r.fields.filter(f => f._sel).length
+    + (r.elems || []).filter(e => e.isNew ? e._sel : (e.changes || []).some(c => c._sel)).length, 0);
   const rows = vRooms.map((r, i) => {
     const head = `<div class="vt">${esc(r.name || "помещение")}${r.isNew ? ' <span style="color:#ff9f0a">· новое</span>' : ""}</div>`;
     const fl = r.fields.map((f, j) => `
@@ -5426,9 +5610,9 @@ function showVRooms(d){
   }).join("");
   openVSheet(`
     <div class="vh">Обмеры помещений</div>
-    <div class="vs">${conflicts ? "Отмеченное запишу. Значения, которые уже стояли, не отмечены — подтвердите замену вручную." : "Проверьте и подтвердите — запишу в профиль объекта."}</div>
+    <div class="vs">${!selN ? "Нового в сказанном нет: всё это уже записано так. Отметьте строку, если нужно заменить." : (conflicts ? "Отмеченное запишу. Значения, которые уже стояли, не отмечены — подтвердите замену вручную." : "Проверьте и подтвердите — запишу в профиль объекта.")}</div>
     ${quote}
-    <div class="vfilter"><button onclick="vSelOnly(this)">Только отмеченные</button></div>
+    ${selN ? '<div class="vfilter"><button onclick="vSelOnly(this)">Только отмеченные</button></div>' : ""}
     <div id="vlist">${rows}</div>
     <div class="vrow">
       <button class="vbtn-cancel" onclick="closeVSheet()">Отмена</button>
@@ -5462,7 +5646,7 @@ async function applyVoiceRooms(){
     .map(r => ({ ...r, fields: r.fields.filter(f => f._sel),
                  elems: (r.elems || []).filter(e => e.isNew ? e._sel : e.changes.some(c => c._sel)) }))
     .filter(r => r.fields.length || r.elems.length || r.isNew);
-  if(!chosen.length){ toast("Ничего не отмечено", "wait"); return; }
+  if(!chosen.length){ toast("Ничего не отмечено — коснитесь строки, чтобы отметить", "wait"); return; }
   if(btn){ btn.disabled = true; btn.textContent = "Записываю…"; }
   let done = 0, fail = 0, added = 0;
   for(const r of chosen){
@@ -5545,6 +5729,10 @@ function showVRepair(d){
       </div>`);
     return;
   }
+  /* Отмеченные виды [чат 037]: те же ворота, что у обмеров. Виды со знаком
+     «уже в смете» приходят неотмеченными (029), и при одном таком виде
+     фильтр опустошал окно. */
+  const repSelN = vRep.reduce((s, r) => s + (r.isNew ? 0 : (r.kinds || []).filter(k => k._sel).length), 0);
   const rows = vRep.map((r, i) => {
     const head = `<div class="vt">${esc(r.name || "помещение")}${r.isNew ? ' <span style="color:#ff9f0a">· нет в объекте</span>' : ""}</div>`;
     if(r.isNew){
@@ -5566,9 +5754,9 @@ function showVRepair(d){
   }).join("");
   openVSheet(`
     <div class="vh">Работы по помещениям</div>
-    <div class="vs">Отмеченное перенесу в профиль ремонта: объём посчитается из обмеров, а смета соберётся кнопкой «Добавить в смету».</div>
+    <div class="vs">${!repSelN ? "Нового в сказанном нет: эти виды уже стоят в смете. Отметьте строку, если нужно записать заново." : "Отмеченное перенесу в профиль ремонта: объём посчитается из обмеров, а смета соберётся кнопкой «Добавить в смету»."}</div>
     ${quote}
-    <div class="vfilter"><button onclick="vSelOnly(this)">Только отмеченные</button></div>
+    ${repSelN ? '<div class="vfilter"><button onclick="vSelOnly(this)">Только отмеченные</button></div>' : ""}
     <div id="vlist">${rows}</div>
     <div class="vrow">
       <button class="vbtn-cancel" onclick="closeVSheet()">Отмена</button>
@@ -5583,6 +5771,15 @@ function vSelOnly(btn){
   const box = document.getElementById("vlist");
   if(!box) return;
   const on = !box.classList.contains("selonly");
+  /* Фильтр не имеет права оставить окно пустым [чат 037, живой проход 02.08].
+     Единственная строка обмеров пришла неотмеченной — сказанное совпало с тем,
+     что уже стоит, — фильтр её спрятал, и окно выглядело сломанным. Ноль
+     видимых строк это не результат фильтрации, а потеря экрана: не включаем
+     и говорим словами, почему. */
+  if(on && !vSelCount()){
+    toast("Отмеченных строк нет — показываю всё", "wait");
+    return;
+  }
   box.classList.toggle("selonly", on);
   if(btn){ btn.classList.toggle("on", on); btn.textContent = on ? "Показать все" : "Только отмеченные"; }
 }
@@ -5599,7 +5796,7 @@ function toggleVRep(i, j){
    В лист сейчас не пишется ничего — человек смотрит цифры и жмёт «Добавить в смету». */
 async function applyVoiceRepair(){
   const ready = vRep.filter(r => !r.isNew && r.kinds.some(k => k._sel));
-  if(!ready.length){ toast("Ничего не отмечено", "wait"); return; }
+  if(!ready.length){ toast("Ничего не отмечено — коснитесь строки, чтобы отметить", "wait"); return; }
   try{ if(!D.catalog) await loadCatalog(); }catch(e){ toast(e.message, "err"); return; }
   const kinds = (D.catalog || {}).kinds || [];
   let n = 0, noVol = 0, rooms = 0, last = null;
@@ -5711,7 +5908,7 @@ function toggleVAct(i){
 }
 async function applyVoiceHand(){
   const chosen = vActs.filter(a => a._sel);
-  if(!chosen.length){ toast("Ничего не отмечено", "wait"); return; }
+  if(!chosen.length){ toast("Ничего не отмечено — коснитесь строки, чтобы отметить", "wait"); return; }
   const btn = document.getElementById("vapply");
   if(btn){ btn.disabled = true; btn.textContent = "Записываю…"; }
   const today = crewToday(), tbl = [], rep = [];
@@ -6133,6 +6330,21 @@ const UZ = {
 "Нет":"Yo'q",
 "Повернуть не вышло — отправляю как есть":"Burish bo'lmadi — borichaligicha yuboraman",
 "Только отмеченные":"Faqat belgilanganlar",
+"Разметка плана":"Reja belgilanishi",
+"Разметить план":"Rejani belgilash",
+"Дополнить разметку":"Belgilashni to'ldirish",
+"План ещё не загрузился":"Reja hali yuklanmadi",
+"Разметка плана записана":"Reja belgilanishi yozildi",
+"Пропустить":"O'tkazib yuborish",
+"Всё отмечено. Нажмите «Готово», чтобы записать.":"Hammasi belgilandi. Yozish uchun «Tayyor» tugmasini bosing.",
+"Тычок ставит метку. Пока не нажато «Готово», в лист не уходит ничего.":"Teginish belgi qo'yadi. «Tayyor» bosilmaguncha ro'yxatga hech narsa yozilmaydi.",
+"Метки остались от прежнего снимка плана — проверьте их.":"Belgilar avvalgi reja suratidan qolgan — ularni tekshiring.",
+"Помещения на плане не отмечены. Разметка — это тычки пальцем: где какая комната и где какая дверь.":"Rejada xonalar belgilanmagan. Belgilash — barmoq bilan teginish: qaysi xona qayerda va qaysi eshik qayerda.",
+"Отмеченных строк нет — показываю всё":"Belgilangan qatorlar yo'q — hammasini ko'rsataman",
+"Ничего не отмечено — коснитесь строки, чтобы отметить":"Hech narsa belgilanmagan — belgilash uchun qatorga teging",
+"Нового в сказанном нет: всё это уже записано так. Отметьте строку, если нужно заменить.":"Aytilganda yangilik yo'q: bularning bari shundayligicha yozilgan. Almashtirish kerak bo'lsa, qatorni belgilang.",
+"Нового в сказанном нет: эти виды уже стоят в смете. Отметьте строку, если нужно записать заново.":"Aytilganda yangilik yo'q: bu turlar smetada allaqachon bor. Qaytadan yozish kerak bo'lsa, qatorni belgilang.",
+"Входная дверь":"Kirish eshigi",
 "Назначить сумму и разнести по работам":"Summani belgilash va ishlarga taqsimlash",
 "Цены работ изменятся пропорционально их нынешним долям, сумма сойдётся до цента. Принятые изменения считаются сверх этой суммы.":"Ish narxlari hozirgi ulushlariga mutanosib o'zgaradi, summa sentigacha to'g'ri keladi. Qabul qilingan o'zgarishlar bu summadan tashqari hisoblanadi.",
 "Разнести":"Taqsimlash",
@@ -6636,7 +6848,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "034.1";
+const BUILD = "037.2";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
