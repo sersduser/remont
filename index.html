@@ -1377,6 +1377,670 @@ async function planMarksSave(m){
   return true;
 }
 
+
+/* ═════ УРОВЕНЬ C РАЗМЕТКИ · масштаб и контуры (разбор 19 §11) ═════
+   Хранение и геометрия собраны в 046 (03_Инструмент, 33+47 проверок),
+   экраны — чат 048. Ничего существующего не заменяет: уровни A и B живут
+   как жили; уровень C держит две свои строки настроек и не трогает
+   План_разметка (§11.3 — старая панель стёрла бы новые поля). */
+
+const PLAN_SCALE_KEY = "План_масштаб";
+const PLAN_POLYS_KEY = "План_контуры";
+
+/* Округление координат до 4 знаков — 0,1 % ширины плана, заведомо точнее
+   пальца (§11.3). Тем же ходом отсекается мусор вроде 0.30000000000000004. */
+const pgRound4 = v => Math.round(Number(v) * 1e4) / 1e4;
+const pgPt = p => [pgRound4(p[0]), pgRound4(p[1])];
+const pgNum = v => typeof v === "number" && isFinite(v);
+
+/* --- Чтение ------------------------------------------------------------ */
+
+/* Масштаб: { v, img, ar, pts:[[x,y],[x,y]], len_m } либо null.
+   null означает «масштаб не задан» — это штатное состояние, а не ошибка:
+   уровни A и B живут без него (§11.7, решение 031 «путь этого ещё нет»). */
+function planScale(){
+  const raw = (D.settings || {})[PLAN_SCALE_KEY];
+  if(raw == null || String(raw) === "") return null;
+  try{
+    const o = JSON.parse(String(raw));
+    if(!Array.isArray(o.pts) || o.pts.length < 2) return null;
+    if(!pgNum(Number(o.len_m)) || Number(o.len_m) <= 0) return null;
+    if(!pgNum(Number(o.ar)) || Number(o.ar) <= 0) return null;
+    return { v: o.v || 1, img: String(o.img || ""), ar: Number(o.ar),
+             pts: [pgPt(o.pts[0]), pgPt(o.pts[1])], len_m: Number(o.len_m) };
+  }catch(e){ return null; }
+}
+
+/* Контуры: { v, img, polys: { КОД: [[x,y],…] } }. Битый JSON — пустой объект
+   с признаком broken, чтобы экран сказал словами, а не молчал (грабля 3
+   памятки: пустой ответ при HTTP 200 = отказ; здесь тот же класс). */
+function planPolys(){
+  const empty = { v: 1, img: "", polys: {} };
+  const raw = (D.settings || {})[PLAN_POLYS_KEY];
+  if(raw == null || String(raw) === "") return empty;
+  try{
+    const o = JSON.parse(String(raw));
+    const src = (o && o.polys) || {}, polys = {};
+    Object.keys(src).forEach(code => {
+      const arr = src[code];
+      if(Array.isArray(arr) && arr.length >= 3) polys[code] = arr.map(pgPt);
+    });
+    return { v: o.v || 1, img: String(o.img || ""), polys: polys };
+  }catch(e){ return { v: 1, img: "", polys: {}, broken: true }; }
+}
+
+/* Есть ли у помещения контур. Ключ, а не истинность: контур из вершин
+   [0,0] существует (§11.8 п. 4). */
+const planHasPoly = (pp, code) => Object.prototype.hasOwnProperty.call((pp || {}).polys || {}, String(code));
+
+/* --- Запись ------------------------------------------------------------ */
+/* Обе функции повторяют механику planMarksSave: строка есть — правим ячейку,
+   строки нет — дописываем. Лист 07_Настройки открыт ролям admin и owner
+   с чата 036, правки нод не требуется (грабля 36 не задевается). */
+
+async function planScaleSave(sc){
+  if(!sc || !Array.isArray(sc.pts) || sc.pts.length < 2) throw new Error("масштаб: нужны две точки");
+  if(!(Number(sc.len_m) > 0)) throw new Error("масштаб: длина должна быть больше нуля");
+  if(!(Number(sc.ar) > 0)) throw new Error("масштаб: не задано соотношение сторон снимка");
+  const val = JSON.stringify({ v: 1, img: sc.img || "", ar: pgRound4(sc.ar),
+                               pts: [pgPt(sc.pts[0]), pgPt(sc.pts[1])], len_m: Number(sc.len_m) });
+  const S = D.settings || (D.settings = {});
+  if(Object.prototype.hasOwnProperty.call(S, PLAN_SCALE_KEY)){
+    await writeCell("07_Настройки", PLAN_SCALE_KEY, "Значение", val);
+  }else{
+    await crewAppend("07_Настройки", [{ "Параметр": PLAN_SCALE_KEY, "Значение": val,
+      "Комментарий": "масштаб плана БТИ: две точки в долях + расстояние между ними в метрах; ar — соотношение сторон снимка" }]);
+  }
+  S[PLAN_SCALE_KEY] = val;
+  return true;
+}
+
+async function planPolysSave(pp){
+  const src = (pp && pp.polys) || {}, out = {};
+  Object.keys(src).forEach(code => {
+    const arr = src[code];
+    if(Array.isArray(arr) && arr.length >= 3) out[code] = arr.map(pgPt);   // §11.8 п. 3
+  });
+  const val = JSON.stringify({ v: 1, img: (pp && pp.img) || "", polys: out });
+  const S = D.settings || (D.settings = {});
+  if(Object.prototype.hasOwnProperty.call(S, PLAN_POLYS_KEY)){
+    await writeCell("07_Настройки", PLAN_POLYS_KEY, "Значение", val);
+  }else{
+    await crewAppend("07_Настройки", [{ "Параметр": PLAN_POLYS_KEY, "Значение": val,
+      "Комментарий": "контуры помещений на плане БТИ; доли от размера картинки, 0…1" }]);
+  }
+  S[PLAN_POLYS_KEY] = val;
+  return true;
+}
+
+/* --- Свой ли снимок ----------------------------------------------------- */
+/* Сменилось фото плана — метки и контуры показываем, но сверку обмеров
+   выключаем (§11.3): считать по чужому кадру хуже, чем не считать. */
+function planSameImg(store, curImgId){
+  if(!store) return false;
+  const a = String(store.img == null ? "" : store.img);
+  const b = String(curImgId == null ? "" : curImgId);
+  if(a === "" || b === "") return true;
+  return a === b;
+}
+
+/* Геометрия уровня C разметки плана БТИ — разбор 19, §11 (чат REMONT_046).
+   Шаг 1 порядка работ §11.9: считает метры и квадратные метры по разметке
+   в долях 0…1 и по калибровке масштаба.
+
+   ГЛАВНОЕ ПРАВИЛО (§11.2). Доля по X и доля по Y — разной длины, если снимок
+   не квадратный. Все длины приводятся к единицам ШИРИНЫ картинки через
+   ar = W/H (натуральные пиксели снимка в момент калибровки). Забыть ar —
+   получить правдоподобные числа с ошибкой в десятки процентов.
+
+   Модуль без зависимостей: работает и в браузере (глобальная PLANGEO),
+   и в node (module.exports). Экранов не трогает, в лист не пишет. */
+(function (root) {
+  "use strict";
+
+  var TOL_PCT = 15;          // §11.6: порог расхождения сверки, проценты
+  var ROUND = 4;             // §11.3: координаты округляются до 4 знаков
+
+  function num(v) { return typeof v === "number" && isFinite(v); }
+  function okPt(p) { return Array.isArray(p) && p.length >= 2 && num(p[0]) && num(p[1]); }
+  function round4(v) { return Math.round(v * 1e4) / 1e4; }
+
+  /* Длина отрезка в долях ШИРИНЫ картинки. ar = W/H. */
+  function uDist(p, q, ar) {
+    if (!okPt(p) || !okPt(q) || !num(ar) || ar <= 0) return NaN;
+    var dx = q[0] - p[0], dy = (q[1] - p[1]) / ar;
+    return Math.sqrt(dx * dx + dy * dy);
+  }
+
+  /* Метров на долю ширины — из калибровки: две точки и известная длина. */
+  function mpuFrom(scale) {
+    if (!scale || !Array.isArray(scale.pts) || scale.pts.length < 2) return NaN;
+    if (!num(scale.len_m) || scale.len_m <= 0) return NaN;
+    var u = uDist(scale.pts[0], scale.pts[1], scale.ar);
+    if (!num(u) || u <= 0) return NaN;
+    return scale.len_m / u;
+  }
+
+  /* Площадь полигона по формуле шнурования в координатах-долях (без ar). */
+  function areaFrac(poly) {
+    if (!Array.isArray(poly) || poly.length < 3) return 0;
+    var s = 0, n = poly.length, i, a, b;
+    for (i = 0; i < n; i++) {
+      a = poly[i]; b = poly[(i + 1) % n];
+      if (!okPt(a) || !okPt(b)) return NaN;
+      s += a[0] * b[1] - b[0] * a[1];
+    }
+    return Math.abs(s) / 2;          // §11.8 п. 6: направление обхода не важно
+  }
+
+  /* Площадь в м². §11.2: mpu² · A_frac / ar. */
+  function polyAreaM2(poly, scale) {
+    var mpu = mpuFrom(scale), af = areaFrac(poly);
+    if (!num(mpu) || !num(af) || !num(scale.ar) || scale.ar <= 0) return NaN;
+    if (!Array.isArray(poly) || poly.length < 3) return 0;   // §11.8 п. 3
+    return mpu * mpu * af / scale.ar;
+  }
+
+  /* Периметр замкнутого контура в метрах. */
+  function polyPerimM(poly, scale) {
+    var mpu = mpuFrom(scale);
+    if (!num(mpu) || !Array.isArray(poly) || poly.length < 2) return poly && poly.length < 3 ? 0 : NaN;
+    var s = 0, n = poly.length, i, d;
+    for (i = 0; i < n; i++) {
+      d = uDist(poly[i], poly[(i + 1) % n], scale.ar);
+      if (!num(d)) return NaN;
+      s += d;
+    }
+    return mpu * s;
+  }
+
+  /* Центр тяжести полигона (в долях). Вырожденный (нулевая площадь) —
+     среднее вершин, чтобы плашка всё равно куда-то села. */
+  function centroid(poly) {
+    if (!Array.isArray(poly) || poly.length === 0) return null;
+    if (poly.length < 3) {
+      var sx = 0, sy = 0, k;
+      for (k = 0; k < poly.length; k++) { sx += poly[k][0]; sy += poly[k][1]; }
+      return [round4(sx / poly.length), round4(sy / poly.length)];
+    }
+    var a = 0, cx = 0, cy = 0, n = poly.length, i, p, q, cr;
+    for (i = 0; i < n; i++) {
+      p = poly[i]; q = poly[(i + 1) % n];
+      cr = p[0] * q[1] - q[0] * p[1];
+      a += cr; cx += (p[0] + q[0]) * cr; cy += (p[1] + q[1]) * cr;
+    }
+    if (Math.abs(a) < 1e-12) {
+      var mx = 0, my = 0, j;
+      for (j = 0; j < n; j++) { mx += poly[j][0]; my += poly[j][1]; }
+      return [round4(mx / n), round4(my / n)];
+    }
+    a = a / 2;
+    return [round4(cx / (6 * a)), round4(cy / (6 * a))];
+  }
+
+  /* Пересекаются ли несмежные рёбра (§11.8 п. 2). Предупреждение, не запрет. */
+  function orient(a, b, c) {
+    var v = (b[1] - a[1]) * (c[0] - b[0]) - (b[0] - a[0]) * (c[1] - b[1]);
+    return Math.abs(v) < 1e-12 ? 0 : (v > 0 ? 1 : 2);
+  }
+  function onSeg(a, b, c) {
+    return b[0] <= Math.max(a[0], c[0]) + 1e-12 && b[0] >= Math.min(a[0], c[0]) - 1e-12 &&
+           b[1] <= Math.max(a[1], c[1]) + 1e-12 && b[1] >= Math.min(a[1], c[1]) - 1e-12;
+  }
+  function segCross(p1, q1, p2, q2) {
+    var o1 = orient(p1, q1, p2), o2 = orient(p1, q1, q2),
+        o3 = orient(p2, q2, p1), o4 = orient(p2, q2, q1);
+    if (o1 !== o2 && o3 !== o4) return true;
+    if (o1 === 0 && onSeg(p1, p2, q1)) return true;
+    if (o2 === 0 && onSeg(p1, q2, q1)) return true;
+    if (o3 === 0 && onSeg(p2, p1, q2)) return true;
+    if (o4 === 0 && onSeg(p2, q1, q2)) return true;
+    return false;
+  }
+  function selfIntersects(poly) {
+    if (!Array.isArray(poly) || poly.length < 4) return false;
+    var n = poly.length, i, j;
+    for (i = 0; i < n; i++) {
+      for (j = i + 1; j < n; j++) {
+        if (j === i || (j + 1) % n === i || (i + 1) % n === j) continue;   // смежные пропускаем
+        if (segCross(poly[i], poly[(i + 1) % n], poly[j], poly[(j + 1) % n])) return true;
+      }
+    }
+    return false;
+  }
+
+  /* Разметка от этого ли снимка (§11.3). Пусто с обеих сторон — считаем своим:
+     старые значения без img не должны молча выключать сверку. */
+  function sameImg(store, curImgId) {
+    if (!store) return false;
+    var a = String(store.img == null ? "" : store.img);
+    var b = String(curImgId == null ? "" : curImgId);
+    if (a === "" || b === "") return true;
+    return a === b;
+  }
+
+  /* Имена полей обмеров. Ответ сервера /data отдаёт латиницей (floor_m2,
+     perimeter_m), лист 06_Помещения — по-русски (Пол_м2, Периметр_м).
+     Берём то, что нашлось: панель кормит модуль ответом, а сверка выгрузки —
+     листом. Грабля 15: имена полей мока обязаны совпадать с боевыми. */
+  function pickNum(obj, names) {
+    if (!obj) return null;
+    for (var i = 0; i < names.length; i++) {
+      if (Object.prototype.hasOwnProperty.call(obj, names[i])) return obj[names[i]];
+    }
+    return null;
+  }
+  var F_AREA = ["floor_m2", "Пол_м2"];
+  var F_PERIM = ["perimeter_m", "Периметр_м"];
+
+  /* Метрики помещения по контуру + сверка с обмерами. */
+  function roomMetrics(poly, scale, room, curImgId) {
+    var out = { hasPoly: Array.isArray(poly) && poly.length >= 3, area_m2: null, perim_m: null,
+                centroid: centroid(poly || []), warn: [], compare: null };
+    if (!out.hasPoly) { if (poly && poly.length) out.warn.push("мало вершин"); return out; }
+    if (selfIntersects(poly)) out.warn.push("контур пересекает сам себя");
+    if (!num(mpuFrom(scale))) { out.warn.push("масштаб не задан"); return out; }
+    if (!sameImg(scale, curImgId)) { out.warn.push("масштаб от прежнего снимка"); return out; }
+    var a = polyAreaM2(poly, scale), p = polyPerimM(poly, scale);
+    if (!num(a) || !num(p)) { out.warn.push("масштаб не задан"); return out; }
+    out.area_m2 = Math.round(a * 10) / 10;
+    out.perim_m = Math.round(p * 10) / 10;
+    out.compare = { area: compare(out.area_m2, pickNum(room, F_AREA)),
+                    perim: compare(out.perim_m, pickNum(room, F_PERIM)) };
+    return out;
+  }
+
+  /* Сверка одной величины. База процента — обмер человека: он источник,
+     с которым сравниваем. Обмера нет — сравнивать не с чем, и это не ошибка. */
+  function compare(plan, measured) {
+    var m = typeof measured === "string" ? Number(String(measured).replace(",", ".")) : measured;
+    if (!num(plan)) return { state: "нет плана" };
+    if (!num(m) || m <= 0) return { state: "нет обмера", plan: plan };
+    var pct = Math.abs(plan - m) / m * 100;
+    return { state: pct <= TOL_PCT ? "сходится" : "проверьте",
+             plan: plan, measured: Math.round(m * 10) / 10, pct: Math.round(pct * 10) / 10 };
+  }
+
+  var API = { uDist: uDist, mpuFrom: mpuFrom, areaFrac: areaFrac, polyAreaM2: polyAreaM2,
+              polyPerimM: polyPerimM, centroid: centroid, selfIntersects: selfIntersects,
+              sameImg: sameImg, roomMetrics: roomMetrics, compare: compare, pickNum: pickNum,
+              round4: round4, TOL_PCT: TOL_PCT };
+
+  if (typeof module !== "undefined" && module.exports) module.exports = API;
+  else root.PLANGEO = API;
+})(typeof globalThis !== "undefined" ? globalThis : this);
+
+/* --- Экраны уровня C (чат 048) ------------------------------------------ */
+/* Число с одной десятичной и запятой — для строк сверки и линейки. Без
+   toLocaleString: разделитель тысяч сломал бы шаблоны словаря ([\d,]+). */
+const pgFmt1 = v => String(Math.round(Number(v) * 10) / 10).replace(".", ",");
+
+let PSC = null;   // сеанс калибровки: { pts:[[x,y]…], len:"" }
+let PPL = null;   // сеанс обводки:   { code, polys:{…копия}, cur:[], last }
+let PRL = null;   // сеанс линейки:   { pts:[[x,y]…] }
+
+/* Соотношение сторон снимка в момент калибровки (§11.2): натуральные пиксели
+   картинки. Забыть ar — получить правдоподобные числа с ошибкой 30–80 %. */
+function planCImgAr(id){
+  const img = document.getElementById(id);
+  return (img && img.naturalWidth > 0 && img.naturalHeight > 0)
+    ? img.naturalWidth / img.naturalHeight : 0;
+}
+
+/* Идентификатор текущего снимка плана — тот же, что пишет уровень A. */
+function planCImgId(){
+  const p = objPlan();
+  return p ? String(p.file_id || p.id || "") : "";
+}
+
+/* Цвет заливки по типу помещения (§11.5). Палитра — та же семья, что у графа. */
+function planCColor(code){
+  const r = roomList().filter(x => String(x.code) === String(code))[0] || {};
+  const k = String(r.kind || "").toLowerCase();
+  if(/кухн/.test(k)) return "#ff9f0a";
+  if(/ванн|туал|сануз|душ/.test(k)) return "#0a84ff";
+  if(/коридор|прихож|холл|тамбур/.test(k)) return "#8e8e93";
+  if(/лодж|балкон/.test(k)) return "#64d2ff";
+  return "#30d158";
+}
+
+/* SVG-заливка контуров поверх плана (§11.5). Рисуется ПОД слоем линий и
+   плашек, поэтому pointer-events нет и клики уходят картинке. */
+function planCFills(pp){
+  const polys = (pp || {}).polys || {};
+  const codes = Object.keys(polys);
+  if(!codes.length) return "";
+  const shapes = codes.map(code => {
+    const pts = polys[code].map(p => (p[0] * 100) + "," + (p[1] * 100)).join(" ");
+    const c = planCColor(code);
+    return '<polygon points="' + pts + '" fill="' + c + '" fill-opacity="0.22" stroke="' + c +
+      '" stroke-width="1.5" vector-effect="non-scaling-stroke" />';
+  }).join("");
+  return '<svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true"' +
+    ' style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none">' + shapes + '</svg>';
+}
+
+/* Плашка садится в центр тяжести контура (§11.5): подменяем координаты
+   комнат центроидами там, где контур есть, и отдаём прежнему planLayer —
+   линии проёмов и плашки едут туда сами, слой A/B не правится. Комната
+   с контуром, но без метки уровня A, плашку тоже получает: точка при
+   контуре становится необязательной. */
+function planCAdj(mk, pp){
+  const polys = (pp || {}).polys || {};
+  const out = { v: (mk || {}).v || 1, img: (mk || {}).img || "", rooms: {}, elems: (mk || {}).elems || {} };
+  Object.keys((mk || {}).rooms || {}).forEach(code => { out.rooms[code] = mk.rooms[code]; });
+  Object.keys(polys).forEach(code => {
+    const c = PLANGEO.centroid(polys[code]);
+    if(c) out.rooms[code] = c;
+  });
+  return out;
+}
+
+/* Строка сверки в карточке помещения (§11.5–11.6): «по плану … · в обмерах …».
+   Чужой снимок сверку выключает (§11.3); нет обмера — сравнивать не с чем. */
+function planCCompareLine(r){
+  const pp = planPolys(), sc = planScale();
+  const code = String((r || {}).code || "");
+  if(!sc || !planHasPoly(pp, code)) return "";
+  const cur = planCImgId();
+  if(!planSameImg(sc, cur) || !planSameImg(pp, cur)) return "";
+  const m = PLANGEO.roomMetrics(pp.polys[code], sc, r, cur);
+  const c = m.compare && m.compare.area;
+  if(!c || (c.state !== "сходится" && c.state !== "проверьте")) return "";
+  const ok = c.state === "сходится";
+  const line = ok
+    ? "по плану " + pgFmt1(c.plan) + " м² · в обмерах " + pgFmt1(c.measured) + " м² — сходится"
+    : "по плану " + pgFmt1(c.plan) + " м² · в обмерах " + pgFmt1(c.measured) + " м² — расходится на " + Math.round(c.pct) + " %";
+  return '<div class="m" style="margin-top:4px;color:' + (ok ? "#30d158" : "#ff9f0a") + '">' + line +
+    (ok ? "" : "<br>Проверьте контур или обмер") + "</div>";
+}
+
+/* Тычок по картинке → доля 0…1 по каждой оси. Координаты относительно самой
+   картинки, а не окна — страница прокручивается (урок planMarkTap). */
+function planCTapXY(ev){
+  const r = ev.currentTarget.getBoundingClientRect();
+  if(!r.width || !r.height) return null;
+  const x = Math.min(1, Math.max(0, (ev.clientX - r.left) / r.width));
+  const y = Math.min(1, Math.max(0, (ev.clientY - r.top) / r.height));
+  return [pgRound4(x), pgRound4(y)];
+}
+
+const planCDot = (p, col) => '<circle cx="' + (p[0] * 100) + '" cy="' + (p[1] * 100) + '" r="1.6" fill="' +
+  col + '" stroke="#000" stroke-width="0.35" />';
+const planCSvg = inner => '<svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true"' +
+  ' style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none">' + inner + '</svg>';
+
+/* ── Калибровка масштаба (§11.4) ───────────────────────────── */
+
+function planScaleStart(){
+  if(!PLAN_URL){ toast("План ещё не загрузился", "wait"); return; }
+  const sc = planScale();
+  PSC = { pts: [], len: sc ? String(sc.len_m) : "" };
+  planScaleDraw();
+}
+function planScaleClose(){
+  const b = document.getElementById("pscBox");
+  if(b) b.remove();
+  PSC = null;
+}
+function planScaleDraw(){
+  let box = document.getElementById("pscBox");
+  if(!box){
+    box = document.createElement("div");
+    box.id = "pscBox";
+    box.style.cssText = "position:fixed;inset:0;z-index:9997;background:#000;overflow-y:auto;" +
+      "padding:14px 14px calc(16px + env(safe-area-inset-bottom,0px))";
+    document.body.appendChild(box);
+  }
+  const n = PSC.pts.length;
+  const lay = n ? planCSvg(
+    (n === 2 ? '<line x1="' + (PSC.pts[0][0] * 100) + '" y1="' + (PSC.pts[0][1] * 100) +
+      '" x2="' + (PSC.pts[1][0] * 100) + '" y2="' + (PSC.pts[1][1] * 100) +
+      '" stroke="#ff9f0a" stroke-width="2.2" vector-effect="non-scaling-stroke" />' : "") +
+    PSC.pts.map(p => planCDot(p, "#ff9f0a")).join("")) : "";
+  box.innerHTML =
+    '<div class="vh" style="color:#fff">Задать масштаб</div>' +
+    '<div class="m" style="margin-bottom:6px">Выберите самый длинный отрезок, длину которого знаете точно</div>' +
+    '<div class="vs">' + (n < 2 ? "Коснитесь двух точек на плане" : "Расстояние, м") + '</div>' +
+    '<div style="position:relative;margin-top:8px">' +
+      '<img id="pscImg" src="' + PLAN_URL + '" alt="План БТИ" style="width:100%;display:block;border-radius:12px">' + lay +
+    '</div>' +
+    '<div style="margin-top:10px">' +
+      '<input id="pscLen" type="number" step="0.01" min="0" inputmode="decimal" placeholder="Расстояние, м"' +
+      ' value="' + esc(PSC.len) + '" onchange="if(PSC) PSC.len = this.value"' +
+      ' style="width:100%;box-sizing:border-box;padding:10px;border-radius:10px;border:1px solid #3a3a3c;background:#000;color:#fff;font-size:15px">' +
+    '</div>' +
+    '<div class="vrow" style="margin-top:12px">' +
+      '<button class="vbtn-cancel" onclick="planScaleClose()">Отмена</button>' +
+      (n ? '<button class="vbtn-cancel" onclick="PSC.pts.pop(); planScaleDraw()">Убрать точку</button>' : "") +
+      '<button class="vbtn-ok" id="pscOk" onclick="planScaleDone()">Готово</button>' +
+    '</div>' +
+    '<div class="m" style="margin-top:8px">Тычок ставит метку. Пока не нажато «Готово», в лист не уходит ничего.</div>';
+  const img = document.getElementById("pscImg");
+  if(img) img.onclick = planScaleTap;
+}
+function planScaleTap(ev){
+  if(!PSC || PSC.pts.length >= 2) return;
+  const p = planCTapXY(ev);
+  if(!p) return;
+  PSC.pts.push(p);
+  planScaleDraw();
+}
+async function planScaleDone(){
+  if(!PSC) return;
+  if(PSC.pts.length < 2){ toast("Коснитесь двух точек на плане", "err"); return; }
+  const el = document.getElementById("pscLen");
+  const len = Number(String((el && el.value) || PSC.len || "").replace(",", "."));
+  if(!(len > 0)){ toast("Расстояние, м", "err"); return; }
+  const ar = planCImgAr("pscImg");
+  if(!(ar > 0)){ toast("План ещё не загрузился", "err"); return; }
+  const btn = document.getElementById("pscOk");
+  if(btn){ btn.disabled = true; btn.textContent = "Записываю…"; }
+  try{
+    await planScaleSave({ img: planCImgId(), ar: ar, pts: PSC.pts, len_m: len });
+    toast("Готово");
+    planScaleClose();
+    await load();
+    render();
+  }catch(e){
+    toast(e.message, "err");
+    if(btn){ btn.disabled = false; btn.textContent = "Готово"; }
+  }
+}
+
+/* ── Обводка контуров (§11.4) ──────────────────────────────── */
+
+function planPolyStart(){
+  if(!PLAN_URL){ toast("План ещё не загрузился", "wait"); return; }
+  const pp = planPolys();
+  let copy = {};
+  try{ copy = JSON.parse(JSON.stringify(pp.polys || {})); }catch(e){ copy = {}; }
+  PPL = { code: "", polys: copy, cur: [], last: "" };
+  planPolyDraw();
+}
+function planPolyClose(){
+  const b = document.getElementById("pplBox");
+  if(b) b.remove();
+  PPL = null;
+}
+function planPolyPick(code){
+  if(!PPL) return;
+  PPL.code = String(code);
+  PPL.cur = [];
+  planPolyDraw();
+}
+function planPolyChips(){
+  const rooms = roomList();
+  if(!rooms.length) return "";
+  return '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:10px">' +
+    rooms.map(r => {
+      const code = String(r.code);
+      const has = Object.prototype.hasOwnProperty.call(PPL.polys, code);
+      const on = PPL.code === code;
+      return '<button onclick="planPolyPick(\'' + esc(code) + '\')" style="padding:6px 10px;border-radius:9px;' +
+        'border:0;background:' + (on ? "#0a84ff" : "#2c2c2e") + ';color:#fff;font-size:13px">' +
+        (has ? "✓ " : "") + esc(planShort(r.name || code)) + '</button>';
+    }).join("") + '</div>';
+}
+/* Метрики последнего замкнутого контура — прямо в окне, до записи (§11.4). */
+function planPolyMetrics(){
+  const last = PPL.last;
+  if(!last || !PPL.polys[last]) return "";
+  const sc = planScale();
+  if(!sc) return '<div class="m" style="margin-top:6px;color:#ff9f0a">Масштаб не задан</div>';
+  const room = roomList().filter(r => String(r.code) === last)[0] || {};
+  const m = PLANGEO.roomMetrics(PPL.polys[last], sc, room, planCImgId());
+  let out = "";
+  if(m.warn.indexOf("контур пересекает сам себя") >= 0)
+    out += '<div class="m" style="margin-top:6px;color:#ff9f0a">Контур пересекает сам себя</div>';
+  if(m.warn.indexOf("масштаб от прежнего снимка") >= 0)
+    out += '<div class="m" style="margin-top:6px;color:#ff9f0a">Масштаб от прежнего снимка</div>';
+  if(m.area_m2 == null) return out;
+  out += '<div class="vs" style="margin-top:6px">' + pgFmt1(m.area_m2) + " м² · " + pgFmt1(m.perim_m) + " м</div>";
+  const c = m.compare && m.compare.area;
+  if(c && (c.state === "сходится" || c.state === "проверьте")){
+    const ok = c.state === "сходится";
+    out += '<div class="m" style="color:' + (ok ? "#30d158" : "#ff9f0a") + '">' +
+      "по плану " + pgFmt1(c.plan) + " м² · в обмерах " + pgFmt1(c.measured) + " м² — " +
+      (ok ? "сходится" : "расходится на " + Math.round(c.pct) + " %") +
+      (ok ? "" : "<br>Проверьте контур или обмер") + "</div>";
+  }
+  return out;
+}
+function planPolyDraw(){
+  let box = document.getElementById("pplBox");
+  if(!box){
+    box = document.createElement("div");
+    box.id = "pplBox";
+    box.style.cssText = "position:fixed;inset:0;z-index:9997;background:#000;overflow-y:auto;" +
+      "padding:14px 14px calc(16px + env(safe-area-inset-bottom,0px))";
+    document.body.appendChild(box);
+  }
+  const rooms = roomList();
+  const leftN = rooms.filter(r => !Object.prototype.hasOwnProperty.call(PPL.polys, String(r.code))).length;
+  const cur = PPL.cur, code = PPL.code;
+  const room = code ? (rooms.filter(r => String(r.code) === code)[0] || {}) : null;
+  const head = code
+    ? '<div class="vs">Коснитесь углов помещения: <b>' + esc(planShort((room && room.name) || code)) + '</b></div>' +
+      '<div class="m" style="margin-bottom:6px">Отмечено вершин: ' + cur.length + '</div>'
+    : '<div class="m" style="margin-bottom:6px">Осталось обвести: ' + leftN + '</div>';
+  const curLay =
+    (cur.length > 1 ? '<polyline points="' + cur.map(p => (p[0] * 100) + "," + (p[1] * 100)).join(" ") +
+      '" fill="none" stroke="#ff9f0a" stroke-width="2" vector-effect="non-scaling-stroke" />' : "") +
+    cur.map(p => planCDot(p, "#ff9f0a")).join("");
+  box.innerHTML =
+    '<div class="vh" style="color:#fff">Обвести помещение</div>' + head +
+    '<div style="position:relative">' +
+      '<img id="pplImg" src="' + PLAN_URL + '" alt="План БТИ" style="width:100%;display:block;border-radius:12px">' +
+      planCFills({ polys: PPL.polys }) +
+      (cur.length ? planCSvg(curLay) : "") +
+    '</div>' +
+    planPolyMetrics() +
+    planPolyChips() +
+    '<div class="vrow" style="margin-top:12px">' +
+      '<button class="vbtn-cancel" onclick="planPolyClose()">Отмена</button>' +
+      (cur.length ? '<button class="vbtn-cancel" onclick="PPL.cur.pop(); planPolyDraw()">Убрать точку</button>' : "") +
+      (cur.length >= 3 ? '<button class="vbtn-cancel" onclick="planPolyLock()">Замкнуть</button>' : "") +
+      '<button class="vbtn-ok" id="pplOk" onclick="planPolyDone()">Готово</button>' +
+    '</div>' +
+    '<div class="m" style="margin-top:8px">Тычок ставит метку. Пока не нажато «Готово», в лист не уходит ничего.</div>';
+  const img = document.getElementById("pplImg");
+  if(img) img.onclick = planPolyTap;
+}
+function planPolyTap(ev){
+  if(!PPL || !PPL.code) return;
+  const p = planCTapXY(ev);
+  if(!p) return;
+  PPL.cur.push(p);
+  planPolyDraw();
+}
+/* «Замкнуть»: самопересечение предупреждает, но не запрещает (§11.8 п. 2) —
+   человек может обводить сложную комнату и знать, что делает. */
+function planPolyLock(){
+  if(!PPL || !PPL.code) return;
+  if(PPL.cur.length < 3){ toast("Коснитесь углов помещения", "err"); return; }
+  if(PLANGEO.selfIntersects(PPL.cur)) toast("Контур пересекает сам себя");
+  PPL.polys[PPL.code] = PPL.cur.slice();
+  PPL.last = PPL.code;
+  PPL.code = "";
+  PPL.cur = [];
+  planPolyDraw();
+}
+async function planPolyDone(){
+  if(!PPL) return;
+  /* Начатый контур с тремя и более вершинами дозамыкается тем же ходом —
+     с теми же предупреждениями; одна-две вершины контуром не являются
+     и отбрасываются (§11.8 п. 3). */
+  if(PPL.code && PPL.cur.length >= 3) planPolyLock();
+  const btn = document.getElementById("pplOk");
+  if(btn){ btn.disabled = true; btn.textContent = "Записываю…"; }
+  try{
+    await planPolysSave({ img: planCImgId(), polys: PPL.polys });
+    toast("Готово");
+    planPolyClose();
+    await load();
+    render();
+  }catch(e){
+    toast(e.message, "err");
+    if(btn){ btn.disabled = false; btn.textContent = "Готово"; }
+  }
+}
+
+/* ── Линейка (§11.5): работает только при заданном масштабе ── */
+
+function planRulerStart(){
+  if(!PLAN_URL){ toast("План ещё не загрузился", "wait"); return; }
+  if(!planScale()){ toast("Масштаб не задан", "err"); return; }
+  PRL = { pts: [] };
+  planRulerDraw();
+}
+function planRulerClose(){
+  const b = document.getElementById("prlBox");
+  if(b) b.remove();
+  PRL = null;
+}
+function planRulerDraw(){
+  let box = document.getElementById("prlBox");
+  if(!box){
+    box = document.createElement("div");
+    box.id = "prlBox";
+    box.style.cssText = "position:fixed;inset:0;z-index:9997;background:#000;overflow-y:auto;" +
+      "padding:14px 14px calc(16px + env(safe-area-inset-bottom,0px))";
+    document.body.appendChild(box);
+  }
+  const sc = planScale();
+  const n = PRL.pts.length;
+  let res = "";
+  if(n === 2 && sc){
+    const d = PLANGEO.mpuFrom(sc) * PLANGEO.uDist(PRL.pts[0], PRL.pts[1], sc.ar);
+    res = isFinite(d) ? '<div class="vs" style="margin-top:8px">' + pgFmt1(d) + " м</div>" : "";
+  }
+  const lay = n ? planCSvg(
+    (n === 2 ? '<line x1="' + (PRL.pts[0][0] * 100) + '" y1="' + (PRL.pts[0][1] * 100) +
+      '" x2="' + (PRL.pts[1][0] * 100) + '" y2="' + (PRL.pts[1][1] * 100) +
+      '" stroke="#64d2ff" stroke-width="2.2" vector-effect="non-scaling-stroke" />' : "") +
+    PRL.pts.map(p => planCDot(p, "#64d2ff")).join("")) : "";
+  box.innerHTML =
+    '<div class="vh" style="color:#fff">Линейка</div>' +
+    '<div class="m" style="margin-bottom:6px">Коснитесь двух точек на плане</div>' +
+    '<div style="position:relative">' +
+      '<img id="prlImg" src="' + PLAN_URL + '" alt="План БТИ" style="width:100%;display:block;border-radius:12px">' + lay +
+    '</div>' + res +
+    '<div class="vrow" style="margin-top:12px">' +
+      '<button class="vbtn-ok" onclick="planRulerClose()">Готово</button>' +
+    '</div>';
+  const img = document.getElementById("prlImg");
+  if(img) img.onclick = planRulerTap;
+}
+function planRulerTap(ev){
+  if(!PRL) return;
+  const p = planCTapXY(ev);
+  if(!p) return;
+  if(PRL.pts.length >= 2) PRL.pts = [];
+  PRL.pts.push(p);
+  planRulerDraw();
+}
+
 /* Очередь разметки: сперва помещения, потом проёмы. Размеченное в очередь
    не попадает — незавершённая разметка продолжается с того места, где встала,
    и ничего не блокирует (решение 031: путь «этого ещё нет» обязан работать). */
@@ -1563,9 +2227,18 @@ async function objShowPlan(){
     const marked = planMarked(mk);
     const total = roomList().length;
     const stale = mk.img && p && String(mk.img) !== String(p.file_id || p.id || "");
+    /* Уровень C [чат 048]: заливка контуров под слоем линий и плашек; плашка
+       комнаты с контуром садится в центр тяжести (§11.5) — координаты комнат
+       подменяет planCAdj, сам planLayer не правлен. */
+    const ppC = planPolys();
+    const scC = planScale();
+    const polyN = Object.keys(ppC.polys).length;
+    const curImgC = String(p.file_id || p.id || "");
+    const staleC = !!((scC && !planSameImg(scC, curImgC)) || (polyN && !planSameImg(ppC, curImgC)));
     box.innerHTML = '<div style="position:relative">' +
         '<img src="' + u + '" alt="План БТИ" style="width:100%;border-radius:12px;display:block">' +
-        (marked ? planLayer(mk) : "") +
+        planCFills(ppC) +
+        ((marked || polyN) ? planLayer(planCAdj(mk, ppC)) : "") +
       "</div>" +
       '<div class="m" style="margin-top:6px">Загружен ' + esc(p.at || "") + " · " + esc(p.who || "") + "</div>" +
       (stale ? '<div class="m" style="color:#ff9f0a">Метки остались от прежнего снимка плана — проверьте их.</div>' : "") +
@@ -1574,7 +2247,16 @@ async function objShowPlan(){
         : "Помещения на плане не отмечены. Разметка — это тычки пальцем: где какая комната и где какая дверь.") + "</div>" +
       '<button onclick="planMarkStart()" style="width:100%;margin-top:8px;padding:11px;border-radius:11px;' +
         'border:0;background:#2c2c2e;color:#fff;font-size:15px">' +
-        (marked ? "Дополнить разметку" : "Разметить план") + "</button>";
+        (marked ? "Дополнить разметку" : "Разметить план") + "</button>" +
+      /* Уровень C [чат 048]: масштаб, контуры, линейка (§11.4–11.5). */
+      (staleC ? '<div class="m" style="margin-top:6px;color:#ff9f0a">Масштаб от прежнего снимка</div>' : "") +
+      (!scC ? '<div class="m" style="margin-top:6px">Масштаб не задан</div>'
+            : (polyN < total ? '<div class="m" style="margin-top:6px">Осталось обвести: ' + (total - polyN) + '</div>' : "")) +
+      '<div style="display:flex;gap:8px;margin-top:8px">' +
+        '<button onclick="planScaleStart()" style="flex:1;padding:11px;border-radius:11px;border:0;background:#2c2c2e;color:#fff;font-size:15px">Задать масштаб</button>' +
+        '<button onclick="planPolyStart()" style="flex:1;padding:11px;border-radius:11px;border:0;background:#2c2c2e;color:#fff;font-size:15px">Обвести помещение</button>' +
+      '</div>' +
+      (scC ? '<button onclick="planRulerStart()" style="width:100%;margin-top:8px;padding:11px;border-radius:11px;border:0;background:#2c2c2e;color:#fff;font-size:15px">Линейка</button>' : "");
   }catch(e){
     box.innerHTML = '<div class="m" style="color:#ff453a">План не открылся: ' + esc(e.message) + "</div>";
   }
@@ -3015,6 +3697,14 @@ function spreadPrices(onlyEmpty){
   box.querySelector('#spYes').onclick = () => { box.remove(); applyPrices(list); };
 }
 
+/* Сторона приёмки — по контуру, а не по сырой роли листа [чат 048].
+   Исполнитель (hand, foreman) заявляет «Готово» → «Заявлено» (ждёт заказчика)
+   и видит на приёмке «На приёмке у работника»; заказчик (admin, owner) —
+   зеркально. До правки foreman жил по ветке заказчика: не видел заявок
+   заказчика вовсе, а его «Готово» уходило «работнику». Вскрыто живым
+   проходом двумя ролями; у hand и worker поведение не меняется. */
+const crewSide = () => D.kind === "hand" || D.kind === "foreman";
+
 async function upd(sheet, code, field, value, opts){
   // Работник не пишет «Готово» напрямую (ни голосом, ни вручную):
   // любое его «Готово» становится ЗАЯВКОЙ на приёмку заказчику.
@@ -3029,7 +3719,7 @@ async function upd(sheet, code, field, value, opts){
       if (!_go) { toast("Отменено", "err"); return false; }
     }
   }
-  if(claimed) value = (D.role === "worker") ? "Заявлено" : "На приёмке у работника";
+  if(claimed) value = crewSide() ? "Заявлено" : "На приёмке у работника";
   toast(claimed ? "Отправляю на приёмку…" : "Сохраняю…", "wait");
   try{
     const r = await fetch(`${API}/update`, {
@@ -3045,7 +3735,7 @@ async function upd(sheet, code, field, value, opts){
     }
     patch(sheet, code, field, value);
     tg?.HapticFeedback?.notificationOccurred("success");
-    toast(claimed ? (D.role === "worker" ? "Заявлено — ждёт приёмки заказчиком" : "Отправлено работнику на подтверждение") : "Сохранено");
+    toast(claimed ? (crewSide() ? "Заявлено — ждёт приёмки заказчиком" : "Отправлено работнику на подтверждение") : "Сохранено");
     return true;
   }catch(e){
     tg?.HapticFeedback?.notificationOccurred("error");
@@ -4077,8 +4767,8 @@ home(){
         <div class="h">ждут привязки ${checkList().length}</div></button>
       <button class="tile" onclick="go('works')"><span class="ic">🔨</span>
         <span class="nm">Работы</span><div class="h">${D.works.length} позиций</div></button>
-      ${(true) ? `<button class="tile${D.works.filter(w=>w.status===(D.role==="worker"?"На приёмке у работника":"Заявлено")).length ? " pri" : ""}" onclick="go('accept')"><span class="ic">✅</span>
-        <span class="nm">Приёмка</span><div class="h">${D.works.filter(w=>w.status===(D.role==="worker"?"На приёмке у работника":"Заявлено")).length} на подтверждение</div></button>` : ""}
+      ${(true) ? `<button class="tile${D.works.filter(w=>w.status===(crewSide()?"На приёмке у работника":"Заявлено")).length ? " pri" : ""}" onclick="go('accept')"><span class="ic">✅</span>
+        <span class="nm">Приёмка</span><div class="h">${D.works.filter(w=>w.status===(crewSide()?"На приёмке у работника":"Заявлено")).length} на подтверждение</div></button>` : ""}
       <button class="tile" onclick="go('buy')"><span class="ic">🛒</span>
         <span class="nm">Материалы</span></button>
       <button class="tile${chgTheirs().length ? " pri" : ""}" onclick="go('changes')"><span class="ic">📝</span>
@@ -4164,7 +4854,7 @@ works(){
 },
 
 accept(){
-  const worker = D.role === "worker"; const pend = D.works.filter(w => w.status === (worker ? "На приёмке у работника" : "Заявлено"));
+  const worker = crewSide(); const pend = D.works.filter(w => w.status === (worker ? "На приёмке у работника" : "Заявлено"));
   return `
     <div class="hello">Приёмка</div>
     <div class="sub">${pend.length ? pend.length + " на подтверждение" : "нет заявленных работ"}</div>
@@ -4725,6 +5415,7 @@ object(){
         " · периметр " + numOrDash(r.perimeter_m, "м") + " · высота " + numOrDash(r.height_m, "м") + "</div>" +
       '<div class="m" style="margin-top:4px">стены ' + numOrDash(r.wall_m2, "м²") + " · потолок " + numOrDash(r.ceiling_m2, "м²") +
         " · окон " + numOrDash(r.windows, "") + " · дверей " + numOrDash(r.doors, "") + "</div>" +
+      planCCompareLine(r) +
       wallLine +
       /* Поле и «Нет» стоят всегда [чат 029]. До 029.2 ввод показывался только
          при пустом значении, и записанный ноль запирал карточку: «если ошибся,
@@ -5465,7 +6156,7 @@ function showVResult(d){
         <div class="vt">${esc(it.name || it.code || "")}</div>
         ${it.room ? `<div class="vd">${esc(it.room)}</div>` : ""}
         <div class="vv">${claim
-          ? `<b>Заявить готовность</b> — уйдёт ${D.role==="worker" ? "заказчику" : "работнику"} на приёмку`
+          ? `<b>Заявить готовность</b> — уйдёт ${crewSide() ? "заказчику" : "работнику"} на приёмку`
           : `${esc(it.field_label || it.field || "")}: <b>${esc(it.value_label ?? it.value ?? "")}</b>`}</div>
       </div>
     </div>`;
@@ -6389,6 +7080,15 @@ const UZ = {
 "Разметить план":"Rejani belgilash",
 "Дополнить разметку":"Belgilashni to'ldirish",
 "План ещё не загрузился":"Reja hali yuklanmadi",
+"Задать масштаб":"Masshtabni belgilash","Обвести помещение":"Xona konturini chizish",
+"Убрать точку":"Nuqtani olib tashlash","Замкнуть":"Yopish","Расстояние, м":"Masofa, m",
+"Масштаб не задан":"Masshtab belgilanmagan","Масштаб от прежнего снимка":"Masshtab avvalgi suratdan",
+"Контур пересекает сам себя":"Kontur o'z-o'zini kesib o'tadi","Линейка":"Chizg'ich",
+"Сходится":"Mos keladi","Проверьте контур или обмер":"Konturni yoki o'lchovni tekshiring",
+"Выберите самый длинный отрезок, длину которого знаете точно":"Uzunligini aniq bilgan eng uzun kesmani tanlang",
+"Коснитесь двух точек на плане":"Rejada ikkita nuqtaga tegining",
+"Коснитесь углов помещения":"Xona burchaklariga tegining",
+"Коснитесь углов помещения:":"Xona burchaklariga tegining:",
 "Разметка плана записана":"Reja belgilanishi yozildi",
 "Пропустить":"O'tkazib yuborish",
 "Всё отмечено. Нажмите «Готово», чтобы записать.":"Hammasi belgilandi. Yozish uchun «Tayyor» tugmasini bosing.",
@@ -6535,6 +7235,14 @@ const UZ_RULES = [
   [/^Отмечено: (\d+) — коснитесь, чтобы переставить$/, "Belgilandi: $1 — ko'chirish uchun bosing"],
   [/^Пропущено: (\d+)\. Их можно отметить позже — кнопкой «Дополнить разметку»\. Нажмите «Готово», чтобы записать отмеченное\.$/,
     "O'tkazib yuborildi: $1 ta. Ularni keyinroq «Belgilashni to'ldirish» tugmasi bilan belgilash mumkin. Belgilanganini yozish uchun «Tayyor» tugmasini bosing."],
+  /* Уровень C разметки [чат 048]: всё с числом внутри — шаблоном (§3.2 карты
+     вставки 046; та же грабля, что всплывала в 029/037/039/021). */
+  [/^Отмечено вершин: (\d+)$/, "Belgilangan uchlar: $1"],
+  [/^Осталось обвести: (\d+)$/, "Chizish qoldi: $1"],
+  [/^по плану ([\d,]+) м² · в обмерах ([\d,]+) м² — сходится$/, "reja bo'yicha $1 m² · o'lchovlarda $2 m² — mos keladi"],
+  [/^по плану ([\d,]+) м² · в обмерах ([\d,]+) м² — расходится на ([\d,]+) %$/, "reja bo'yicha $1 m² · o'lchovlarda $2 m² — $3 % farq"],
+  [/^([\d,]+) м² · ([\d,]+) м$/, "$1 m² · $2 m"],
+  [/^([\d,]+) м$/, "$1 m"],
   /* Объём по судьбе проёма [чат 033]: число внутри — значит шаблон. */
   [/^по схеме: (\d+) из (\d+)$/, "sxema bo'yicha: $2 tadan $1 tasi"],
   /* Счётчик окон на плашке графа [чат 033]. */
@@ -6912,7 +7620,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "039.1";
+const BUILD = "048.1";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
