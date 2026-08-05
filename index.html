@@ -6523,6 +6523,119 @@ function qzSummaryHtml(){
     '<div class="m" style="margin-top:10px"><button onclick="qzStop()" style="width:100%;padding:12px;border-radius:12px;border:1px solid #3a3a3c;background:#1c1c1e;color:#fff;font-size:15px">Закончить опрос</button></div>';
 }
 
+/* ── Г-5. Озвучивание вопроса (TTS) ───────────────────────────────
+   Решение Дмитрия [чат 060]: переключатель «авто/ручной», по умолчанию
+   РУЧНОЙ. Разбор 23 §9 назвал цену автозапуска записи заранее: микрофон
+   включается сам, а запись звука необратима — поэтому «авто» это выбор
+   человека, а не умолчание системы.
+
+   Ручной — вопрос читается кнопкой 🔊, микрофон включает человек.
+   Авто    — вопрос читается сам один раз при появлении, и по окончании
+             чтения включается запись (у вопросов, где ответ голосом
+             вообще предусмотрен, то есть q.mode задан).
+
+   Озвучивается та же строка, что видна на экране (§9: текст вопроса =
+   озвучиваемая форма), языком интерфейса — новых языковых сущностей
+   двусторонность не заводит. */
+const QZ_TTS_KEY = "remont_tts";
+let QZ_TTS = "manual";
+try{
+  const s = localStorage.getItem(QZ_TTS_KEY);
+  if(s === "auto" || s === "manual") QZ_TTS = s;
+}catch(e){}
+
+function qzTtsOk(){
+  return typeof window !== "undefined" && !!window.speechSynthesis &&
+         typeof window.SpeechSynthesisUtterance === "function";
+}
+
+function qzTtsLang(){ return LANG === "uz" ? "uz-UZ" : "ru-RU"; }
+
+/* Идёт ли сейчас запись или разбор — авто не перебивает начатое. */
+function qzTtsBusy(){
+  try{ if(mediaRec && mediaRec.state === "recording") return true; }catch(e){}
+  try{
+    const sh = document.getElementById("vsheet");
+    if(sh && sh.style && sh.style.display && sh.style.display !== "none") return true;
+  }catch(e){}
+  return false;
+}
+
+function qzTtsStop(){
+  try{ if(qzTtsOk()) window.speechSynthesis.cancel(); }catch(e){}
+}
+
+/* Переключатель. Смена режима не пишется ни в какие данные объекта —
+   это настройка клиента, живёт рядом с языком интерфейса. */
+function qzTtsSet(mode){
+  QZ_TTS = (mode === "auto") ? "auto" : "manual";
+  try{ localStorage.setItem(QZ_TTS_KEY, QZ_TTS); }catch(e){}
+  if(QZ_TTS === "manual"){ qzTtsStop(); }
+  else { if(QZ) QZ.spoken = ""; }   // включили авто — текущий вопрос прочитать
+  render();
+}
+
+/* Озвучиваемая форма: одна строка без вёрстки, вопрос плюс подсказка. */
+function qzSpeakText(q){
+  const t = String((q && q.text) || "").replace(/\s+/g, " ").trim();
+  const h = String((q && q.hint) || "").replace(/\s+/g, " ").trim();
+  return h ? (t + " " + h) : t;
+}
+
+function qzSpeak(text, after){
+  if(!qzTtsOk()){
+    toast("Озвучка недоступна в этом клиенте", "bad");
+    if(after) after(false);
+    return;
+  }
+  try{
+    window.speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(String(text || ""));
+    u.lang = qzTtsLang();
+    let done = false;
+    const fin = ok => { if(done) return; done = true; if(after) after(ok); };
+    u.onend = () => fin(true);
+    u.onerror = () => fin(false);
+    window.speechSynthesis.speak(u);
+  }catch(e){ if(after) after(false); }
+}
+
+/* Кнопка 🔊: читает активный вопрос. Повторное нажатие читает заново. */
+function qzSayOut(){
+  const q = qzCur();
+  if(!q) return;
+  if(QZ) QZ.spoken = String(q.id || "");
+  qzSpeak(qzSpeakText(q), null);
+}
+
+/* Авто-режим. Вызывается после отрисовки экрана опроса; один вопрос
+   читается один раз — признак прочитанного держится по коду вопроса,
+   поэтому перерисовка экрана (поллинг, тост, ввод) речь не повторяет. */
+function qzAuto(){
+  if(QZ_TTS !== "auto") return;
+  if(!QZ || !QZ.on) return;
+  if(typeof stack !== "undefined" && stack[stack.length - 1] !== "quiz") return;
+  if(qzTtsBusy()) return;
+  const q = qzCur();
+  if(!q) return;
+  const id = String(q.id || "");
+  if(QZ.spoken === id) return;
+  QZ.spoken = id;
+  qzSpeak(qzSpeakText(q), spoken => {
+    /* Запись включается только вслед за прозвучавшим вопросом: если синтез
+       сорвался, человек вопроса не слышал — включать ему микрофон молча
+       нельзя (разбор 23 §9: неожиданная запись хуже лишнего тапа). */
+    if(!spoken){ toast("Вопрос не озвучился — ответьте кнопкой", "wait"); return; }
+    if(QZ_TTS !== "auto" || !QZ || !QZ.on) return;
+    if(typeof stack !== "undefined" && stack[stack.length - 1] !== "quiz") return;
+    const cur = qzCur();
+    if(!cur || String(cur.id || "") !== id) return;  // вопрос сменился, пока читали
+    if(!cur.mode) return;                            // ответ голосом не предусмотрен
+    if(qzTtsBusy()) return;
+    qzVoice();
+  });
+}
+
 /* ── Экран опроса ─────────────────────────────────────────────── */
 function qzScreen(){
   const q = qzCur();
@@ -6582,6 +6695,28 @@ function qzScreen(){
     ? '<button onclick="qzVoice()" style="width:100%;margin-top:12px;padding:14px;border-radius:14px;border:0;background:#0a84ff;color:#fff;font-size:16px">🎤 Ответить голосом</button>'
     : "";
 
+  /* Г-5: озвучка вопроса. Кнопка читает вслух, сегмент выбирает режим —
+     в «авто» вопрос читается сам и после чтения включается микрофон. */
+  const ttsSeg = (on, mode, label) =>
+    '<button onclick="qzTtsSet(' + JSON.stringify(mode).replace(/"/g, "&quot;") + ')" ' +
+      'style="padding:7px 12px;border-radius:9px;border:1px solid ' + (on ? "#0a84ff" : "#3a3a3c") + ';' +
+      'background:' + (on ? "#0a84ff" : "#1c1c1e") + ';color:#fff;font-size:13px">' + esc(label) + "</button>";
+  const tts = qzTtsOk()
+    ? '<div style="display:flex;gap:8px;align-items:center;margin-top:10px;flex-wrap:wrap">' +
+        '<button onclick="qzSayOut()" style="padding:9px 13px;border-radius:11px;border:1px solid #3a3a3c;background:#1c1c1e;color:#fff;font-size:14px">🔊 Прочитать вопрос</button>' +
+        '<span class="m" style="opacity:.75">Озвучка:</span>' +
+        ttsSeg(QZ_TTS !== "auto", "manual", "ручная") +
+        ttsSeg(QZ_TTS === "auto", "auto", "авто") +
+        (QZ_TTS === "auto"
+          ? '<span class="m" style="opacity:.75;width:100%">Вопрос читается сам, после чтения включается запись — микрофон включать не нужно.</span>'
+          : "") +
+      "</div>"
+    : '<div class="m" style="margin-top:10px;opacity:.75">Озвучка в этом клиенте недоступна</div>';
+
+  /* Экран рисуется строкой; читать вслух можно только после того, как
+     она попала в документ, — поэтому чтение планируется отдельным тактом. */
+  if(QZ_TTS === "auto"){ try{ setTimeout(qzAuto, 0); }catch(e){} }
+
   const log = QZ.log.length
     ? '<div class="stat" style="margin-top:12px"><div class="m" style="opacity:.75">Записано в этом опросе</div>' +
       QZ.log.map(s => '<div class="m" style="margin-top:4px">· ' + esc(s) + "</div>").join("") + "</div>"
@@ -6594,7 +6729,7 @@ function qzScreen(){
       (isLate ? '<div class="m" style="color:#ff9f0a">Возвращаюсь к отложенному</div>' : "") +
       '<div style="font-size:19px;line-height:1.35;margin:4px 0 6px">' + esc(q.text) + "</div>" +
       (q.hint ? '<div class="m" style="opacity:.75">' + esc(q.hint) + "</div>" : "") +
-      mic + answer + say +
+      mic + tts + answer + say +
     "</div>" +
     '<div style="display:flex;gap:8px;margin-top:12px">' +
       '<button onclick="qzPrev()" style="flex:1;padding:11px;border-radius:11px;border:1px solid #3a3a3c;background:#1c1c1e;color:#fff;font-size:14px">Назад</button>' +
@@ -8750,7 +8885,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "060.1";
+const BUILD = "065.1";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
