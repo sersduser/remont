@@ -7280,25 +7280,51 @@ function vrSide(x){
   const byGroup = roomList().find(r => vrGroup(r.name) === g);
   return byGroup ? String(byGroup.code) : "";
 }
-function vrElems(r){
+function vrElems(r) {
   const list = Array.isArray(r.elements) ? r.elements : [];
   return list.map(x => {
-    const side = vrSide(x);
-    const near = side ? elemOf(r.code).filter(e => elemSide(e, r.code) === side) : [];
+    /* [063] Адрес проёма из вопроса главнее названия стороны: сервер с 062 отдаёт
+       поле el — код элемента, взятый из кода вопроса q (например "size:EL-04").
+       Когда он есть, искать ребро по сказанному не нужно и нельзя: на вопрос
+       «Коридор ↔ Туалет: ширина и высота?» человек отвечает числами, без стороны. */
+    const byEl = x.el ? elemAll().find(e => String(e.id) === String(x.el)) : null;
+    const side = byEl ? elemSide(byEl, r.code) : vrSide(x);
+    const near = byEl ? [byEl] : (side ? elemOf(r.code).filter(e => elemSide(e, r.code) === side) : []);
     const cur = near.length === 1 ? near[0] : null;
     const ch = [];
     const put = (col, key, val) => {
-      if(!val) return;
-      const was = String((cur || {})[key] || "").trim();
-      if(was === val) return;                       // сказанное уже стоит — менять нечего
-      ch.push({ col: col, key: key, now: val, was: was, conflict: !!cur && was !== "", _sel: !(cur && was !== "") });
+      if (!val) return;
+      const was = String((cur || {})[key] || '').trim();
+      if (was === val) return;
+      ch.push({ col: col, key: key, now: val, was: was, conflict: !!cur && was !== '', _sel: !(cur && was !== '') });
     };
-    put("Тип_факт", "fact", x.fact);
-    put("Судьба", "fate", x.fate);
-    put("Тип_план", "plan", x.plan);
+    /* [063] Числовые поля проёма. Три отличия от строковых:
+       (1) сравнение числом — «0,92» из листа и 0.92 из ответа сервера это одно и то же;
+       (2) запись в формате листа (десятичная запятая) — writeCell для 13_Элементы
+           отдаёт значение как есть, замену точки делает вызывающая сторона;
+       (3) ноль допустим у подоконника (окно от пола) и недопустим у ширины и высоты. */
+    const putNum = (col, key, val, zeroOk) => {
+      if (val === null || val === undefined || val === '') return;
+      const n = Number(val);
+      if (!isFinite(n) || (zeroOk ? n < 0 : !(n > 0))) return;
+      const raw = (cur || {})[key];
+      const was = (raw === undefined || raw === null || String(raw).trim() === '') ? '' : String(raw);
+      const wasNum = was === '' ? NaN : Number(was.replace(',', '.'));
+      if (was !== '' && isFinite(wasNum) && Math.abs(wasNum - n) < 0.005) return;   // уже стоит
+      ch.push({
+        col: col, key: key, now: String(n).replace('.', ','), was: was,
+        conflict: !!cur && was !== '', _sel: !(cur && was !== '')
+      });
+    };
+    put('Тип_факт', 'fact', x.fact);
+    put('Судьба', 'fate', x.fate);
+    put('Тип_план', 'plan', x.plan);
+    putNum('Ширина_м', 'w', x.w, false);
+    putNum('Высота_м', 'h', x.h, false);
+    putNum('Низ_м', 'sill', x.sill, true);
     return {
-      said: String(x.side || x.side_code || ""), side: side,
-      id: cur ? cur.id : "", many: near.length > 1,
+      said: String(x.side || x.side_code || ''), side: side,
+      id: cur ? cur.id : '', many: near.length > 1,
       isNew: !near.length && !!side, unknown: !side,
       changes: ch, _sel: false
     };
