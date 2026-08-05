@@ -291,7 +291,7 @@ function depBlockers(w){
   if (!D || !D.works || !w) return [];
   return depCodes(w)
     .map(c => D.works.find(x => x.code === c))
-    .filter(p => p && p.status !== "Готово" && p.status !== "Снято");
+    .filter(p => p && p.status !== "Готово" && p.status !== "Снято" && p.status !== "Пропущен");
 }
 function depAsk(w, blockers){
   return new Promise(resolve => {
@@ -515,9 +515,72 @@ function profToggle(code){
   if(picked[code]) delete picked[code];
   else {
     const kind = ((D.catalog || {}).kinds || []).find(x => x.code === code);
-    picked[code] = { vol: profVol(kind, profRoom()), manual: false };
+    picked[code] = { vol: profVol(kind, profRoom()), manual: false, skip: '' };
   }
   render();
+}
+
+/* ── Пропуск этапа [чат 054 разбор 25 · реализация 058] ───────────────────
+   Классификатор этапный, но часть этапов технология разрешает не делать:
+   «красим поверх старого», «штробы уже готовы», «сделано хозяином». Условия
+   живут в справочнике (колонка «Пропуск_при», поле skip_when) открытым
+   перечнем через «;» — предугадать все ситуации нельзя, и закрытый список
+   врал бы больше, чем помогал.
+
+   По умолчанию этап ВКЛЮЧЁН: молча пропустить нельзя (то же правило
+   переспроса, что у обмеров, решение 016). Пропуск — осознанное действие
+   человека, и у него обязательно есть ПРИЧИНА: при разрыве с подрядчиком
+   «пропущено: красим поверх» и «пропущено: сделано хозяином» — это разные
+   деньги и разные споры, а «просто не делали» не отвечает ни на один вопрос.
+
+   След остаётся строкой сметы со статусом «Пропущен», объёмом 0 и без цены:
+   профиль — не документ, а строка сметы — документ. В расчёты (баланс, срок,
+   приёмка) такая строка не входит, как и «Снято». */
+function profSkipList(code){
+  const k = ((D.catalog || {}).kinds || []).find(x => x.code === code);
+  return String((k || {}).skip_when || '').split(';').map(s => s.trim()).filter(Boolean);
+}
+function profCanSkip(code){ return profSkipList(code).length > 0; }
+
+function profSkip(code, reason){
+  const picked = profPicked();
+  if(!picked[code]) return;
+  const r = String(reason || '').trim();
+  if(!r){ toast('Нужна причина пропуска'); return; }
+  picked[code].skip = r;
+  render();
+}
+function profUnskip(code){
+  const picked = profPicked();
+  if(!picked[code]) return;
+  picked[code].skip = '';
+  render();
+}
+function profSkipOwn(el){
+  const code = el.getAttribute('data-code');
+  const v = String(el.value ?? '').trim();
+  if(!v){ toast('Впишите причину — иначе пропуск не объяснить'); return; }
+  profSkip(code, v);
+}
+function profSkipUI(code){
+  const picked = profPicked();
+  const it = picked[code] || {};
+  const c = esc(code);
+  if(it.skip){
+    return '<div class="m" style="margin-top:6px;color:#ff9f0a">Этап пропущен · причина: ' + esc(it.skip) + '</div>' +
+      '<div class="m" style="margin-top:4px"><button onclick="profUnskip(\'' + c + '\')" ' +
+      'style="padding:6px 10px;border-radius:8px;border:1px solid #3a3a3c;background:#1c1c1e;color:#fff;font-size:13px">Вернуть в работу</button></div>';
+  }
+  const reasons = profSkipList(code);
+  if(!reasons.length) return '';
+  return '<div class="m" style="margin-top:6px;opacity:.8">Можно пропустить, если: ' + esc(reasons.join(' · ')) + '</div>' +
+    '<div class="m" style="margin-top:4px;display:flex;flex-wrap:wrap;gap:6px">' +
+      reasons.map(r => '<button onclick="profSkip(\'' + c + '\', ' + JSON.stringify(r).replace(/"/g, '&quot;') + ')" ' +
+        'style="padding:6px 10px;border-radius:8px;border:1px solid #3a3a3c;background:#1c1c1e;color:#ff9f0a;font-size:13px">Пропустить: ' + esc(r) + '</button>').join('') +
+    '</div>' +
+    '<div class="m" style="margin-top:4px">Своя причина: ' +
+      '<input type="text" data-code="' + c + '" onchange="profSkipOwn(this)" placeholder="почему этап не нужен" ' +
+      'style="width:190px;padding:6px;border-radius:8px;border:1px solid #3a3a3c;background:#000;color:#fff"></div>';
 }
 
 function profSetVol(el){
@@ -533,32 +596,36 @@ function profSetVol(el){
 
 function profTotal(roomCode){                    // итог одного помещения
   const picked = (PROF.plan[roomCode || PROF.room] || {});
-  let n = 0, sum = 0, blank = 0;
+  let n = 0, sum = 0, blank = 0, skipped = 0;
   for(const code of Object.keys(picked)){
     const it = picked[code];
     n++;
+    /* Пропущенный этап не стоит денег и не требует объёма — иначе кнопка
+       сборки сметы упиралась бы в «без объёма» у строки, которую как раз
+       и решили не делать. */
+    if(it.skip){ skipped++; continue; }
     if(it.vol === null || !(Number(it.vol) > 0)) { blank++; continue; }
     sum += Number(it.vol) * profPrice(code);
   }
-  return { n, sum: Math.round(sum * 100) / 100, blank };
+  return { n, sum: Math.round(sum * 100) / 100, blank, skipped };
 }
 function profTotalAll(){                         // итог по всему плану
-  let n = 0, sum = 0, blank = 0, rooms = 0;
+  let n = 0, sum = 0, blank = 0, rooms = 0, skipped = 0;
   Object.keys(PROF.plan).forEach(rc => {
     const t = profTotal(rc);
     if(!t.n) return;
-    rooms++; n += t.n; sum += t.sum; blank += t.blank;
+    rooms++; n += t.n; sum += t.sum; blank += t.blank; skipped += t.skipped;
   });
-  return { rooms, n, sum: Math.round(sum * 100) / 100, blank };
+  return { rooms, n, sum: Math.round(sum * 100) / 100, blank, skipped };
 }
 function profTotalText(){
   const t = profTotal();
-  return t.n ? ('Выбрано ' + t.n + ' · на ' + fmt(t.sum) + ' USD' + (t.blank ? (' · без объёма: ' + t.blank) : '')) : 'Ничего не выбрано';
+  return t.n ? ('Выбрано ' + t.n + ' · на ' + fmt(t.sum) + ' USD' + (t.blank ? (' · без объёма: ' + t.blank) : '') + (t.skipped ? (' · пропущено этапов: ' + t.skipped) : '')) : 'Ничего не выбрано';
 }
 function profTotalAllText(){
   const t = profTotalAll();
   if(!t.n) return 'План пуст';
-  return 'В плане ' + t.n + ' работ в ' + t.rooms + ' помещ. · ' + fmt(t.sum) + ' USD' + (t.blank ? (' · без объёма: ' + t.blank) : '');
+  return 'В плане ' + t.n + ' работ в ' + t.rooms + ' помещ. · ' + fmt(t.sum) + ' USD' + (t.blank ? (' · без объёма: ' + t.blank) : '') + (t.skipped ? (' · пропущено этапов: ' + t.skipped) : '');
 }
 
 // Сборка сметы: выбранное по ВСЕМ помещениям плана превращается в строки листа 01_Работы [чат 007 · многокомнатно 017]
@@ -587,32 +654,38 @@ async function profBuild(){
     codes.forEach(c => { newCode[c] = rc + '-' + String(next++).padStart(2, '0'); });
     codes.forEach(c => {
       const k = kindOf(c);
-      const vol = Number(PROF.plan[rc][c].vol);
-      const rate = profPrice(c);
+      const skip = String(PROF.plan[rc][c].skip || '').trim();
+      const vol = skip ? 0 : Number(PROF.plan[rc][c].vol);
+      const rate = skip ? 0 : profPrice(c);
       // Типовые зависимости вида превращаются в ссылки на строки этого же помещения —
       // те предшественники, которые здесь не выбраны, просто опускаются.
       const deps = String(k.deps || '').split(',').map(x => x.trim()).filter(x => x && newCode[x]).map(x => newCode[x]);
+      /* Пропущенный этап уходит в смету строкой-следом: статус «Пропущен»,
+         объём и цена пустые, причина в примечании с датой. Зависимостей у
+         неё нет намеренно — иначе снятый этап держал бы цепочку срока. */
       rows.push({
         'Код': newCode[c],
         'Помещение': room.name,
         'Раздел': k.section || '',
         'Работа': k.name || c,
         'Ед': k.unit || '',
-        'Объём': vol,
-        'Ставка_USD': rate || '',
+        'Объём': skip ? 0 : vol,
+        'Ставка_USD': (!skip && rate) ? rate : '',
         'Категория': 'База',
-        'Цена_аллокация_USD': rate ? Math.round(vol * rate * 100) / 100 : '',
-        'Статус': 'Не начато',
+        'Цена_аллокация_USD': (!skip && rate) ? Math.round(vol * rate * 100) / 100 : '',
+        'Статус': skip ? 'Пропущен' : 'Не начато',
         'Готовность_%': 0,
         'Источник': 'профиль ремонта',
-        'Примечание': 'вид ' + c,
-        'Зависит_от': deps.length ? deps.join(', ') : '—',
+        'Примечание': 'вид ' + c + (skip ? (' · пропуск: ' + skip + ' [' + crewToday() + ']') : ''),
+        'Зависит_от': skip ? '—' : (deps.length ? deps.join(', ') : '—'),
       });
     });
   });
 
   const t = profTotalAll();
-  if(!confirm('Добавить ' + rows.length + ' работ в смету на ' + fmt(t.sum) + ' USD?\nПомещения: ' + names.join(', '))) return;
+  if(!confirm('Добавить ' + rows.length + ' работ в смету на ' + fmt(t.sum) + ' USD?' +
+    (t.skipped ? ('\nИз них пропущенных этапов: ' + t.skipped + ' — уйдут строками без цены, с причиной') : '') +
+    '\nПомещения: ' + names.join(', '))) return;
 
   try{
     const r = await fetch(API + '/append', {
@@ -2873,7 +2946,7 @@ const workDur   = w => Number((w && w.dur) || 0) || 0;
 /* Работы, доступные для изменения: принятые заморожены решением чата 006 —
    цена «Готово» не пересматривается, изменения действуют вперёд. */
 function chgOpenWorks(){
-  return (D.works || []).filter(w => w.status !== 'Готово' && w.status !== 'Снято');
+  return (D.works || []).filter(w => w.status !== 'Готово' && w.status !== 'Снято' && w.status !== 'Пропущен');
 }
 
 function chgCalc(){
@@ -3508,7 +3581,7 @@ const refIsClient = () => ['admin','owner'].includes(D.role);
    нечего, и выдумывать им вес — значит назначить цену наугад. */
 function allocPlan(total){
   const sum = Math.round((Number(total) || 0) * 100) / 100;
-  const live = (D.works || []).filter(w => w.code && w.status !== 'Снято');
+  const live = (D.works || []).filter(w => w.code && w.status !== 'Снято' && w.status !== 'Пропущен');
   const priced = live.filter(w => (Number(w.price_alloc_usd) || 0) > 0);
   const nopr = live.filter(w => !((Number(w.price_alloc_usd) || 0) > 0));
   const base = Math.round(priced.reduce((s, w) => s + Number(w.price_alloc_usd), 0) * 100) / 100;
@@ -3529,7 +3602,7 @@ function allocPlan(total){
 
 /* Снимок текущего состояния: то, что стороны фиксируют как стартовое. */
 function refSnap(){
-  const works = (D.works || []).filter(w => w.code && w.status !== 'Снято');
+  const works = (D.works || []).filter(w => w.code && w.status !== 'Снято' && w.status !== 'Пропущен');
   const tm = timeCalc();
   const mats = (D.materials || []);
   const crew = Number((D.settings || {})['Рабочих_в_бригаде']);
@@ -4992,12 +5065,15 @@ profile(){
         '<div class="m">' + esc(k.code) + ' · ' + esc(k.unit || '') + ' · ' + (rate ? (fmt(rate) + ' USD за единицу') : 'цена не задана') +
           (auto === null ? ' · объём вводится вручную' : '') +
           (hint ? (' · ' + esc(hint)) : '') +
-          (dup ? ' · <span style="color:#ff9f0a">уже в смете</span>' : '') + '</div>' +
-        (on ? ('<div class="m" style="margin-top:6px">объём: ' +
+          (dup ? ' · <span style="color:#ff9f0a">уже в смете</span>' : '') +
+          (!on && profCanSkip(k.code) ? ' · <span style="opacity:.75">этап пропускаем</span>' : '') + '</div>' +
+        (on && picked[k.code].skip ? profSkipUI(k.code) : '') +
+        (on && !picked[k.code].skip ? ('<div class="m" style="margin-top:6px">объём: ' +
           '<input type="number" step="0.01" inputmode="decimal" data-code="' + esc(k.code) + '" value="' + (vol === null ? '' : vol) + '"' +
           ' onchange="profSetVol(this)" style="width:100px;padding:6px;border-radius:8px;border:1px solid #3a3a3c;background:#000;color:#fff"> ' + esc(k.unit || '') +
           (sum ? ('  →  ' + fmt(sum) + ' USD') : '') +
           (picked[k.code].manual ? ' · изменено вручную' : '') + '</div>') : '') +
+        (on && !picked[k.code].skip ? profSkipUI(k.code) : '') +
         '</div>';
     }).join('');
     return '<div class="sub" style="margin-top:14px">' + esc(g) + '</div>' + items;
@@ -5028,7 +5104,7 @@ terms(){
       '<div class="m">' + esc(code) + ' · ' + esc(String(w.room || '').split(' (')[0]) + ' · ' +
       (Number(w.dur) || 0.5) + ' дн · финиш на ' + (t.plan.fin[code] !== undefined ? Math.round((t.plan.fin[code]) * 10) / 10 : (s.ef[code] || 0)) + '-й день · ' + esc(w.status || '') + (pauseOf(w) > 0 ? ' · после — пауза ' + pauseOf(w) + ' дн' : '') + '</div></div>';
   };
-  const soon = (D.works || []).filter(w => w.status !== 'Готово' && w.code)
+  const soon = (D.works || []).filter(w => w.status !== 'Готово' && w.status !== 'Пропущен' && w.code)
     .sort((a, b) => (t.plan.fin[a.code] || 0) - (t.plan.fin[b.code] || 0)).slice(0, 12);
   const late = t.diff === null ? '' : (t.diff >= 0
     ? ('<div class="r"><span class="k">Опережение</span><span class="v">' + t.diff + ' дн</span></div>')
@@ -6489,12 +6565,17 @@ function showVRepair(d){
         <div class="vchk">✓</div>
         <div style="flex:1;min-width:0">
           <div class="vv">${esc(k.name)}<span style="opacity:.6"> · ${esc(k.unit || "")}</span></div>
-          <div class="vd">${esc(k.code)}${k.src === "tech" ? " · добавлено по технологии" : ""}${k.already ? ' · <span style="color:#ff9f0a">уже в смете</span>' : ""}</div>
+          <div class="vd">${esc(k.code)}${k.src === "tech" ? " · добавлено по технологии" : ""}${k.already ? ' · <span style="color:#ff9f0a">уже в смете</span>' : ""}${profCanSkip(k.code) ? ' · <span style="opacity:.75">этап пропускаем</span>' : ""}</div>
         </div>
       </div>`).join("");
     const tech = r.kinds.filter(k => k.src === "tech").length;
     const dup  = r.kinds.filter(k => k.already).length;
-    const note = [tech ? `по технологии добавлено: ${tech}` : "", dup ? `уже в смете: ${dup} — не отмечено` : ""].filter(Boolean).join(" · ");
+    /* Пропускаемые этапы называем прямо в окне: человек только что произнёс
+       результат («стены под обои»), а сервер достроил цепочку — и часть её он,
+       возможно, делать не собирается. Решение о пропуске принимается в профиле
+       (там причина и след в смете), здесь — только подсказка, что выбор есть. */
+    const skp = r.kinds.filter(k => profCanSkip(k.code)).length;
+    const note = [tech ? `по технологии добавлено: ${tech}` : "", dup ? `уже в смете: ${dup} — не отмечено` : "", skp ? `этапов можно пропустить: ${skp} — решается в профиле` : ""].filter(Boolean).join(" · ");
     return `<div style="margin-bottom:12px">${head}${note ? `<div class="vd" style="margin:2px 0 6px">${esc(note)}</div>` : ""}${kl}
       </div>`;
   }).join("");
@@ -7167,6 +7248,13 @@ const UZ = {
 "Не удалось загрузить бригаду":"Brigadani yuklab bo'lmadi",
 "в т.ч. технологические паузы":"shu jumladan texnologik pauzalar",
 "добавлено по технологии":"texnologiya bo'yicha qo'shildi",
+"этап пропускаем":"bosqichni o'tkazib yuborish mumkin",
+"Вернуть в работу":"Ishga qaytarish",
+"Своя причина:":"O'z sababingiz:",
+"почему этап не нужен":"nega bu bosqich kerak emas",
+"Нужна причина пропуска":"O'tkazib yuborish sababi kerak",
+"Впишите причину — иначе пропуск не объяснить":"Sababni yozing — aks holda o'tkazib yuborishni izohlab bo'lmaydi",
+"Пропущен":"O'tkazib yuborilgan",
 "уже в смете":"smetada bor","сказано":"aytilgan",
 "снимок остался в чате бота":"surat bot chatida qoldi",
 "Не подтверждено расходов":"Tasdiqlanmagan xarajatlar",
@@ -7342,6 +7430,11 @@ const UZ_RULES = [
   [/^([\d\s .,]+) сум из аванса (.+) — без расшифровки\.$/, "$1 so'm avansdan $2 — tafsilotsiz."],
   [/^\(было ([\d.,]+) — заменить\?\)$/, "(edi $1 — almashtirilsinmi?)"],
   [/^по технологии добавлено: (\d+)$/, "texnologiya bo'yicha qo'shildi: $1"],
+  [/^этапов можно пропустить: (\d+) — решается в профиле$/, "o'tkazib yuborish mumkin bo'lgan bosqichlar: $1 — profilda hal qilinadi"],
+  [/^пропущено этапов: (\d+)$/, "o'tkazib yuborilgan bosqichlar: $1"],
+  [/^Можно пропустить, если: (.+)$/, "Quyidagi holatda o'tkazib yuborish mumkin: $1"],
+  [/^Пропустить: (.+)$/, "O'tkazib yuborish: $1"],
+  [/^Этап пропущен · причина: (.+)$/, "Bosqich o'tkazib yuborilgan · sabab: $1"],
   [/^(−?[\d\s .,]+) \$ к договору · работ: (\d+)$/, "shartnomaga $1 $ · ish: $2"],
   [/^(\d+) помещений · в (\d+) не заданы проёмы$/, "$1 xona · $2 tasida ochiqliklar berilmagan"],
   [/^(\d+) помещений · обмеры полны$/, "$1 xona · o'lchamlar to'liq"],
@@ -7620,7 +7713,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "048.1";
+const BUILD = "058.1";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
