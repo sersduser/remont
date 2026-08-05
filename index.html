@@ -450,12 +450,19 @@ function profVol(kind, room){
   };
   const base = String(kind.base || '').trim();
   if(!base || base === 'вручную') return null;
+  /* Поправки помещения [чат 060, разбор 22 §12]: полоса по высоте подменяет
+     базу «стены», вычеты снимаются с итога, коэффициент объём не трогает —
+     он живёт в цене (приёмка мерит физические метры). Поправок нет — расчёт
+     идёт ровно как до 060: modPlan возвращает null и ни одна ветка не меняется. */
+  const mp = modPlan(kind, room);
   let sum = 0;
   for(const p of base.split('+')){
-    const v = part(p.trim());
+    const nm = p.trim();
+    const v = (mp && mp.band && nm === 'стены') ? mp.band.area : part(nm);
     if(v === null || v === undefined || v === '') return null;   // нет данных — просим ввести руками
     sum += Number(v) || 0;
   }
+  if(mp) sum = modCut(sum, mp);
   return Math.round(sum * 100) / 100;
 }
 
@@ -605,7 +612,7 @@ function profTotal(roomCode){                    // итог одного пом
        и решили не делать. */
     if(it.skip){ skipped++; continue; }
     if(it.vol === null || !(Number(it.vol) > 0)) { blank++; continue; }
-    sum += Number(it.vol) * profPrice(code);
+    sum += Number(it.vol) * profPriceRoom(code, roomCode || PROF.room);
   }
   return { n, sum: Math.round(sum * 100) / 100, blank, skipped };
 }
@@ -656,7 +663,7 @@ async function profBuild(){
       const k = kindOf(c);
       const skip = String(PROF.plan[rc][c].skip || '').trim();
       const vol = skip ? 0 : Number(PROF.plan[rc][c].vol);
-      const rate = skip ? 0 : profPrice(c);
+      const rate = skip ? 0 : profPriceRoom(c, rc);
       // Типовые зависимости вида превращаются в ссылки на строки этого же помещения —
       // те предшественники, которые здесь не выбраны, просто опускаются.
       const deps = String(k.deps || '').split(',').map(x => x.trim()).filter(x => x && newCode[x]).map(x => newCode[x]);
@@ -676,7 +683,7 @@ async function profBuild(){
         'Статус': skip ? 'Пропущен' : 'Не начато',
         'Готовность_%': 0,
         'Источник': 'профиль ремонта',
-        'Примечание': 'вид ' + c + (skip ? (' · пропуск: ' + skip + ' [' + crewToday() + ']') : ''),
+        'Примечание': 'вид ' + c + (skip ? (' · пропуск: ' + skip + ' [' + crewToday() + ']') : modNote(c, rc)),
         'Зависит_от': skip ? '—' : (deps.length ? deps.join(', ') : '—'),
       });
     });
@@ -5060,8 +5067,9 @@ profile(){
       const on = !!picked[k.code];
       const auto = profVol(k, room);
       const hint = elemVolHint(k, room);   // [чат 033] откуда взялось число
+      const mhint = modHint(k, room);      // [чат 060] поправки помещения: полоса, вычеты, коэффициент
       const vol = on ? picked[k.code].vol : auto;
-      const rate = profPrice(k.code);
+      const rate = profPriceRoom(k.code, room.code);
       const sum = (Number(vol) > 0 && rate) ? Math.round(Number(vol) * rate * 100) / 100 : 0;
       const dup = !!already[String(k.code).toUpperCase()];
       return '<div class="work" style="' + (on ? 'border-left:3px solid #30d158;padding-left:9px' : '') + '">' +
@@ -5069,6 +5077,7 @@ profile(){
         '<div class="m">' + esc(k.code) + ' · ' + esc(k.unit || '') + ' · ' + (rate ? (fmt(rate) + ' USD за единицу') : 'цена не задана') +
           (auto === null ? ' · объём вводится вручную' : '') +
           (hint ? (' · ' + esc(hint)) : '') +
+          (mhint ? (' · <span style="color:#0a84ff">' + esc(mhint) + '</span>') : '') +
           (dup ? ' · <span style="color:#ff9f0a">уже в смете</span>' : '') +
           (!on && profCanSkip(k.code) ? ' · <span style="opacity:.75">этап пропускаем</span>' : '') + '</div>' +
         (on && picked[k.code].skip ? profSkipUI(k.code) : '') +
@@ -5504,6 +5513,7 @@ object(){
       inpFor("Окон_шт", "win_" + r.code, need(r.windows) ? "сколько окон" : "окон сейчас " + fmt(r.windows)) +
       inpFor("Дверей_шт", "dr_" + r.code, need(r.doors) ? "сколько дверей" : "дверей сейчас " + fmt(r.doors)) +
       elemBlock(r) +
+      modBlock(r) +
       '<div class="m" style="margin-top:8px">Из чего попадаем в помещение:</div><div>' + adjChips(r.code) + "</div>" +
       "</div>";
   }).join("");
@@ -6603,6 +6613,359 @@ function qzSame(){
   if(q && q.same && el){ el.value = String(q.same).replace(",", "."); el.focus(); }
 }
 
+/* ══════════════════════════════════════════════════════════════════════
+   МОДИФИКАТОРЫ ОБЪЁМА (Н6, разбор 22 §12) — чат 060
+
+   Находка Дмитрия (049): «в санузле возможна вариация: кафель на полу и
+   1,5 метра от пола по стенам; на одной из стен есть вход в шахту и
+   1 квадрат кафеля надо вычесть… натяжной потолок в прямоугольном и
+   г-образном помещении — разная трудоёмкость… мы не всё изобилие ситуаций
+   можем предположить на старте».
+
+   Поэтому здесь не перечисление кейсов, а форма, в которую ложатся и
+   будущие: строка-связка «помещение × цель × правило» (лист 14_Модификаторы).
+
+   Что делает поправка:
+     · `область_высота`  — работа идёт не по всей стене, а по полосе от пола:
+                           периметр × H минус проёмы, попавшие в полосу;
+     · `вычет_м2`/`вычет_шт` — поимённый вычет с причиной;
+     · `коэффициент`     — НЕ трогает объём. Приёмка мерит физические метры,
+                           и «8,55 × 1,2 = 10,26 м² натяжного» — ложь в акте.
+                           Форма помещения удорожает работу, а не увеличивает
+                           площадь, поэтому коэффициент живёт в цене (§12.3).
+
+   Молча ничего не пересчитывается: поправка меняет ПРЕДЛОЖЕНИЕ объёма и цены
+   при сборке профиля и показывается строкой «с учётом: …» — те же ворота
+   переспроса, что у обмеров (решение 016).
+
+   Неизвестный тип не роняет расчёт и не игнорируется молча (§12.4): строка
+   помечается «тип не поддержан этой версией», объём считается без неё —
+   данные готовы принимать новый тип раньше, чем код научится его считать.
+   ══════════════════════════════════════════════════════════════════════ */
+
+const MOD_TYPES = ['вычет_м2', 'вычет_шт', 'область_высота', 'коэффициент'];
+const MOD_BASES = ['стены', 'пол', 'потолок', 'периметр', 'окна', 'двери'];
+
+/* Поправки помещения. Выключенная (Активен=нет) не применяется, но остаётся
+   в списке: выключение вместо удаления — история правок не теряется. */
+function modsOf(roomCode){
+  return (D.modifiers || []).filter(m => String(m.room || '').trim() === String(roomCode) && m.active !== false);
+}
+function modsAll(roomCode){
+  return (D.modifiers || []).filter(m => String(m.room || '').trim() === String(roomCode));
+}
+
+/* Цель поправки: код вида (`KF-04`) · база объёма (`стены`) · группа
+   (`малярка:стены`). Группа до ревизии этапности разворачивается по разделу
+   справочника — честно и грубо, уточнение приедет с этапностью (§12.2). */
+function modAim(m, kind, part){
+  const t = String((m || {}).target || '').trim();
+  if(!t || !kind) return false;
+  if(t.toUpperCase() === String(kind.code || '').trim().toUpperCase()) return true;
+  const seg = t.split(':').map(s => s.trim().toLowerCase());
+  if(seg.length > 1){
+    const sec = String(kind.section || '').toLowerCase();
+    return !!seg[0] && sec.indexOf(seg[0]) >= 0 && (!seg[1] || seg[1] === String(part || '').toLowerCase());
+  }
+  return t.toLowerCase() === String(part || '').toLowerCase();
+}
+
+/* Полоса по высоте: периметр × H минус проёмы, попавшие в полосу.
+   Проём режет полосу ровно на пересечение своих высот с ней — вот ради чего
+   в 053 заведена колонка `Низ_м` (разбор 22 §5). Дверь стоит на полу, поэтому
+   у неё низ 0 по природе; у окна без заданного низа честно говорим, что низ
+   не задан, и в полосе его не учитываем — выдуманный подоконник дал бы
+   правдоподобное, но неверное число (та же черта, что у геометрии в 031).
+
+   Берутся проёмы ОБЕИХ сторон (`elemOf`), как в расчёте площади стен: дверь,
+   записанная за коридором, физически вырезает кусок и в стене спальни. Правило
+   «проём считается один раз» (033) — про объём работы по проёму, а не про дыру
+   в стене. Заложенный проём (факт «нет») стену не режет: он и есть стена. */
+function modBand(room, H){
+  const per = Number(room && room.perimeter_m);
+  if(!(per > 0) || !(Number(H) > 0)) return null;
+  const h = Number(H);
+  let cut = 0, unknown = 0, used = 0;
+  (typeof elemOf === 'function' ? elemOf(room.code) : [])
+   .filter(e => e.fact && String(e.fact).trim() !== 'нет')
+   .forEach(e => {
+    const w = Number(e.w), eh = Number(e.h);
+    const isDoor = (typeof elemType === 'function' ? elemType(e) : '') === 'дверь';
+    const rawLow = e.sill;
+    const low = (rawLow === null || rawLow === undefined || rawLow === '') ? (isDoor ? 0 : null) : Number(rawLow);
+    if(!(w > 0) || !(eh > 0) || low === null || isNaN(low)){ unknown++; return; }
+    const ov = Math.max(0, Math.min(h, low + eh) - Math.max(0, low));
+    if(ov > 0){ cut += w * ov; used++; }
+  });
+  return {
+    h: h,
+    area: Math.round(Math.max(0, per * h - cut) * 100) / 100,
+    cut: Math.round(cut * 100) / 100,
+    used: used, unknown: unknown, per: per
+  };
+}
+
+/* План поправок для пары «вид × помещение»: что заменяет базу, что вычитается,
+   чем умножается цена. Считается один раз и служит обоим — расчёту и подписи:
+   признак, по которому считается величина, записывается один раз (урок 027). */
+function modPlan(kind, room){
+  if(!kind || !room) return null;
+  const list = modsOf(room.code);
+  if(!list.length) return null;
+  const parts = String(kind.base || '').split('+').map(s => s.trim()).filter(Boolean);
+  if(!parts.length || parts[0] === 'вручную') return null;
+  const unit = String(kind.unit || '');
+  const isM2 = /м²|м2/i.test(unit);
+  const out = { band: null, bandMod: null, cuts: [], koef: 1, koefs: [], skipped: [], unknown: [] };
+  list.forEach(m => {
+    const t = String(m.type || '').trim();
+    const v = Number(m.value);
+    const hit = parts.some(p => modAim(m, kind, p));
+    if(MOD_TYPES.indexOf(t) < 0){ if(hit) out.unknown.push(m); return; }
+    if(!hit) return;
+    if(t === 'область_высота'){
+      /* Полоса подменяет базу «стены»: у работы, которая стен не касается,
+         полосе взяться неоткуда. */
+      if(parts.indexOf('стены') < 0 || !(v > 0)) return;
+      const b = modBand(room, v);
+      if(b){ out.band = b; out.bandMod = m; }
+      return;
+    }
+    if(t === 'вычет_м2' || t === 'вычет_шт'){
+      /* Единица работы решает, какой вычет к ней относится: «минус квадрат»
+         бессмысленно вычитать из штук, и наоборот. */
+      if((t === 'вычет_м2') !== isM2){ out.skipped.push(m); return; }
+      if(v > 0) out.cuts.push(m);
+      return;
+    }
+    if(t === 'коэффициент'){ if(v > 0){ out.koef *= v; out.koefs.push(m); } }
+  });
+  if(!out.band && !out.cuts.length && out.koef === 1 && !out.unknown.length && !out.skipped.length) return null;
+  return out;
+}
+
+/* Вычеты применяются к уже посчитанной базе: max(0, база − Σ) — отрицательного
+   объёма не бывает, а ноль означает, что работы здесь нет (правило 033). */
+function modCut(sum, mp){
+  if(!mp || !mp.cuts.length) return sum;
+  let s = Number(sum) || 0;
+  mp.cuts.forEach(m => { s -= Number(m.value) || 0; });
+  return Math.max(0, Math.round(s * 100) / 100);
+}
+
+/* Подпись «с учётом: …» — человек должен видеть, что число не с потолка.
+   Показывается там же, где объём: в конструкторе профиля и в окне сборки. */
+function modHint(kind, room){
+  const mp = modPlan(kind, room);
+  if(!mp) return '';
+  const money = n => (Number(n) || 0).toLocaleString('ru-RU', { maximumFractionDigits: 2 });
+  const bits = [];
+  if(mp.band){
+    bits.push('полоса ' + money(mp.band.h) + ' м от пола' +
+      (mp.band.cut ? (' − проёмы ' + money(mp.band.cut) + ' м²') : '') +
+      (mp.bandMod && mp.bandMod.reason ? (' (' + mp.bandMod.reason + ')') : ''));
+    if(mp.band.unknown) bits.push('низ не задан у ' + mp.band.unknown + ' проёмов — в полосу не считаю');
+  }
+  mp.cuts.forEach(m => bits.push('−' + money(m.value) + (/м²|м2/i.test(String(kind.unit || '')) ? ' м²' : ' шт') +
+    (m.reason ? (' (' + m.reason + ')') : '')));
+  mp.koefs.forEach(m => bits.push('×' + money(m.value) + ' к цене' + (m.reason ? (' (' + m.reason + ')') : '')));
+  mp.skipped.forEach(m => bits.push('вычет «' + String(m.reason || m.id) + '» не в тех единицах — пропущен'));
+  mp.unknown.forEach(m => bits.push('тип «' + String(m.type || '') + '» не поддержан этой версией — считаю без него'));
+  return bits.length ? ('с учётом: ' + bits.join(' · ')) : '';
+}
+
+/* Цена с поправкой формы. Коэффициент удорожает работу, не увеличивая метры,
+   поэтому он живёт здесь, а не в объёме; ставка вида и прайс не меняются
+   (§12.8: поправка не правит справочник). */
+function profKoef(code, roomCode){
+  const kind = ((D.catalog || {}).kinds || []).find(x => x.code === code);
+  const room = (D.rooms || []).find(r => r.code === roomCode);
+  if(!kind || !room) return 1;
+  const mp = modPlan(kind, room);
+  return mp ? mp.koef : 1;
+}
+function profPriceRoom(code, roomCode){
+  return profPrice(code) * profKoef(code, roomCode || PROF.room);
+}
+/* След поправок для примечания строки сметы: через месяц в споре важно, откуда
+   взялись метры и почему цена не равна «объём × ставка прайса». */
+function modNote(code, roomCode){
+  const kind = ((D.catalog || {}).kinds || []).find(x => x.code === code);
+  const room = (D.rooms || []).find(r => r.code === roomCode);
+  if(!kind || !room) return '';
+  const mp = modPlan(kind, room);
+  if(!mp) return '';
+  const bits = [];
+  if(mp.band) bits.push('полоса ' + mp.band.h + ' м' + (mp.bandMod && mp.bandMod.reason ? (': ' + mp.bandMod.reason) : ''));
+  mp.cuts.forEach(m => bits.push('−' + m.value + (m.reason ? (': ' + m.reason) : '')));
+  mp.koefs.forEach(m => bits.push('×' + m.value + (m.reason ? (': ' + m.reason) : '')));
+  return bits.length ? (' · поправки: ' + bits.join('; ')) : '';
+}
+
+/* ── Блок «Поправки» в карточке помещения ─────────────────────────────
+   Живёт рядом с проёмами: и то и другое — состав помещения, из которого
+   считается объём работ. Правится руками здесь и голосом в общем тракте. */
+let MOD_BUSY = false;
+
+function modLabel(m){
+  const money = n => (Number(n) || 0).toLocaleString('ru-RU', { maximumFractionDigits: 2 });
+  const t = String(m.type || '');
+  if(t === 'область_высота') return 'полоса ' + money(m.value) + ' м от пола';
+  if(t === 'вычет_м2')       return '−' + money(m.value) + ' м²';
+  if(t === 'вычет_шт')       return '−' + money(m.value) + ' шт';
+  if(t === 'коэффициент')    return '×' + money(m.value) + ' к цене';
+  return t + ' ' + money(m.value);
+}
+function modAimName(m){
+  const t = String(m.target || '').trim();
+  const k = ((D.catalog || {}).kinds || []).find(x => String(x.code).toUpperCase() === t.toUpperCase());
+  return k ? (t + ' · ' + String(k.name || '')) : t;
+}
+
+function modBlock(r){
+  const list = modsAll(r.code);
+  const head = '<div class="m" style="margin-top:8px">Поправки объёма: ' + list.length +
+    ' <button onclick="modAdd(\'' + esc(r.code) + '\')" style="margin-left:6px;padding:6px 10px;border-radius:9px;border:0;background:#3a3a3c;color:#fff;font-size:13px">Добавить</button></div>';
+  if(!list.length) return head +
+    '<div class="m" style="opacity:.7">Например: кафель по стенам на 1,5 м от пола · минус квадрат за вход в шахту · дороже на 20 % за Г-форму.</div>';
+  const rows = list.map(m =>
+    '<div onclick="modEdit(\'' + esc(m.id) + '\')" style="margin-top:6px;padding:8px 10px;border-radius:10px;background:rgba(255,255,255,.06);cursor:pointer' +
+      (m.active === false ? ';opacity:.5' : '') + '">' +
+      '<div>' + esc(modLabel(m)) + ' · ' + esc(modAimName(m)) + (m.active === false ? ' · выключена' : '') + '</div>' +
+      (m.reason ? ('<div class="m">' + esc(m.reason) + '</div>') : '') +
+    '</div>').join('');
+  return head + rows;
+}
+
+function modEdit(id){
+  const m = (D.modifiers || []).find(x => String(x.id) === String(id));
+  if(!m) return;
+  const on = m.active !== false;
+  openVSheet(
+    '<div class="vh">' + esc(modLabel(m)) + '</div>' +
+    '<div class="vs">' + esc(modAimName(m)) + ' · помещение ' + esc(String(m.room || '')) + '</div>' +
+    (m.reason ? ('<div class="vd" style="margin-top:8px">' + esc(m.reason) + '</div>') : '') +
+    '<div class="vd" style="margin-top:10px">Значение</div>' +
+    '<div style="display:flex;gap:8px;align-items:center;margin-top:6px">' +
+      '<input id="modVal" type="number" step="0.01" inputmode="decimal" value="' + esc(String(m.value === null || m.value === undefined ? '' : m.value)) + '" ' +
+        'style="flex:1;padding:9px;border-radius:10px;border:1px solid #3a3a3c;background:#000;color:#fff;font-size:15px">' +
+      '<button onclick="modSetVal(\'' + esc(id) + '\')" style="padding:9px 13px;border-radius:10px;border:0;background:#0a84ff;color:#fff;font-size:14px">Записать</button>' +
+    '</div>' +
+    '<div class="vrow" style="margin-top:10px">' +
+      '<button class="vbtn-ok" onclick="modToggle(\'' + esc(id) + '\',' + (on ? 'false' : 'true') + ')">' +
+        (on ? 'Выключить поправку' : 'Включить поправку') + '</button>' +
+      '<button class="vbtn-cancel" onclick="closeVSheet()">Закрыть</button>' +
+    '</div>' +
+    '<div class="vd" style="margin-top:8px;opacity:.7">Выключенная поправка остаётся в списке: строку листа не удаляем, чтобы история осталась.</div>');
+}
+
+async function modToggle(id, on){
+  if(MOD_BUSY) return;
+  MOD_BUSY = true;
+  try{
+    await writeCell('14_Модификаторы', id, 'Активен', on ? 'да' : 'нет');
+    toast('Записано');
+    closeVSheet();
+    await load();
+    render();
+  }catch(e){ toast(e.message, 'err'); }
+  MOD_BUSY = false;
+}
+
+async function modSetVal(id){
+  if(MOD_BUSY) return;
+  const el = document.getElementById('modVal');
+  const raw = String(el ? el.value : '').replace(/\s/g, '').replace(',', '.');
+  if(raw === ''){ toast('Пусто', 'err'); return; }
+  const n = Number(raw);
+  if(isNaN(n) || n < 0){ toast('Не похоже на число', 'err'); return; }
+  MOD_BUSY = true;
+  try{
+    await writeCell('14_Модификаторы', id, 'Значение', String(n).replace('.', ','));
+    toast('Записано');
+    closeVSheet();
+    await load();
+    render();
+  }catch(e){ toast(e.message, 'err'); }
+  MOD_BUSY = false;
+}
+
+/* Новая поправка: сначала тип, потом цель, потом число и причина.
+   Причина обязательна — без неё поправка через месяц выглядит произволом,
+   и в акте нечем объяснить, куда делся квадрат (та же логика, что у причины
+   пропуска этапа, решение 054/058). */
+let MOD_NEW = { room: null, type: '', target: '', value: '', reason: '' };
+
+function modNextId(){
+  let mx = 0;
+  (D.modifiers || []).forEach(m => { const t = String(m.id || '').match(/^MOD-(\d+)$/); if(t) mx = Math.max(mx, Number(t[1])); });
+  return 'MOD-' + String(mx + 1).padStart(2, '0');
+}
+
+function modAdd(code){
+  MOD_NEW = { room: code, type: '', target: '', value: '', reason: '' };
+  modAddUI();
+}
+
+function modAddUI(){
+  const rn = c => { const r = (D.rooms || []).find(x => x.code === c); return r ? String(r.name || c).split(' (')[0] : c; };
+  const btn = (val, cur, fn) =>
+    '<button onclick="' + fn + '" style="padding:9px 12px;border-radius:10px;border:0;font-size:14px;margin:0 6px 6px 0;' +
+      (val === cur ? 'background:#0a84ff;color:#fff' : 'background:#3a3a3c;color:#fff') + '">' + esc(val) + '</button>';
+  const kinds = ((D.catalog || {}).kinds || []).filter(k => k.active !== false);
+  const inEst = (typeof profInEstimate === 'function') ? profInEstimate(MOD_NEW.room) : {};
+  const near = Object.keys(inEst).slice(0, 12);
+  openVSheet(
+    '<div class="vh">Новая поправка</div>' +
+    '<div class="vs">' + esc(rn(MOD_NEW.room)) + '</div>' +
+    '<div class="vd" style="margin-top:8px">Что делаем</div>' +
+    '<div>' + MOD_TYPES.map(t => btn(t, MOD_NEW.type, 'modPick(\'type\',\'' + t + '\')')).join('') + '</div>' +
+    '<div class="vd" style="margin-top:10px">К чему это относится</div>' +
+    '<div>' + MOD_BASES.map(b => btn(b, MOD_NEW.target, 'modPick(\'target\',\'' + b + '\')')).join('') + '</div>' +
+    (near.length ? ('<div class="vd" style="margin-top:6px;opacity:.75">или вид из сметы помещения</div><div>' +
+      near.map(c => btn(c, MOD_NEW.target, 'modPick(\'target\',\'' + c + '\')')).join('') + '</div>') : '') +
+    '<div class="vd" style="margin-top:10px">Число' +
+      (MOD_NEW.type === 'область_высота' ? ' — высота полосы в метрах' :
+       MOD_NEW.type === 'коэффициент' ? ' — во сколько раз дороже (1,2 — на 20 %)' : ' — сколько вычесть') + '</div>' +
+    '<input id="modNewVal" type="number" step="0.01" inputmode="decimal" value="' + esc(String(MOD_NEW.value)) + '" ' +
+      'oninput="MOD_NEW.value=this.value" style="width:100%;padding:9px;border-radius:10px;border:1px solid #3a3a3c;background:#000;color:#fff;font-size:15px">' +
+    '<div class="vd" style="margin-top:10px">Причина — своими словами</div>' +
+    '<input id="modNewReason" type="text" value="' + esc(String(MOD_NEW.reason)) + '" placeholder="например: вход в шахту" ' +
+      'oninput="MOD_NEW.reason=this.value" style="width:100%;padding:9px;border-radius:10px;border:1px solid #3a3a3c;background:#000;color:#fff;font-size:15px">' +
+    '<div class="vrow" style="margin-top:10px">' +
+      '<button class="vbtn-ok" onclick="modNew()">Записать поправку</button>' +
+      '<button class="vbtn-cancel" onclick="closeVSheet()">Отмена</button>' +
+    '</div>');
+}
+
+function modPick(field, val){
+  MOD_NEW[field] = (MOD_NEW[field] === val) ? '' : val;
+  modAddUI();
+}
+
+async function modNew(){
+  if(MOD_BUSY) return;
+  const val = String(MOD_NEW.value).replace(/\s/g, '').replace(',', '.');
+  if(!MOD_NEW.type){ toast('Выберите, что делаем', 'err'); return; }
+  if(!MOD_NEW.target){ toast('Выберите, к чему относится', 'err'); return; }
+  if(val === '' || isNaN(Number(val)) || Number(val) <= 0){ toast('Впишите число больше нуля', 'err'); return; }
+  if(!String(MOD_NEW.reason).trim()){ toast('Впишите причину — иначе поправку не объяснить', 'err'); return; }
+  MOD_BUSY = true;
+  const id = modNextId();
+  try{
+    await crewAppend('14_Модификаторы', [{
+      'id': id, 'Помещение': MOD_NEW.room, 'Цель': MOD_NEW.target, 'Тип': MOD_NEW.type,
+      'Значение': String(Number(val)).replace('.', ','), 'Причина': String(MOD_NEW.reason).trim(),
+      'Активен': 'да', 'Обновлено': chgStamp(),
+    }]);
+    toast('Поправка записана');
+    closeVSheet();
+    await load();
+    render();
+  }catch(e){ toast(e.message, 'err'); }
+  MOD_BUSY = false;
+}
+
 function openVSheet(html){ vsheet.innerHTML = html; vmask.classList.add("on"); }
 function closeVSheet(){ vmask.classList.remove("on"); }
 
@@ -7407,6 +7770,28 @@ let UZ_OBS = null;
 
 /* Точные надписи. Ключ — строка целиком, как она приходит в текстовый узел. */
 const UZ = {
+  /* Поправки объёма [чат 060]. Причины и цели — данные листа, слой их не
+     трогает (решение 021: признак данных — остаток кириллицы). Переводятся
+     только надписи интерфейса. */
+  "Поправки объёма": "Hajm tuzatishlari",
+  "Новая поправка": "Yangi tuzatish",
+  "Что делаем": "Nima qilamiz",
+  "К чему это относится": "Bu nimaga tegishli",
+  "или вид из сметы помещения": "yoki xonaning smetasidagi ish turi",
+  "Причина — своими словами": "Sababi — o'z so'zlaringiz bilan",
+  "Записать поправку": "Tuzatishni yozish",
+  "Выключить поправку": "Tuzatishni o'chirish",
+  "Включить поправку": "Tuzatishni yoqish",
+  "Впишите причину — иначе поправку не объяснить": "Sababini yozing — aks holda tuzatishni tushuntirib bo'lmaydi",
+  "Выберите, что делаем": "Nima qilishni tanlang",
+  "Выберите, к чему относится": "Nimaga tegishli ekanini tanlang",
+  "Впишите число больше нуля": "Noldan katta son yozing",
+  "Поправка записана": "Tuzatish yozildi",
+  "Выключенная поправка остаётся в списке: строку листа не удаляем, чтобы история осталась.":
+    "O'chirilgan tuzatish ro'yxatda qoladi: tarix saqlanishi uchun varaq qatorini o'chirmaymiz.",
+  "Например: кафель по стенам на 1,5 м от пола · минус квадрат за вход в шахту · дороже на 20 % за Г-форму.":
+    "Masalan: devorlarga poldan 1,5 m gacha kafel · shaxta kirishi uchun minus kvadrat · G-shakl uchun 20 % qimmat.",
+
   /* Мастер-опрос [чат 059]. Тексты вопросов собираются из имени помещения
      и справочника, поэтому шаблонами живут в UZ_RULES; здесь — постоянные
      надписи экрана. */
@@ -7910,6 +8295,11 @@ const UZ = {
 /* Шаблоны: строка содержит данные (числа, коды, названия) — переводим обвязку,
    данные оставляем на месте. Порядок важен: правила идут сверху вниз. */
 const UZ_RULES = [
+  /* Поправки объёма [чат 060]: в заголовке блока стоит счётчик. */
+  [/^Поправки объёма: (\d+)$/, "Hajm tuzatishlari: $1"],
+  [/^Число — высота полосы в метрах$/, "Son — chiziq balandligi, metrda"],
+  [/^Число — во сколько раз дороже \(1,2 — на 20 %\)$/, "Son — necha marta qimmat (1,2 — 20 % ga)"],
+  [/^Число — сколько вычесть$/, "Son — qancha ayirish"],
   /* Мастер-опрос [чат 059]: заголовок такта и свод несут числа, поэтому
      шаблонами (правило слоя 020 — надпись с данными переводится регэкспом). */
   [/^вопрос (\d+) из (\d+)$/, "savol $1 / $2"],
@@ -8334,7 +8724,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "059.1";
+const BUILD = "060.1";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
