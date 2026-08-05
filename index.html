@@ -4745,6 +4745,9 @@ const wipSum = f => D.works.filter(w => w.status !== "Готово" && (w.progre
    ═══════════════════════════════════════════════════════════════ */
 const SCREENS = {
 
+/* Мастер-опрос [чат 059]: экран целиком собирает модуль опроса. */
+quiz(){ return qzScreen(); },
+
 home(){
   if (D.kind === "hand") return handHome();   // контур работника [чат 013]
   const worker = D.role === "worker";
@@ -5035,7 +5038,8 @@ profile(){
     return '<div class="hello">Профиль ремонта</div>' +
       '<div class="sub">' + (all.n ? esc(profTotalAllText()) : 'Выберите помещение или продиктуйте работы') + '</div>' +
       '<div class="stat"><span class="k">К помещению применяются виды работ, объём считается из его размеров, цена — из прайса исполнителя. Пройдите помещения подряд — смета соберётся одним действием в конце.</span></div>' +
-      '<div class="stat"><div class="r"><button onclick="startVoice(\'repair\')" style="flex:1;padding:12px;border-radius:12px;border:0;background:#0a84ff;color:#fff;font-size:15px">🎤 Продиктовать работы</button></div>' +
+      '<div class="stat"><div class="r"><button onclick="qzStart()" style="flex:1;padding:12px;border-radius:12px;border:0;background:#0a84ff;color:#fff;font-size:15px">🧭 Пройти вопросами</button></div>' +
+      '<div class="r" style="margin-top:8px"><button onclick="startVoice(\'repair\')" style="flex:1;padding:12px;border-radius:12px;border:0;background:#1c1c1e;color:#fff;font-size:15px;border:1px solid #3a3a3c">🎤 Продиктовать работы</button></div>' +
         '<div class="r"><span class="k" style="font-size:13px;opacity:.75">Например: «в спальне потолок выровнять и покрасить, стены под обои» — помещение подставится из сказанного.</span></div></div>' +
       (all.n ? ('<div class="stat"><div class="r" style="display:flex;gap:8px">' +
         '<button onclick="profBuild()" style="flex:2;padding:13px;border-radius:12px;border:0;background:#30d158;color:#000;font-size:15px;font-weight:600">Собрать смету: ' + all.n + ' работ · ' + fmt(all.sum) + ' USD</button>' +
@@ -5531,7 +5535,8 @@ object(){
     '<div class="hello">Объект</div>' +
     '<div class="sub">' + rooms.length + " помещений" + (gap.length ? (" · в " + gap.length + " не заданы проёмы") : " · обмеры полны") + "</div>" +
     '<div class="grid">' +
-      '<button class="tile pri" onclick="startVoice(\'rooms\')"><span class="ic">🎤</span><span class="nm">Продиктовать<br>размеры</span><div class="h">пол, потолок, окна, двери</div></button>' +
+      '<button class="tile pri" onclick="qzStart()"><span class="ic">🧭</span><span class="nm">Пройти<br>вопросами</span><div class="h">система спросит сама</div></button>' +
+      '<button class="tile" onclick="startVoice(\'rooms\')"><span class="ic">🎤</span><span class="nm">Продиктовать<br>размеры</span><div class="h">пол, потолок, окна, двери</div></button>' +
       '<button class="tile" onclick="objPick()"><span class="ic">🗺️</span><span class="nm">' + (plan ? "Заменить план" : "Загрузить план") + '</span><div class="h">фото плана БТИ</div></button>' +
     "</div>" +
     planBox +
@@ -5541,7 +5546,8 @@ object(){
       gap.map(r => '<div onclick="objGoRoom(\'' + esc(r.code) + '\')" style="margin-top:6px;padding:8px 10px;border-radius:10px;background:rgba(255,255,255,.06);cursor:pointer">' +
         esc(String(r.name || r.code)) + ' · нужно: ' + roomGapOf(r).join(" и ") + '</div>').join("") +
       '<div style="margin-top:10px;display:flex;gap:8px">' +
-        '<button onclick="startVoice(\'rooms\')" style="flex:1;padding:10px;border-radius:10px;border:0;background:#0a84ff;color:#fff;font-size:14px">Продиктовать проёмы</button>' +
+        '<button onclick="qzStart()" style="flex:1;padding:10px;border-radius:10px;border:0;background:#0a84ff;color:#fff;font-size:14px">Пройти вопросами</button>' +
+        '<button onclick="startVoice(\'rooms\')" style="flex:1;padding:10px;border-radius:10px;border:1px solid #3a3a3c;background:#1c1c1e;color:#fff;font-size:14px">Продиктовать проёмы</button>' +
       '</div></div>') : "") +
     (() => {
       const f = floorOrder();
@@ -6031,14 +6037,578 @@ chgnew(){
    ══════════════════════════════════════════════════════════════ */
 let mediaRec = null, chunks = [], vTimer = null, vSec = 0, vStream = null, vItems = [];
 let vMode = "";   // сценарий разбора: "" — правки учёта, "rooms" — обмеры помещений [чат 016]
+/* Код активного вопроса мастер-опроса [чат 059]. Пустой = поведение прежнее
+   побайтно: поле в запрос не кладётся вовсе (мина 022 — пустой параметр
+   гасит результат молча, поэтому «нет вопроса» кодируется отсутствием). */
+let vQ = "";
 const vmask  = document.getElementById("vmask");
 const vsheet = document.getElementById("vsheet");
+
+/* ═════════════════════════════════════════════════════════════════
+   МАСТЕР-ОПРОС · система ведёт человека вопросами (Н8, разбор 23)
+   Шаги Г-2 (движок такта и генератор очереди), Г-3 (деревья вопросов
+   и словарь), Г-4 (свод, круг отложенных, вход из «жёлтого окна»).
+
+   Опрос — ОБЁРТКА над существующими трактами, а не новый канал записи
+   (§2 п. 1): ответ уходит тем же `/voice` с контекстом вопроса `q`
+   (сервер понимает его с 058) и записывается теми же окнами
+   подтверждения и теми же `writeCell`/`upd`, что вольная диктовка.
+   Ни одной новой ветки записи, ни одного нового права.
+
+   Состояние сеанса вычисляется, а не хранится (§6, решение 031):
+   очередь — это дыры данных, пересчитанные после каждой записи.
+   В памяти вкладки живут только отметки «позже» и позиция обхода;
+   цена перезапуска названа честно — отложенные вернутся раньше срока.
+   ═════════════════════════════════════════════════════════════════ */
+
+let QZ = { on:false, pos:0, later:{}, log:[], ring:false, seenRing:{} };
+
+const QZ_MAX_LOG = 12;
+
+/* ── Порядок обхода: как человек идёт по квартире ──────────────────
+   Тот же порядок, что у заливки полов (016/033) — от входа вглубь;
+   когда связей нет, порядок листа. */
+function qzRooms(){
+  const list = roomList();
+  let f = null;
+  try{ f = floorOrder(); }catch(e){ f = null; }
+  if(f && Array.isArray(f.order) && f.order.length){
+    const byCode = {};
+    list.forEach(r => { byCode[r.code] = r; });
+    const seen = {};
+    const out = [];
+    /* Заливка идёт от дальней комнаты к выходу; обход человека — наоборот,
+       от входа вглубь. Разворачиваем, а не заводим второй порядок. */
+    f.order.slice().reverse().forEach(r => {
+      const rr = byCode[r.code] || r;
+      if(rr && !seen[rr.code]){ seen[rr.code] = 1; out.push(rr); }
+    });
+    list.forEach(r => { if(!seen[r.code]){ seen[r.code] = 1; out.push(r); } });
+    return out;
+  }
+  return list;
+}
+
+const qzNeed = v => v === null || v === undefined || String(v).trim() === "";
+const qzName = r => String((r && (r.name || r.code)) || "").split(" (")[0];
+
+/* Элементы, которые спрашиваются в этом помещении: внутренний проём
+   принадлежит паре, но спрашивается один раз — за первой стороной (033). */
+function qzElems(code){
+  return elemAll().filter(e => e.a === code);
+}
+
+function qzElemName(e, code){
+  const nm = String(e.name || "").trim();
+  if(nm) return nm.split(" (")[0];
+  return String(e.fact || e.plan || "проём") + " · " + elemSideName(e, code);
+}
+
+/* ── Г-3. Деревья вопросов: правило дыры → вопрос ──────────────────
+   Каждый вопрос — запись «условие дыры → текст → режим и контекст →
+   куда пишется ответ». Новая тема добавляет строку правил, а не правит
+   движок (§2 п. 6). Текст — озвучиваемая форма: одна строка, с примером
+   там, где формат ответа неочевиден. */
+function qzQueue(){
+  const out = [];
+  const rooms = qzRooms();
+
+  /* 4.0 Состав помещений — только у пустого объекта. */
+  if(!rooms.length){
+    out.push({
+      id: "rooms:new", room: null, mode: "rooms", input: "voice",
+      text: "Перечислите комнаты квартиры — как вы их называете",
+      hint: "Например: «спальня, зал, кухня, коридор, ванная»"
+    });
+    return out;
+  }
+
+  rooms.forEach(r => {
+    const rc = r.code, rn = qzName(r);
+
+    /* 4.1 Обмеры: контур → высота. Площадь и периметр считает код по
+       контуру (052) — их не спрашиваем отдельно. */
+    if(qzNeed(r.floor_m2) && qzNeed(r.perimeter_m)){
+      out.push({
+        id: "contour:" + rc, room: rc, mode: "rooms", input: "voice",
+        text: "Мы в помещении «" + rn + "». Пройдём по полу от двери: диктуйте длину каждой стены в сантиметрах, а где стена поворачивает налево — так и скажите: «поворот налево»",
+        hint: "Прямоугольная комната — достаточно двух сторон: «пять двадцать на три семнадцать»"
+      });
+    }
+    if(qzNeed(r.height_m)){
+      const last = qzLastHeight(rc);
+      out.push({
+        id: "height:" + rc, room: rc, mode: "rooms", input: "num",
+        sheet: "06_Помещения", code: rc, col: "Высота_м", unit: "м",
+        text: "Высота потолка в помещении «" + rn + "»?",
+        hint: "Можно сказать «два восемьдесят один» или вписать числом",
+        same: last
+      });
+    }
+    if(qzNeed(r.windows)){
+      out.push({
+        id: "windows:" + rc, room: rc, mode: "rooms", input: "num", zero: true,
+        sheet: "06_Помещения", code: rc, col: "Окон_шт",
+        text: "Сколько окон в помещении «" + rn + "»?",
+        hint: "Если ни одного — нажмите «Нет»"
+      });
+    }
+    if(qzNeed(r.doors)){
+      out.push({
+        id: "doors:" + rc, room: rc, mode: "rooms", input: "num", zero: true,
+        sheet: "06_Помещения", code: rc, col: "Дверей_шт",
+        text: "Сколько дверей в помещении «" + rn + "»?",
+        hint: "Если ни одной — нажмите «Нет»"
+      });
+    }
+
+    /* 4.2 Проёмы: размеры → подоконник → судьба. */
+    qzElems(rc).forEach(e => {
+      if(String(e.fact || "") === "нет") return;    // заложенному размеры не нужны
+      if(qzNeed(e.w) || qzNeed(e.h)){
+        out.push({
+          id: "size:" + e.id, room: rc, mode: "rooms", input: "wh",
+          sheet: "13_Элементы", code: e.id, elem: e.id,
+          text: qzElemName(e, rc) + ": ширина и высота?",
+          hint: "Порядок — сперва ширина, потом высота; в сантиметрах или метрах"
+        });
+      }
+      /* Подоконник спрашиваем только когда сервер отдаёт это поле:
+         нет поля — нет вопроса (путь «её ещё нет», 031). */
+      if(String(e.fact || "") === "окно" && ("sill" in e) && qzNeed(e.sill)){
+        out.push({
+          id: "sill:" + e.id, room: rc, mode: "rooms", input: "num",
+          sheet: "13_Элементы", code: e.id, col: "Низ_м", unit: "м", elem: e.id,
+          text: "На какой высоте от пола начинается " + qzElemName(e, rc).toLowerCase() + " — подоконник?",
+          hint: "Окно под потолок — так и скажите"
+        });
+      }
+      if(qzNeed(e.fate) && String(e.fact || "") !== "нет"){
+        out.push({
+          id: "fate:" + e.id, room: rc, mode: "rooms", input: "choice",
+          sheet: "13_Элементы", code: e.id, col: "Судьба", elem: e.id,
+          choices: (typeof ELEM_FATES !== "undefined" ? ELEM_FATES : []),
+          text: qzElemName(e, rc) + ": что делаем в ремонте?",
+          hint: "Не трогаем · заменить · демонтировать · заложить · пробить · перенести · установить"
+        });
+      }
+    });
+
+    /* 5.1 Работы по помещению — профиль ремонта. */
+    if(!qzHasWorks(rc)){
+      out.push({
+        id: "works:" + rc, room: rc, mode: "repair", input: "voice",
+        text: "Что делаем в помещении «" + rn + "»?",
+        hint: "Говорите как привыкли: «стены под обои, потолок натяжной, пол ламинат»"
+      });
+    }
+
+    /* 5.2 Пропуски этапов — вопрос собирается ИЗ УСЛОВИЯ справочника. */
+    qzSkipAsk(rc).forEach(q => out.push(q));
+  });
+
+  return out;
+}
+
+/* Высота, названная в этом объекте раньше — для ответа «как везде». */
+function qzLastHeight(skipCode){
+  const r = roomList().filter(x => x.code !== skipCode && !qzNeed(x.height_m))[0];
+  return r ? String(r.height_m) : "";
+}
+
+/* Работы помещения: строка сметы или отметка в профиле текущего сеанса. */
+function qzHasWorks(rc){
+  const inEstimate = (D.works || []).some(w => String(w.code || "").indexOf(rc + "-") === 0);
+  if(inEstimate) return true;
+  const picked = (typeof PROF === "object" && PROF && PROF.plan && PROF.plan[rc]) || null;
+  return !!(picked && Object.keys(picked).length);
+}
+
+/* Вопросы о пропуске: вид отмечен в профиле, у вида есть условие
+   `Пропуск_при`, решения ещё нет. По умолчанию этап включён (016) —
+   вопрос лишь делает выбор явным, молчание ничего не пропускает. */
+function qzSkipAsk(rc){
+  const out = [];
+  const picked = (typeof PROF === "object" && PROF && PROF.plan && PROF.plan[rc]) || null;
+  if(!picked) return out;
+  const kinds = ((D.catalog || {}).kinds) || [];
+  Object.keys(picked).forEach(code => {
+    const it = picked[code] || {};
+    if(it.skip) return;                                  // решение уже принято
+    if(QZ.seenRing["skip:" + code + "@" + rc]) return;   // «делаем» — тоже решение
+    let reasons = [];
+    try{ reasons = profSkipList(code); }catch(e){ reasons = []; }
+    if(!reasons.length) return;
+    const k = kinds.find(x => x.code === code) || {};
+    out.push({
+      id: "skip:" + code + "@" + rc, room: rc, mode: null, input: "skip",
+      kindCode: code, choices: reasons,
+      text: "«" + String(k.name || code) + "» можно пропустить, если " + reasons.join(" или ") + ". Пропускаем или делаем?",
+      hint: "Пропуск оставит след в смете: строка с причиной и нулевой ценой"
+    });
+  });
+  return out;
+}
+
+/* ── Движок очереди: отложенное уходит в хвост, а не пропадает ───── */
+function qzList(){
+  const all = qzQueue();
+  const main = all.filter(q => !QZ.later[q.id]);
+  const late = all.filter(q => QZ.later[q.id]);
+  return main.concat(late);      // круг отложенных — в конце обхода (§6)
+}
+
+function qzCur(){
+  const l = qzList();
+  if(!l.length) return null;
+  if(QZ.pos >= l.length) QZ.pos = l.length - 1;
+  if(QZ.pos < 0) QZ.pos = 0;
+  return l[QZ.pos];
+}
+
+function qzTotal(){ return qzList().length; }
+
+async function qzStart(){
+  try{
+    if(!D.catalog){ toast("Загружаю справочник…"); }
+    await loadCatalog();
+  }catch(e){ /* без справочника опрос всё равно ведёт обмеры */ }
+  if(typeof PROF !== "object" || !PROF || !PROF.plan) PROF = { room: null, plan: {} };
+  QZ = { on:true, pos:0, later:{}, log:[], ring:false, seenRing:{} };
+  qzSyncRoom();
+  go("quiz");
+}
+
+/* Открытое помещение профиля должно совпадать с помещением вопроса:
+   по нему сервер подставляет адрес, если его не назвали вслух (017). */
+function qzSyncRoom(){
+  const q = qzCur();
+  if(q && q.room && typeof PROF === "object" && PROF){ PROF.room = q.room; }
+}
+
+function qzNext(){
+  const l = qzList();
+  if(QZ.pos < l.length - 1){ QZ.pos++; qzSyncRoom(); render(); }
+  else { QZ.pos = Math.max(0, l.length - 1); qzSyncRoom(); render(); }
+}
+function qzPrev(){
+  if(QZ.pos > 0){ QZ.pos--; qzSyncRoom(); render(); }
+}
+function qzLater(){
+  const q = qzCur();
+  if(!q) return;
+  QZ.later[q.id] = 1;
+  qzNote("Отложено: " + qzShort(q));
+  /* Вопрос ушёл в хвост — позиция остаётся на месте, на ней уже следующий. */
+  const l = qzList();
+  if(QZ.pos >= l.length) QZ.pos = Math.max(0, l.length - 1);
+  qzSyncRoom();
+  render();
+}
+function qzStop(){
+  QZ.on = false;
+  toast("Опрос закрыт — записанное сохранено");
+  go("home");
+}
+
+function qzShort(q){
+  return String(q.text || "").replace(/^Мы в помещении «[^»]*»\.\s*/, "").slice(0, 60);
+}
+
+function qzNote(s){
+  QZ.log.unshift(String(s));
+  if(QZ.log.length > QZ_MAX_LOG) QZ.log.length = QZ_MAX_LOG;
+}
+
+/* ── Такт: ответ голосом ──────────────────────────────────────────
+   Тот же startVoice, но с кодом активного вопроса: сервер сузит промпт
+   и не станет звать классификатор намерения (058). */
+function qzVoice(){
+  const q = qzCur();
+  if(!q) return;
+  qzSyncRoom();          // адрес записи = помещение вопроса [чат 059]
+  startVoice(q.mode || "rooms", q.id);
+}
+
+/* Ответ текстом — та же реплика, только набранная: уходит тем же
+   разбором с тем же контекстом (поле ввода остаётся всегда, 029). */
+async function qzSay(){
+  const q = qzCur();
+  const el = document.getElementById("qzsay");
+  const text = String((el && el.value) || "").trim();
+  if(!q) return;
+  if(!text){ toast("Скажите или впишите ответ", "wait"); return; }
+  if(qzCommand(text)) return;
+  vMode = String(q.mode || "rooms");
+  vQ = String(q.id || "");
+  openVSheet('<div class="vh">Разбираю…</div><div class="vspin"></div>' +
+    '<div class="vs" style="text-align:center">' + esc(text) + "</div>");
+  try{
+    /* Помещение берётся из САМОГО вопроса, а не из состояния профиля:
+       вопрос знает свой адрес по построению, а PROF.room — это то, где
+       человек стоял в профиле, и они могут разойтись [чат 059]. */
+    const body = { initData: INIT, key: KEY, text: text, mode: vMode, lang: LANG,
+      room: q.room || ((typeof PROF === "object" && PROF && PROF.room) ? PROF.room : "") };
+    if(vQ) body.q = vQ;
+    const r = await fetch(`${API}/voice`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify(body)
+    });
+    const raw = (await r.text()).trim();
+    if(r.status === 401 || r.status === 403) throw new Error("Доступ не подтверждён.");
+    if(!raw) throw new Error("Не удалось разобрать. Попробуйте сказать иначе.");
+    let d; try{ d = JSON.parse(raw); }catch{ throw new Error("Сервер вернул неожиданный ответ."); }
+    showVResult(d);
+  }catch(e){ showVError(e.message); }
+}
+
+/* Команды человека внутри опроса разбираются ДО содержимого (§6). */
+function qzCommand(text){
+  const t = String(text || "").toLowerCase().replace(/[.!,]/g, " ").replace(/\s+/g, " ").trim();
+  if(!t) return false;
+  if(/^(позже|потом|пропусти|пропустить|не знаю|незнаю|later)$/.test(t)){ qzLater(); return true; }
+  if(/^(назад|обратно|back)$/.test(t)){ qzPrev(); return true; }
+  if(/^(дальше|далее|следующий|next)$/.test(t)){ qzNext(); return true; }
+  if(/^(хватит|закончим|стоп|выход|всё)$/.test(t)){ qzStop(); return true; }
+  return false;
+}
+
+/* Числовой ответ пишется тем же путём, что кнопка «Записать» в карточке
+   помещения — штатный `/update` через writeCell (никакого нового канала). */
+async function qzNum(zero){
+  const q = qzCur();
+  if(!q) return;
+  const el = document.getElementById("qznum");
+  let raw = zero ? "0" : String((el && el.value) || "").trim();
+  if(!zero && !raw){ toast("Впишите число или ответьте голосом", "wait"); return; }
+  const v = qzParseNum(raw, q);
+  if(v === null){ toast("Не понял число", "err"); return; }
+  await qzWrite(q, q.col, v, (q.col === "Высота_м" ? "высота " : "") + v);
+}
+
+/* Метры и сантиметры: «281» в поле высоты — это 2,81 м. Панель пишет
+   в лист числом с запятой (локаль листа), как все прочие записи. */
+function qzParseNum(raw, q){
+  let s = String(raw).replace(",", ".").replace(/[^\d.]/g, "");
+  if(!s) return null;
+  let n = Number(s);
+  if(!isFinite(n)) return null;
+  if(q && q.unit === "м" && n > 20) n = n / 100;      // сказали в сантиметрах
+  n = Math.round(n * 1000) / 1000;
+  return String(n).replace(".", ",");
+}
+
+async function qzWH(){
+  const q = qzCur();
+  if(!q) return;
+  const w = document.getElementById("qzw"), h = document.getElementById("qzh");
+  const wv = qzParseNum(String((w && w.value) || ""), { unit: "м" });
+  const hv = qzParseNum(String((h && h.value) || ""), { unit: "м" });
+  if(wv === null || hv === null){ toast("Нужны оба числа — ширина и высота", "wait"); return; }
+  if(QZ_BUSY) return;
+  QZ_BUSY = true;
+  try{
+    await writeCell(q.sheet, q.code, "Ширина_м", wv);
+    await writeCell(q.sheet, q.code, "Высота_м", hv);
+    qzNote("Записано: " + qzShort(q) + " → " + wv + " × " + hv);
+    await qzAfterWrite();
+  }catch(e){ toast(e.message, "err"); }
+  QZ_BUSY = false;
+}
+
+async function qzChoice(val){
+  const q = qzCur();
+  if(!q) return;
+  await qzWrite(q, q.col, String(val), String(val));
+}
+
+let QZ_BUSY = false;
+
+async function qzWrite(q, col, value, note){
+  if(QZ_BUSY) return;
+  QZ_BUSY = true;
+  try{
+    await writeCell(q.sheet, q.code, col, String(value));
+    qzNote("Записано: " + qzShort(q) + " → " + String(note));
+    await qzAfterWrite();
+  }catch(e){ toast(e.message, "err"); }
+  QZ_BUSY = false;
+}
+
+/* Пропуск этапа: решение живёт в профиле сеанса, как и у кнопок
+   профиля (058) — след в смете появляется при сборке. */
+function qzSkipDo(reason){
+  const q = qzCur();
+  if(!q || q.input !== "skip") return;
+  const rc = q.room;
+  if(typeof PROF === "object" && PROF) PROF.room = rc;
+  try{ profSkip(q.kindCode, reason); }catch(e){ toast(e.message, "err"); return; }
+  qzNote("Пропущен этап: " + String(q.kindCode) + " · " + String(reason));
+  qzSyncRoom();
+  render();
+}
+function qzSkipKeep(){
+  const q = qzCur();
+  if(!q || q.input !== "skip") return;
+  QZ.seenRing[q.id] = 1;                   // «делаем» — тоже ответ, вопрос закрыт
+  qzNote("Оставлен в работе: " + String(q.kindCode));
+  qzSyncRoom();
+  render();
+}
+function qzSkipOwn(el){
+  const v = String((el && el.value) || "").trim();
+  if(!v){ toast("Впишите причину — иначе пропуск не объяснить"); return; }
+  qzSkipDo(v);
+}
+
+/* После любой записи очередь пересчитывается от свежих данных: отвеченный
+   вопрос перестаёт быть дырой и исчезает сам (§6 — состояние вычисляется). */
+async function qzAfterWrite(){
+  try{ await load(); }catch(e){}
+  const l = qzList();
+  if(QZ.pos >= l.length) QZ.pos = Math.max(0, l.length - 1);
+  qzSyncRoom();
+  render();
+}
+
+/* Хвост голосового тракта: если идёт опрос — сдвинуть очередь. */
+function qzVoiceDone(){
+  if(!QZ.on) return;
+  const l = qzList();
+  if(QZ.pos >= l.length) QZ.pos = Math.max(0, l.length - 1);
+  qzSyncRoom();
+  if(stack[stack.length - 1] === "quiz") render();
+}
+
+/* ── Г-4. Свод ────────────────────────────────────────────────────
+   Опрос кончился, когда дыр не осталось: это и есть критерий, а не
+   счётчик заданных вопросов. */
+function qzSummaryHtml(){
+  const rooms = qzRooms();
+  const rows = rooms.map(r => {
+    const rc = r.code;
+    const picked = (typeof PROF === "object" && PROF && PROF.plan && PROF.plan[rc]) || {};
+    const n = Object.keys(picked).length;
+    const skipped = Object.keys(picked).filter(c => (picked[c] || {}).skip).length;
+    const works = (D.works || []).filter(w => String(w.code || "").indexOf(rc + "-") === 0).length;
+    return '<div class="r"><span class="k">' + esc(qzName(r)) + '</span><span class="v">' +
+      (works ? works + " в смете" : (n ? n + " отмечено" : "—")) +
+      (skipped ? " · пропусков " + skipped : "") + "</span></div>";
+  }).join("");
+  const planCount = (() => {
+    let n = 0;
+    const plan = (typeof PROF === "object" && PROF && PROF.plan) || {};
+    Object.keys(plan).forEach(rc => { n += Object.keys(plan[rc] || {}).length; });
+    return n;
+  })();
+  return '<div class="stat">' +
+    '<div class="r"><span class="k">Вопросов не осталось</span><span class="v">✓</span></div>' +
+    '<div class="m">Все дыры, которые опрос умеет видеть, закрыты. Что не спрошено — то вычисляется: площадь и периметр из контура, стены и потолок из обмеров, расхождение плана с фактом из схемы проёмов.</div>' +
+    "</div>" +
+    '<div class="stat">' + rows + "</div>" +
+    (planCount
+      ? '<div class="stat"><div class="m">В профиле ремонта отмечено видов: <b>' + planCount + "</b>. Смету по ним собирает кнопка на экране профиля — опрос ничего не записывает молча.</div>" +
+        '<div class="m" style="margin-top:8px"><button onclick="go(\'profile\')" style="width:100%;padding:12px;border-radius:12px;border:0;background:#0a84ff;color:#fff;font-size:15px">Перейти к профилю ремонта</button></div></div>'
+      : "") +
+    '<div class="m" style="margin-top:10px"><button onclick="qzStop()" style="width:100%;padding:12px;border-radius:12px;border:1px solid #3a3a3c;background:#1c1c1e;color:#fff;font-size:15px">Закончить опрос</button></div>';
+}
+
+/* ── Экран опроса ─────────────────────────────────────────────── */
+function qzScreen(){
+  const q = qzCur();
+  const total = qzTotal();
+  const later = Object.keys(QZ.later).length;
+  const head = '<div class="hello">Опрос</div>';
+
+  if(!q){
+    return head + '<div class="sub">пройдено · дыр не осталось</div>' + qzSummaryHtml();
+  }
+
+  const idx = Math.min(QZ.pos + 1, total);
+  const isLate = !!QZ.later[q.id];
+  const room = q.room ? (roomList().find(r => r.code === q.room) || null) : null;
+
+  const answer = (() => {
+    if(q.input === "num"){
+      return '<div style="display:flex;gap:8px;align-items:center;margin-top:12px">' +
+          '<input id="qznum" type="number" inputmode="decimal" placeholder="' + attr(q.unit === "м" ? "число в метрах или сантиметрах" : "число") + '" ' +
+            'style="flex:1;padding:12px;border-radius:12px;border:1px solid #3a3a3c;background:#000;color:#fff;font-size:16px">' +
+          '<button onclick="qzNum(false)" style="padding:12px 16px;border-radius:12px;border:0;background:#0a84ff;color:#fff;font-size:15px">Записать</button>' +
+          (q.zero ? '<button onclick="qzNum(true)" style="padding:12px 14px;border-radius:12px;border:0;background:#3a3a3c;color:#fff;font-size:15px">Нет</button>' : "") +
+        "</div>" +
+        (q.same ? '<div class="m" style="margin-top:6px"><button onclick="qzSame()" style="padding:8px 12px;border-radius:10px;border:1px solid #3a3a3c;background:#1c1c1e;color:#fff;font-size:13px">Как везде — ' + esc(q.same) + " м</button></div>" : "");
+    }
+    if(q.input === "wh"){
+      const inp = (id, ph) => '<input id="' + id + '" type="number" inputmode="decimal" placeholder="' + attr(ph) + '" ' +
+        'style="flex:1;padding:12px;border-radius:12px;border:1px solid #3a3a3c;background:#000;color:#fff;font-size:16px">';
+      return '<div style="display:flex;gap:8px;align-items:center;margin-top:12px">' + inp("qzw", "ширина") + inp("qzh", "высота") +
+        '<button onclick="qzWH()" style="padding:12px 16px;border-radius:12px;border:0;background:#0a84ff;color:#fff;font-size:15px">Записать</button></div>';
+    }
+    if(q.input === "choice"){
+      return '<div style="margin-top:12px;display:flex;flex-wrap:wrap;gap:8px">' +
+        (q.choices || []).map(v => '<button onclick="qzChoice(' + JSON.stringify(v).replace(/"/g, "&quot;") + ')" ' +
+          'style="padding:10px 14px;border-radius:11px;border:0;background:#3a3a3c;color:#fff;font-size:15px">' + esc(v) + "</button>").join("") +
+        "</div>";
+    }
+    if(q.input === "skip"){
+      return '<div style="margin-top:12px;display:flex;flex-wrap:wrap;gap:8px">' +
+          '<button onclick="qzSkipKeep()" style="padding:10px 14px;border-radius:11px;border:0;background:#0a84ff;color:#fff;font-size:15px">Делаем</button>' +
+          (q.choices || []).map(v => '<button onclick="qzSkipDo(' + JSON.stringify(v).replace(/"/g, "&quot;") + ')" ' +
+            'style="padding:10px 14px;border-radius:11px;border:1px solid #3a3a3c;background:#1c1c1e;color:#ff9f0a;font-size:15px">Пропустить: ' + esc(v) + "</button>").join("") +
+        "</div>" +
+        '<div class="m" style="margin-top:8px">Своя причина: <input type="text" onchange="qzSkipOwn(this)" placeholder="почему этап не нужен" ' +
+          'style="width:190px;padding:8px;border-radius:9px;border:1px solid #3a3a3c;background:#000;color:#fff"></div>';
+    }
+    return "";
+  })();
+
+  const say = '<div style="display:flex;gap:8px;align-items:center;margin-top:10px">' +
+      '<input id="qzsay" type="text" placeholder="' + attr(q.input === "voice" ? "или впишите ответ словами" : "ответить словами") + '" ' +
+        'style="flex:1;padding:12px;border-radius:12px;border:1px solid #3a3a3c;background:#000;color:#fff;font-size:15px">' +
+      '<button onclick="qzSay()" style="padding:12px 16px;border-radius:12px;border:0;background:#1c1c1e;color:#fff;font-size:15px;border:1px solid #3a3a3c">Разобрать</button>' +
+    "</div>";
+
+  const mic = (q.mode)
+    ? '<button onclick="qzVoice()" style="width:100%;margin-top:12px;padding:14px;border-radius:14px;border:0;background:#0a84ff;color:#fff;font-size:16px">🎤 Ответить голосом</button>'
+    : "";
+
+  const log = QZ.log.length
+    ? '<div class="stat" style="margin-top:12px"><div class="m" style="opacity:.75">Записано в этом опросе</div>' +
+      QZ.log.map(s => '<div class="m" style="margin-top:4px">· ' + esc(s) + "</div>").join("") + "</div>"
+    : "";
+
+  return head +
+    '<div class="sub">вопрос ' + idx + " из " + total + (later ? (" · отложено " + later) : "") +
+      (room ? (" · " + esc(qzName(room))) : "") + "</div>" +
+    '<div class="stat">' +
+      (isLate ? '<div class="m" style="color:#ff9f0a">Возвращаюсь к отложенному</div>' : "") +
+      '<div style="font-size:19px;line-height:1.35;margin:4px 0 6px">' + esc(q.text) + "</div>" +
+      (q.hint ? '<div class="m" style="opacity:.75">' + esc(q.hint) + "</div>" : "") +
+      mic + answer + say +
+    "</div>" +
+    '<div style="display:flex;gap:8px;margin-top:12px">' +
+      '<button onclick="qzPrev()" style="flex:1;padding:11px;border-radius:11px;border:1px solid #3a3a3c;background:#1c1c1e;color:#fff;font-size:14px">Назад</button>' +
+      '<button onclick="qzLater()" style="flex:1;padding:11px;border-radius:11px;border:1px solid #3a3a3c;background:#1c1c1e;color:#fff;font-size:14px">Позже</button>' +
+      '<button onclick="qzNext()" style="flex:1;padding:11px;border-radius:11px;border:1px solid #3a3a3c;background:#1c1c1e;color:#fff;font-size:14px">Дальше</button>' +
+      '<button onclick="qzStop()" style="flex:1;padding:11px;border-radius:11px;border:1px solid #3a3a3c;background:#1c1c1e;color:#fff;font-size:14px">Хватит</button>' +
+    "</div>" + log;
+}
+
+/* «Как везде»: подставляет названную ранее высоту в поле, но не пишет
+   молча — записывает всё та же кнопка (решение 017: голос отмечает,
+   пишет кнопка). */
+function qzSame(){
+  const q = qzCur();
+  const el = document.getElementById("qznum");
+  if(q && q.same && el){ el.value = String(q.same).replace(",", "."); el.focus(); }
+}
 
 function openVSheet(html){ vsheet.innerHTML = html; vmask.classList.add("on"); }
 function closeVSheet(){ vmask.classList.remove("on"); }
 
-async function startVoice(mode){
+async function startVoice(mode, q){
   vMode = String(mode || "");
+  vQ = String(q || "");
   if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || typeof MediaRecorder === "undefined"){
     toast("Запись голоса недоступна в этом клиенте", "bad"); return;
   }
@@ -6109,6 +6679,7 @@ async function onRecStop(){
     fd.append("mode", vMode);                    // сценарий разбора на сервере [чат 016]
     fd.append("room", (typeof PROF === "object" && PROF && PROF.room) ? PROF.room : "");   // открытое помещение профиля: подставится, если его не назвали вслух [чат 017]
     fd.append("lang", LANG);                     // язык интерфейса → язык транскрипции: без него движок относит узбекскую речь к чужому языку [чат 022]
+    if(vQ) fd.append("q", vQ);                   // контекст активного вопроса опроса [чат 059]: сервер сужает промпт и не зовёт классификатор
     const r = await fetch(`${API}/voice`, { method: "POST", body: fd });
     const raw = (await r.text()).trim();
     if(r.status === 401 || r.status === 403) throw new Error("Доступ не подтверждён.");
@@ -6171,6 +6742,7 @@ async function vRetry(mode){
   const text = vAskText;
   if(!text){ startVoice(mode); return; }
   vMode = String(mode === "acc" ? "" : mode);
+  vQ = "";                            // выбран другой раздел — контекст вопроса снят [чат 059]
   openVSheet(`<div class="vh">Разбираю заново…</div><div class="vspin"></div>
     <div class="vs" style="text-align:center">${esc(VASK[mode] ? VASK[mode].t : "")}</div>`);
   try{
@@ -6267,6 +6839,7 @@ async function applyVoice(){
     ok ? done++ : fail++;
   }
   closeVSheet();
+  qzVoiceDone();                       // идёт опрос — сдвинуть очередь [чат 059]
   if(fail === 0) toast(done > 1 ? `Записано: ${done}` : "Записано");
   else toast(`Записано ${done}, не удалось ${fail}`, fail && !done ? "bad" : "");
 }
@@ -6522,6 +7095,7 @@ async function applyVoiceRooms(){
   }
   closeVSheet();
   await load();
+  qzVoiceDone();                       // [чат 059]
   render();
   if(fail === 0) toast(added ? `Записано: ${done}, новых помещений: ${added}` : `Записано: ${done}`);
   else toast(`Записано ${done}, не удалось ${fail}`, done ? "" : "bad");
@@ -6784,8 +7358,9 @@ function _snapshot(d){
 }
 async function refresh(){
   const el = document.activeElement;
-  const busy = (el && ["INPUT","SELECT","TEXTAREA"].includes(el.tagName)) || vmask.classList.contains("on");
-  if(busy) return;                       // не мешаем вводу/голосовому окну
+  const inQuiz = (typeof QZ === "object" && QZ && QZ.on && stack[stack.length - 1] === "quiz");
+  const busy = (el && ["INPUT","SELECT","TEXTAREA"].includes(el.tagName)) || vmask.classList.contains("on") || inQuiz;
+  if(busy) return;                       // не мешаем вводу, голосовому окну и активному вопросу опроса [чат 059]
   try{
     const auth = INIT ? `initData=${encodeURIComponent(INIT)}` : `key=${encodeURIComponent(KEY)}`;
     const r = await fetch(`${API}/data?${auth}`, { cache:"no-store" });
@@ -6832,6 +7407,41 @@ let UZ_OBS = null;
 
 /* Точные надписи. Ключ — строка целиком, как она приходит в текстовый узел. */
 const UZ = {
+  /* Мастер-опрос [чат 059]. Тексты вопросов собираются из имени помещения
+     и справочника, поэтому шаблонами живут в UZ_RULES; здесь — постоянные
+     надписи экрана. */
+  "Опрос": "So'rov",
+  "Пройти вопросами": "Savollar bo'yicha o'tish",
+  "Пройти<br>вопросами": "Savollar<br>bo'yicha",
+  "система спросит сама": "tizim o'zi so'raydi",
+  "🧭 Пройти вопросами": "🧭 Savollar bo'yicha o'tish",
+  "🎤 Ответить голосом": "🎤 Ovoz bilan javob berish",
+  "Записать": "Yozish",
+  "Разобрать": "Tahlil qilish",
+  "Назад": "Orqaga",
+  "Позже": "Keyinroq",
+  "Дальше": "Keyingi",
+  "Хватит": "Yetarli",
+  "Делаем": "Bajaramiz",
+  "Возвращаюсь к отложенному": "Keyinga qoldirilganga qaytyapman",
+  "Записано в этом опросе": "Shu so'rovda yozilgan",
+  "пройдено · дыр не осталось": "o'tildi · bo'shliq qolmadi",
+  "Вопросов не осталось": "Savol qolmadi",
+  "Закончить опрос": "So'rovni tugatish",
+  "Перейти к профилю ремонта": "Ta'mir profiliga o'tish",
+  "Опрос закрыт — записанное сохранено": "So'rov yopildi — yozilganlar saqlandi",
+  "Скажите или впишите ответ": "Javobni ayting yoki yozing",
+  "Впишите число или ответьте голосом": "Raqam yozing yoki ovoz bilan javob bering",
+  "Нужны оба числа — ширина и высота": "Ikkala raqam kerak — eni va bo'yi",
+  "Не понял число": "Raqamni tushunmadim",
+  "или впишите ответ словами": "yoki javobni so'z bilan yozing",
+  "ответить словами": "so'z bilan javob berish",
+  "число": "raqam",
+  "число в метрах или сантиметрах": "metr yoki santimetrdagi raqam",
+  "ширина": "eni",
+  "высота": "bo'yi",
+  "Своя причина:": "O'z sababi:",
+  "почему этап не нужен": "bosqich nega kerak emas",
 "Срок с ограничением параллельности":"Parallellik cheklovi bilan muddat","Что держит срок":"Muddatni nima ushlab turadi",
 "Ещё одна работа в помещении":"Xonada yana bitta ish","Работ в помещении одновременно":"Xonada bir vaqtda ishlar soni",
 "Фронтов на раздел":"Bo'lim uchun frontlar","Записать фронты":"Frontlarni yozish","Фронты записаны":"Frontlar yozildi",
@@ -7300,6 +7910,17 @@ const UZ = {
 /* Шаблоны: строка содержит данные (числа, коды, названия) — переводим обвязку,
    данные оставляем на месте. Порядок важен: правила идут сверху вниз. */
 const UZ_RULES = [
+  /* Мастер-опрос [чат 059]: заголовок такта и свод несут числа, поэтому
+     шаблонами (правило слоя 020 — надпись с данными переводится регэкспом). */
+  [/^вопрос (\d+) из (\d+)$/, "savol $1 / $2"],
+  [/^вопрос (\d+) из (\d+) · отложено (\d+)$/, "savol $1 / $2 · keyinga qoldirilgan $3"],
+  [/^вопрос (\d+) из (\d+) · (.+)$/, "savol $1 / $2 · $3"],
+  [/^вопрос (\d+) из (\d+) · отложено (\d+) · (.+)$/, "savol $1 / $2 · keyinga qoldirilgan $3 · $4"],
+  [/^Как везде — ([\d.,]+) м$/, "Hamma joydagidek — $1 m"],
+  [/^Пропустить: (.+)$/, "O'tkazib yuborish: $1"],
+  [/^(\d+) отмечено$/, "$1 belgilangan"],
+  [/^(\d+) в смете$/, "$1 smetada"],
+  [/^(.+) · пропусков (\d+)$/, "$1 · o'tkazilgan $2"],
   [/^Оценка ([\d.,]+) дн · в помещении (\d+), на раздел (\d+)$/, "Baho $1 kun · xonada $2, bo'limga $3"],
   [/^(.+) · ещё один фронт$/, "$1 · yana bitta front"],
   [/^Не удалось поставить в план работ: (\d+) — в карте связей кольцо, работа ждёт сама себя\.$/, "Rejaga qo'yib bo'lmadi: $1 ta ish — bog'lanishlar xaritasida halqa bor, ish o'zini kutmoqda."],
@@ -7713,7 +8334,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "058.1";
+const BUILD = "059.1";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
