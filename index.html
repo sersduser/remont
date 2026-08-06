@@ -4781,6 +4781,149 @@ function exportBox(){
   '</div>';
 }
 
+/* ══════════════════════════════════════════════════════════════
+   ЗАВЕДЕНИЕ ОБЪЕКТА ИЗ ПАНЕЛИ [чат 077, G1 шаг 5]
+
+   Серверная сторона готова с 076: POST /remont/object заводит объект целиком
+   в базе по подписи владельца — аккаунт, строка objects, участие admin, ключ
+   доступа. Google-книга после этого необязательна: она витрина, а не объект.
+
+   Идемпотентность держится меткой формы ref: она рождается один раз при
+   открытии экрана и живёт до успеха. Второй тап, повтор после обрыва сети и
+   возврат на экран возвращают ТОТ ЖЕ объект и тот же ключ, а не заводят
+   второй (сервер ищет по паре владелец + метка, разбор 21 §7.4).
+
+   Поля живут в NOBJ.f, а не только в DOM: экран перерисовывается от данных,
+   и введённое иначе пропадало бы на середине заполнения (урок 021).
+   ══════════════════════════════════════════════════════════════ */
+const NOBJ = { busy: false, ref: "", err: "", res: null, f: { title: "", address: "", contract: "" } };
+
+function nobjRef(){
+  if(!NOBJ.ref){
+    const rnd = (window.crypto && crypto.randomUUID) ? crypto.randomUUID()
+              : (Date.now().toString(36) + Math.random().toString(36).slice(2, 10));
+    NOBJ.ref = "panel-" + rnd;
+  }
+  return NOBJ.ref;
+}
+
+function nobjSet(k, v){ NOBJ.f[k] = String(v == null ? "" : v); }
+
+/* Блок на экране «Объект». Право то же, что у выгрузки: заказчик и админ.
+   Владельцев системы панель не знает — их список живёт в базе, и чужому
+   откажет сервер (двойной замок права, 076). */
+function newObjBox(){
+  if(!canExport()) return "";
+  return '<div class="stat">' +
+    '<div class="r"><span class="k">Новый объект</span></div>' +
+    '<div class="m">Заводится в базе по вашей подписи Telegram. Нужно только название — адрес и сумму договора можно дописать потом. Google-таблица не обязательна.</div>' +
+    '<button onclick="go(\'newobj\')" style="width:100%;margin-top:10px;padding:11px;border-radius:11px;border:0;background:#2c2c2e;color:#fff;font-size:15px">➕ Завести объект</button>' +
+  '</div>';
+}
+
+function nobjInput(k, ph, type){
+  return '<input id="nobj_' + k + '" type="' + (type || "text") + '"' + (type === "number" ? ' inputmode="decimal"' : "") +
+    ' value="' + esc(NOBJ.f[k] || "") + '" placeholder="' + esc(ph) + '"' +
+    ' oninput="nobjSet(\'' + k + '\', this.value)"' +
+    ' style="width:100%;margin-top:8px;padding:11px;border-radius:10px;border:1px solid #3a3a3c;background:#000;color:#fff;font-size:15px">';
+}
+
+function nobjScreen(){
+  if(NOBJ.res) return nobjDone();
+  return '<div class="hello">Новый объект</div>' +
+    '<div class="sub">заведётся в базе по вашей подписи Telegram</div>' +
+    (NOBJ.err ? '<div class="warnbox">' + esc(NOBJ.err) + '</div>' : "") +
+    '<div class="stat">' +
+      '<div class="m">Название объекта</div>' + nobjInput("title", "например: Квартира на Мирабадской") +
+      '<div class="m" style="margin-top:10px">Адрес — не обязательно</div>' + nobjInput("address", "улица, дом, квартира") +
+      '<div class="m" style="margin-top:10px">Сумма договора, USD — не обязательно</div>' + nobjInput("contract", "3700", "number") +
+    '</div>' +
+    '<button onclick="mkObject()"' + (NOBJ.busy ? " disabled" : "") +
+      ' style="width:100%;margin-top:12px;padding:13px;border-radius:12px;border:0;background:' +
+      (NOBJ.busy ? "#3a3a3c" : "#0a84ff") + ';color:#fff;font-size:16px">' +
+      (NOBJ.busy ? "Завожу…" : "Завести объект") + '</button>' +
+    '<div class="sub" style="margin-top:12px">Заводить объекты может владелец системы. Повторное нажатие не создаст второй объект — вернётся тот же.</div>';
+}
+
+function nobjDone(){
+  const r = NOBJ.res || {};
+  const key = String(r.key || "");
+  return '<div class="hello">' + (r.created ? "Объект заведён" : "Такой объект уже был") + '</div>' +
+    '<div class="sub">' + esc(String(r.title || NOBJ.f.title || "")) + '</div>' +
+    (r.created ? "" : '<div class="warnbox">Объект с таким названием у вас уже есть — показываю его ключ, второй не заводил.</div>') +
+    '<div class="stat">' +
+      '<div class="r"><span class="k">Ключ доступа</span></div>' +
+      '<div class="m" style="margin-top:6px;font-family:monospace;font-size:15px;word-break:break-all">' + esc(key) + '</div>' +
+      '<div class="m" style="margin-top:8px">Ключ открывает объект в браузере вне Telegram. Внутри Telegram он не нужен — система узнаёт вас по подписи.</div>' +
+      '<button onclick="nobjCopy()" style="width:100%;margin-top:10px;padding:11px;border-radius:11px;border:0;background:#2c2c2e;color:#fff;font-size:15px">Скопировать ключ</button>' +
+    '</div>' +
+    '<button onclick="nobjOpen()" style="width:100%;margin-top:12px;padding:13px;border-radius:12px;border:0;background:#0a84ff;color:#fff;font-size:16px">Открыть объект</button>' +
+    '<div class="sub" style="margin-top:12px">Листов Google-книги у нового объекта нет — данные живут в базе. Понадобится таблица для глаз — заведём отдельно.</div>' +
+    '<button onclick="nobjReset()" style="width:100%;margin-top:10px;padding:11px;border-radius:11px;border:0;background:#2c2c2e;color:#fff;font-size:15px">Завести ещё один</button>';
+}
+
+function nobjCopy(){
+  const k = String((NOBJ.res || {}).key || "");
+  if(!k) return;
+  try{
+    if(navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(k);
+    else {
+      const ta = document.createElement("textarea");
+      ta.value = k; document.body.appendChild(ta); ta.select();
+      document.execCommand("copy"); ta.remove();
+    }
+    toast("Ключ скопирован", "ok");
+  }catch(e){ toast("Скопировать не вышло — выделите руками", "err"); }
+}
+
+/* Открытие нового объекта — ключом в адресе: сервер выбирает объект по ключу
+   доступа (приём 074). Хеш сохраняем — в нём живёт подпись Telegram. */
+function nobjOpen(){
+  const k = String((NOBJ.res || {}).key || "");
+  if(!k) return;
+  location.href = location.pathname + "?key=" + encodeURIComponent(k) + (location.hash || "");
+}
+
+function nobjReset(){
+  NOBJ.res = null; NOBJ.err = ""; NOBJ.ref = "";
+  NOBJ.f = { title: "", address: "", contract: "" };
+  render();
+}
+
+async function mkObject(){
+  if(NOBJ.busy) return;                                  // замок от второго тапа [чат 012]
+  const title = String(NOBJ.f.title || "").trim();
+  if(!title){ toast("Название объекта обязательно", "wait"); return; }
+  NOBJ.busy = true; NOBJ.err = ""; render();
+  try{
+    const body = { initData: INIT, key: KEY, title: title, ref: nobjRef() };
+    const addr = String(NOBJ.f.address || "").trim();
+    const sum  = String(NOBJ.f.contract || "").trim().replace(",", ".");
+    if(addr) body.address = addr;
+    if(sum && !isNaN(Number(sum))) body.contract = Number(sum);
+    const r = await fetch(API + "/object", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body)
+    });
+    const txt = await r.text();
+    let j = null; try{ j = JSON.parse(txt); }catch(e){}
+    if(!r.ok || !j || j.ok !== true){
+      /* Хвост «[line NN]» дописывает n8n, человеку он ничего не говорит;
+         служебный код сервер ставит в конец текста в скобках (находка 076). */
+      NOBJ.err = (j && j.error) ? String(j.error).replace(/\s*\[line \d+\]\s*$/, "")
+                                : ("сервер ответил " + r.status);
+      toast(NOBJ.err, "err");
+    }else{
+      NOBJ.res = j;
+      toast(j.created ? "Объект заведён" : "Объект уже был — вот его ключ", "ok");
+    }
+  }catch(e){
+    NOBJ.err = "Не получилось: " + ((e && e.message) ? e.message : "сеть");
+    toast(NOBJ.err, "err");
+  }
+  NOBJ.busy = false; render();
+}
+
 function render(toTop){
   const k = stack[stack.length - 1];
   const keep = window.scrollY || 0;               // где человек стоял до перерисовки
@@ -4821,6 +4964,9 @@ const SCREENS = {
 
 /* Мастер-опрос [чат 059]: экран целиком собирает модуль опроса. */
 quiz(){ return qzScreen(); },
+
+/* Заведение объекта [чат 077, G1 шаг 5]: форма и показ ключа. */
+newobj(){ return nobjScreen(); },
 
 home(){
   if (D.kind === "hand") return handHome();   // контур работника [чат 013]
@@ -5619,6 +5765,7 @@ object(){
     planBox +
     schemaBox +
     exportBox() +
+    newObjBox() +
     (gap.length ? ('<div class="warnbox" id="objGap">' +
       '<div>Пока не заданы окна и двери, объёмы работ по откосам, подоконникам и наличникам считаются наугад.</div>' +
       gap.map(r => '<div onclick="objGoRoom(\'' + esc(r.code) + '\')" style="margin-top:6px;padding:8px 10px;border-radius:10px;background:rgba(255,255,255,.06);cursor:pointer">' +
@@ -7564,6 +7711,14 @@ function showVRooms(d){
   const selN = vRooms.reduce((s, r) => s
     + r.fields.filter(f => f._sel).length
     + (r.elems || []).filter(e => e.isNew ? e._sel : (e.changes || []).some(c => c._sel)).length, 0);
+  /* Сколько строк вообще можно отметить [чат 077]. Ноль означает, что окно
+     показывать нечего: сказанное совпало с записанным до последней ячейки.
+     Тогда яркая кнопка «Записать отмеченное» обманывает видом — она честно
+     ничего не делает, но человек читает её как главное действие (сообщение
+     Дмитрия 07.08, 02:58). Гасим и говорим словами. */
+  const pickN = vRooms.reduce((s, r) => s
+    + r.fields.length
+    + (r.elems || []).filter(e => !e.unknown && !e.many).length, 0);
   const rows = vRooms.map((r, i) => {
     const head = `<div class="vt">${esc(r.name || "помещение")}${r.isNew ? ' <span style="color:#ff9f0a">· новое</span>' : ""}</div>`;
     const fl = r.fields.map((f, j) => `
@@ -7603,7 +7758,7 @@ function showVRooms(d){
     <div id="vlist">${rows}</div>
     <div class="vrow">
       <button class="vbtn-cancel" onclick="closeVSheet()">Отмена</button>
-      <button class="vbtn-ok" id="vrapply" onclick="applyVoiceRooms()">Записать отмеченное</button>
+      <button class="vbtn-ok" id="vrapply"${pickN ? "" : ' style="background:#3a3a3c"'} onclick="applyVoiceRooms()">${pickN ? "Записать отмеченное" : "Нечего записывать"}</button>
     </div>`);
 }
 
@@ -7633,7 +7788,12 @@ async function applyVoiceRooms(){
     .map(r => ({ ...r, fields: r.fields.filter(f => f._sel),
                  elems: (r.elems || []).filter(e => e.isNew ? e._sel : e.changes.some(c => c._sel)) }))
     .filter(r => r.fields.length || r.elems.length || r.isNew);
-  if(!chosen.length){ toast("Ничего не отмечено — коснитесь строки, чтобы отметить", "wait"); return; }
+  if(!chosen.length){
+    const nothing = !vRooms.some(r => r.fields.length || (r.elems || []).some(e => !e.unknown && !e.many));
+    toast(nothing ? "Нового в сказанном нет — записывать нечего"
+                  : "Ничего не отмечено — коснитесь строки, чтобы отметить", "wait");
+    return;
+  }
   if(btn){ btn.disabled = true; btn.textContent = "Записываю…"; }
   let done = 0, fail = 0, added = 0;
   for(const r of chosen){
@@ -8953,7 +9113,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "065.1";
+const BUILD = "077.1";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
