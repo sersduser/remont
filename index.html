@@ -4714,6 +4714,73 @@ function scrollSave(){ try{ SCROLL[stack[stack.length - 1]] = window.scrollY || 
 function go(k){ scrollSave(); stack.push(k); render(true); }
 function back(){ if(stack.length > 1){ scrollSave(); stack.pop(); render(true); } }
 
+/* ── Выгрузка-витрина: кнопка «Обновить таблицу» ──────────────────
+   [чат 073, разбор 28 §7.2 исполнение A]
+
+   После ухода с Google база — единственный приёмник, а книга осталась тем,
+   ради чего Дмитрий её держит: человек смотрит и правит глазами. Поток стал
+   односторонним «база → книга», и у него появился момент: кто-то нажимает.
+
+   Кнопка честнее расписания. Она показывает, что таблица — снимок, а не
+   истина: между нажатиями книга отстаёт, и это видно по времени в подписи.
+   Расписание добавляется одним узлом на сервере, когда станет ясно, что
+   нажимать лень (§7.2 B).
+
+   Право на выгрузку — только у заказчика и администратора: кнопка переписывает
+   книгу целиком, а не свою строку. Сервер проверяет это сам (узел «Проверить
+   личность (выгрузка)»), панель лишь не показывает кнопку тем, кому откажут.  */
+const EXPORT = { busy: false, note: "", at: "" };
+
+const canExport = () => ["admin", "owner"].indexOf(String(D.role || "")) >= 0
+                     || ["admin", "owner"].indexOf(String(D.kind || "")) >= 0;
+
+async function exportBook(){
+  /* Замок от второго входа [чат 012]: двойной тап давал второй круг запросов,
+     а здесь второй круг — это второй batchClear по боевой книге. */
+  if(EXPORT.busy) return;
+  EXPORT.busy = true; render();
+  try{
+    const r = await fetch(API + "/export", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ initData: INIT, key: KEY })
+    });
+    const t = await r.text();
+    let j = null; try{ j = JSON.parse(t); }catch(e){}
+    if(!r.ok || !j || j.ok !== true){
+      /* Сервер отвечает 403 и текстом причины; хвост «[line NN]» дописывает
+         n8n — человеку он ничего не говорит. */
+      const msg = (j && j.error) ? String(j.error).replace(/\s*\[line \d+\]\s*$/, "")
+                                 : ("сервер ответил " + r.status);
+      toast(msg, "err");
+    }else{
+      const d = new Date();
+      const p2 = n => String(n).padStart(2, "0");
+      EXPORT.at = p2(d.getHours()) + ":" + p2(d.getMinutes());
+      EXPORT.note = (j.books || []).join(" · ");
+      toast("Таблица обновлена: листов " + (j.sheets || 0) + ", строк " + (j.rows || 0), "ok");
+    }
+  }catch(e){
+    toast("Не получилось: " + ((e && e.message) ? e.message : "сеть"), "err");
+  }
+  EXPORT.busy = false; render();
+}
+
+/* Блок на экране «Объект». Сводка обязательна (§11.2 п. 5): кнопка без отчёта
+   неотличима от кнопки, которая ничего не делает. */
+function exportBox(){
+  if(!canExport()) return "";
+  return '<div class="stat">' +
+    '<div class="r"><span class="k">Google-таблица</span>' +
+      '<span class="v" style="font-size:13px;opacity:.7">' + (EXPORT.at ? ("обновлена в " + esc(EXPORT.at)) : "снимок базы") + '</span></div>' +
+    '<div class="m">Данные живут в базе, таблица — витрина для глаз. Кнопка переписывает листы книги объекта и общей базы из базы: то, что правили в таблице руками, заменится тем, что в базе.</div>' +
+    (EXPORT.note ? ('<div class="m" style="margin-top:6px;color:#30d158">' + esc(EXPORT.note) + '</div>') : "") +
+    '<button onclick="exportBook()"' + (EXPORT.busy ? " disabled" : "") +
+      ' style="width:100%;margin-top:10px;padding:11px;border-radius:11px;border:0;background:' +
+      (EXPORT.busy ? "#3a3a3c" : "#0a84ff") + ';color:#fff;font-size:15px">' +
+      (EXPORT.busy ? "Обновляю…" : "🔄 Обновить таблицу") + '</button>' +
+  '</div>';
+}
+
 function render(toTop){
   const k = stack[stack.length - 1];
   const keep = window.scrollY || 0;               // где человек стоял до перерисовки
@@ -5551,6 +5618,7 @@ object(){
     "</div>" +
     planBox +
     schemaBox +
+    exportBox() +
     (gap.length ? ('<div class="warnbox" id="objGap">' +
       '<div>Пока не заданы окна и двери, объёмы работ по откосам, подоконникам и наличникам считаются наугад.</div>' +
       gap.map(r => '<div onclick="objGoRoom(\'' + esc(r.code) + '\')" style="margin-top:6px;padding:8px 10px;border-radius:10px;background:rgba(255,255,255,.06);cursor:pointer">' +
@@ -8037,7 +8105,7 @@ const UZ = {
 "Привязать":"Bog'lash","Процентом":"Foiz bilan","Скидка, %":"Chegirma, %","Цены Юрия":"Yuriy narxlari",
 "в договор":"shartnomaga","— впишите":"— kiriting","Готовность":"Tayyorlik",
 "Мои деньги":"Mening pulim","Что входит":"Nima kiradi","сумма, сум":"summa, so'm",
-"Пересчитать":"Qayta hisoblash","Ваша цена, $":"Sizning narxingiz, $","Всего работы":"Jami ishlar",
+"Пересчитать":"Qayta hisoblash","🔄 Обновить таблицу":"🔄 Jadvalni yangilash","Обновляю…":"Yangilanmoqda…","Google-таблица":"Google-jadval","снимок базы":"bazadan nusxa","Ваша цена, $":"Sizning narxingiz, $","Всего работы":"Jami ishlar",
 "Ждём чеки на":"Cheklar kutilmoqda","Продиктовать":"Aytib berish","Входит в цену":"Narxga kiradi",
 "Заявлено вами":"Siz bildirgansiz","Изменить срок":"Muddatni o'zgartirish",
 "Изменить цену":"Narxni o'zgartirish","Листы бригады":"Brigada varaqlari",
