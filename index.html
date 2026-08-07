@@ -169,7 +169,10 @@ const KEY  = new URLSearchParams(location.search).get("key") || "";  // legacy /
    (ссылка t.me/бота?startapp=inv_КОД) или руками через ?invite / поле ввода.
    Сервер доверяет только тому коду, который сам достаёт из initData или body —
    здесь код нужен лишь чтобы показать его в поле и не заставлять печатать. */
-const INVITE = String((tg && tg.initDataUnsafe && tg.initDataUnsafe.start_param) || new URLSearchParams(location.search).get("invite") || "").replace(/^inv_/i, "").toUpperCase();
+const INVITE = String((tg && tg.initDataUnsafe && tg.initDataUnsafe.start_param) || new URLSearchParams(location.search).get("invite") || "").replace(/^inv_/i, "");
+/* Регистр НЕ приводится [чат 083]: серверный код — 10 знаков hex в нижнем
+   регистре, и toUpperCase ломал бы каждую новую ссылку. Верхний регистр
+   нужен только старой ветке /register — он ставится там, на входе.      */
 
 let D = null;                       // данные с сервера
 let stack = ["home"];               // стек навигации
@@ -226,40 +229,76 @@ async function load(){
    говорит «не подошёл», не различая причин. Замок от двойного тапа. */
 let INV_BUSY = false, INV_CODE = "";
 const INV_INP = 'style="width:100%;padding:12px;border-radius:12px;border:1px solid #3a3a3c;background:#000;color:#fff;font-size:18px;letter-spacing:3px;text-align:center;text-transform:uppercase"';
+/* ── ЭКРАН ПРИНЯТИЯ ────────────────────────────────────────────────────
+   Один экран на три типа приглашения. Заголовок и текст берутся из ответа
+   сервера, а не зашиты («Приглашение в бригаду» было верно ровно для одного
+   случая из трёх). first_login отличает нового человека от вернувшегося:
+   профиль может быть пуст и у старого аккаунта, поэтому судить по пустоте
+   профиля нельзя (контракт 081).                                          */
 function renderInvite(s){
   s = s || {};
   const code0 = s.code !== undefined ? s.code : INVITE;
-  let body = "";
-  if(s.phase === "found"){
+  let body = "", head = "Приглашение", sub = "объект «Ремонт»";
+
+  if(s.phase === "ok"){
+    const j = s.res || {};
+    head = j.first_login ? "Добро пожаловать" : (j.repeat ? "Вы уже здесь" : "Приглашение принято");
+    sub  = INV_T[j.type] ? ("приглашение " + INV_T[j.type]) : "доступ выдан";
+    body = '<div class="stat">' +
+      (j.purpose ? '<div class="r"><span class="k">Зачем позвали</span><span class="v">' + esc(j.purpose) + '</span></div>' : "") +
+      (j.role ? '<div class="r"><span class="k">Ваша роль</span><span class="v">' + esc(INV_ROLE[j.role] || j.role) + '</span></div>' : "") +
+      (j.repeat ? '<div class="r"><span class="k" style="font-size:13px;opacity:.65">Повторное нажатие ничего не изменило — доступ уже был выдан.</span><span class="v"></span></div>'
+                : '<div class="r"><span class="k" style="font-size:13px;opacity:.65">Доступ выдан. Открываю панель…</span><span class="v"></span></div>') +
+      '</div>' +
+      '<button class="tile pri" style="width:100%" onclick="location.reload()"><span class="nm">Открыть панель</span></button>';
+  } else if(s.phase === "found"){
+    head = "Приглашение в бригаду";
     body = '<div class="stat"><span class="k">Код принят. Вы — <b>' + esc(s.name) + '</b>, бригада: <b>' + esc(s.foreman) + '</b>?</span></div>' +
       '<button class="tile pri" style="width:100%;margin-bottom:10px" onclick="invConfirm()"><span class="nm">Да, это я — подключить</span></button>' +
       '<button class="tile" style="width:100%" onclick="renderInvite({code:\'\'})"><span class="nm">Нет, ввести другой код</span></button>';
   } else if(s.phase === "done"){
+    head = "Приглашение в бригаду";
     body = '<div class="stat"><span class="k">Готово, ' + esc(s.name) + '! Вы в бригаде. Открываю панель…</span></div>';
   } else {
-    body = '<div class="stat"><span class="k">Введите код приглашения от бригадира. Если вы открыли панель по ссылке-приглашению, код уже подставлен.</span></div>' +
+    body = '<div class="stat"><span class="k">Введите код приглашения. Если вы открыли панель по ссылке-приглашению, код уже подставлен.</span></div>' +
       '<div style="margin:10px 0"><input id="invcode" value="' + attr(code0) + '" ' + INV_INP + ' placeholder="КОД"></div>' +
       (s.err ? '<div class="warnbox">' + esc(s.err) + '</div>' : "") +
-      '<button class="tile pri" style="width:100%" onclick="invCheck()"><span class="nm">Проверить код</span></button>';
+      '<button class="tile pri" style="width:100%"' + (INV_BUSY ? " disabled" : "") + ' onclick="invCheck()"><span class="nm">' +
+        (INV_BUSY ? "Проверяю…" : "Принять приглашение") + '</span></button>';
   }
-  app.innerHTML = '<div class="hello">Приглашение в бригаду</div>' +
-    '<div class="sub">объект «Ремонт»</div>' + body;
+  app.innerHTML = '<div class="hello">' + esc(head) + '</div><div class="sub">' + esc(sub) + '</div>' + body;
 }
+
 async function invCheck(){
-  const code = String((document.getElementById("invcode") || {}).value || "").trim().toUpperCase();
-  if(!/^[A-Z0-9]{6,12}$/.test(code)){ renderInvite({err: "Код — буквы и цифры, обычно 8 знаков.", code}); return; }
+  /* Регистр не трогаем: новый код — hex в нижнем регистре, и toUpperCase
+     ломал бы каждую ссылку. Верхний регистр нужен только старой ветке.   */
+  const code = String((document.getElementById("invcode") || {}).value || "").trim();
+  if(!/^[A-Za-z0-9]{6,64}$/.test(code)){ renderInvite({err: "Код — буквы и цифры, от 6 до 64 знаков.", code}); return; }
   if(INV_BUSY) return;
   INV_BUSY = true;
   try{
+    if(INV_NEW !== false){
+      const j = await invApi("/invite/accept", { code: code });
+      if(!j.absent){
+        if(j.error){ renderInvite({err: j.error, code}); return; }
+        INV_BUSY = false;
+        renderInvite({phase: "ok", res: j});
+        if(!j.repeat) setTimeout(() => location.reload(), 2200);
+        return;
+      }
+    }
+    /* Ветки ещё не на проде — старый двухфазный разговор с /register. */
+    const old = code.toUpperCase();
     const r = await fetch(API + "/register", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ initData: INIT, code }) });
+      body: JSON.stringify({ initData: INIT, code: old }) });
     const t = (await r.text()).trim();
     let j = null; try{ j = JSON.parse(t); }catch(e){}
-    if(j && j.ok && j.phase === "check"){ INV_CODE = code; renderInvite({phase: "found", name: j.name, foreman: j.foreman}); }
-    else renderInvite({err: "Код не подошёл: он мог истечь, быть использован или ваш Telegram уже подключён. Попросите у бригадира новую ссылку.", code});
+    if(j && j.ok && j.phase === "check"){ INV_CODE = old; renderInvite({phase: "found", name: j.name, foreman: j.foreman}); }
+    else renderInvite({err: "Код не подошёл: он мог истечь, быть использован или ваш Telegram уже подключён. Попросите новую ссылку.", code});
   }catch(e){ renderInvite({err: "Нет связи с сервером — попробуйте ещё раз.", code}); }
   finally{ INV_BUSY = false; }
 }
+
 async function invConfirm(){
   if(INV_BUSY) return;
   INV_BUSY = true;
@@ -4091,6 +4130,160 @@ function invGen(){
   return [...buf].map(x => A[x % A.length]).join("");
 }
 function invLink(code){ return "https://t.me/ss_remont_bot?startapp=inv_" + code; }
+
+/* ═══════════════════════════════════════════════════════════════════════
+   ПРИГЛАШЕНИЯ · серверная модель [чат 083, линия E5]
+
+   Как было до этого хода: код приглашения рождался в браузере (invGen),
+   жил строкой в листе «Работники» книги бригады, а «действует сутки» было
+   надписью на экране, а не правилом (карта экранов 080 §2). Следствия:
+   отозвать приглашение нечем, срок держится на честном слове клиента,
+   а три типа приглашения — в приложение · на объект · в бригаду — на такой
+   конструкции не выражаются вовсе.
+
+   Как теперь: код выдаёт сервер (ветки /remont/invite, /invite/accept,
+   /invites, /invite/revoke поверх функций базы, разбор 13 §9). Состояние
+   приглашения приходит ГОТОВЫМ — панель его печатает, а не выводит из дат:
+   иначе часы телефона стали бы частью правила доступа.
+
+   ПЕРЕХОДНЫЙ ПЕРИОД. Пока ветки не выкачены, n8n отвечает на их пути 404,
+   и панель молча возвращается к старому механизму — человек этого не видит.
+   Фолбэк и invGen снимаются одним ходом, когда ветки на проде (карта 080 §4 п. 6).
+   Отличать «ветки нет» от «отказано» обязательно: 401/403 фолбэком не лечатся
+   и должны дойти до человека, иначе отказ по правам выглядел бы как успех
+   старого пути.
+
+   Регистр кода. Старый код — 8 знаков из алфавита без похожих символов
+   (A-Z, 2-9), новый — 10 знаков hex в НИЖНЕМ регистре (gen_random_uuid).
+   Сервер ищет код точным сравнением, поэтому toUpperCase, стоявший на входе,
+   ломал бы каждую новую ссылку. Приведение к верхнему регистру осталось
+   ровно в одном месте — перед отправкой в старую ветку /register.          */
+
+const INV_T    = { app: "в приложение", object: "на объект", crew: "в бригаду" };
+const INV_ROLE = { owner: "заказчик", foreman: "бригадир", hand: "исполнитель" };
+const INV_STC  = { "действует": "#30d158", "использовано": "#8e8e93", "просрочено": "#ff9f0a", "отозвано": "#e5484d" };
+
+/* Тексты отказов по служебному коду. Сервер ставит код в КОНЕЦ сообщения
+   в скобках — начало сообщения принадлежит n8n (находка 076).            */
+const INV_MSG = {
+  400: "Код приглашения не разобран — проверьте, что он скопирован целиком.",
+  401: "Панель не узнала вас — откройте её через бота в Telegram.",
+  403: "Отозвать приглашение может тот, кто его выписал, или владелец объекта.",
+  404: "Такого приглашения нет. Возможно, ссылка старая — попросите новую.",
+  409: "На этом объекте у вас уже другая роль. Сменить её может только владелец.",
+  410: "Приглашение больше не действует: истёк срок, оно отозвано или уже использовано.",
+  422: "Приглашение выписано неверно — проверьте тип, срок и число погашений.",
+};
+
+let INV_NEW  = null;    // null — не проверяли · true — ветки на проде · false — ещё нет
+let INVS     = null;    // список приглашений (экран «Приглашения»)
+let INV_LOAD = false, INV_ACT = "", INV_ASK = "";
+const INV_F  = { type: "app", role: "hand", purpose: "", invitee: "", hours: "24", max: "1" };
+
+function invClean(t){
+  return String(t == null ? "" : t)
+    .replace(/\s*\[line \d+\]\s*$/, "")     // хвост n8n, человеку он ничего не говорит
+    .replace(/\s*\(\d{3}\)\s*$/, "")        // служебный код отказа
+    .trim();
+}
+function invCodeOf(t, st){
+  /* Порядок обязателен: n8n дописывает «[line N]» ПОСЛЕ служебного кода,
+     поэтому сначала снимается хвост, и только потом ищется «(NNN)» в конце.
+     Искать код сразу — значит не найти его ни разу в реальном ответе ветки
+     (поймано стендом 083, тест 2).                                        */
+  const s = String(t == null ? "" : t).replace(/\s*\[line \d+\]\s*$/, "");
+  const m = /\((\d{3})\)\s*$/.exec(s);
+  return m ? Number(m[1]) : (Number(st) || 0);
+}
+
+/* Один вход ко всем четырём веткам. Возвращает либо ответ сервера,
+   либо {absent:true} (ветки ещё нет), либо {error, code}.               */
+async function invApi(path, body){
+  let r, txt;
+  try{
+    r = await fetch(API + path, { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(Object.assign({ initData: INIT, key: KEY }, body || {})) });
+    txt = (await r.text()).trim();
+  }catch(e){ return { error: "Нет связи с сервером — попробуйте ещё раз.", code: 0, net: true }; }
+  let j = null; try{ j = JSON.parse(txt); }catch(e){}
+  /* Незарегистрированный путь n8n отдаёт 404 без тела. Только этот случай
+     считается «ветки ещё нет»: отказ ветки приходит с телом и своим кодом. */
+  if(r.status === 404 && !j){ INV_NEW = false; return { absent: true }; }
+  INV_NEW = true;
+  if(!r.ok || !j || j.ok !== true){
+    const raw  = (j && (j.error || j.message)) ? String(j.error || j.message) : ("сервер ответил " + r.status);
+    const code = invCodeOf(raw, r.status);
+    return { error: INV_MSG[code] || invClean(raw) || "Не получилось — попробуйте ещё раз.", code: code };
+  }
+  return j;
+}
+
+/* Ссылка на приглашение — та же, что и раньше: бот открывает панель
+   и кладёт код в start_param.                                          */
+function invText(code, type){
+  const link = invLink(code);
+  const what = INV_T[type] ? ("Приглашение " + INV_T[type] + ".") : "Приглашение.";
+  return what + " Откройте ссылку: " + link +
+    "\nЕсли ссылка не открыла панель — нажмите в боте кнопку «Смета» и введите код: " + code;
+}
+function invCopy(code, type){
+  const text = invText(code, type);
+  try{
+    if(navigator.clipboard && navigator.clipboard.writeText){
+      navigator.clipboard.writeText(text)
+        .then(() => toast("Приглашение скопировано — перешлите человеку"))
+        .catch(() => toast("Не удалось скопировать — выделите текст на экране", "err"));
+      return;
+    }
+    const ta = document.createElement("textarea");
+    ta.value = text; document.body.appendChild(ta); ta.select();
+    document.execCommand("copy"); ta.remove();
+    toast("Приглашение скопировано — перешлите человеку");
+  }catch(e){ toast("Выделите и скопируйте текст на экране", "err"); }
+}
+
+/* ── Список приглашений ────────────────────────────────────────────── */
+async function invLoad(){
+  const j = await invApi("/invites", {});
+  if(j.absent){ INVS = []; return; }
+  if(j.error){ INVS = []; throw new Error(j.error); }
+  INVS = Array.isArray(j.list) ? j.list : (Array.isArray(j.payload) ? j.payload : (Array.isArray(j.invites) ? j.invites : []));
+}
+async function openInvites(){
+  if(INV_LOAD) return;
+  INV_LOAD = true;
+  try{
+    toast("Загружаю приглашения…", "wait");
+    await invLoad();
+    toast("Готово");
+  }catch(e){ toast(String((e && e.message) || "Не удалось загрузить приглашения"), "err"); }
+  finally{ INV_LOAD = false; }
+  if(stack[stack.length - 1] === "invites") render(); else go("invites");
+}
+
+/* Отзыв — в два тапа, без модального окна: в Telegram WebView диалог
+   браузера выглядит чужеродно, а промах по кнопке стоит доступа.       */
+function invAsk(code){ INV_ASK = (INV_ASK === code) ? "" : code; render(); }
+async function invRevoke(code){
+  if(INV_ACT) return;
+  INV_ACT = code; INV_ASK = ""; render();
+  try{
+    const j = await invApi("/invite/revoke", { code: code });
+    if(j.absent){ toast("Отзыв появится вместе с серверной частью приглашений", "err"); }
+    else if(j.error){ toast(j.error, "err"); }
+    else{ toast("Приглашение отозвано"); await invLoad().catch(() => {}); }
+  }catch(e){ toast("Не получилось отозвать", "err"); }
+  INV_ACT = ""; render();
+}
+
+/* ── Создание приглашения ──────────────────────────────────────────── */
+function invSet(k, v){ INV_F[k] = v; render(); }
+function invPick(k, val, label){
+  const on = String(INV_F[k]) === String(val);
+  return '<button onclick="invSet(\'' + k + '\',\'' + attr(val) + '\')" style="padding:9px 12px;border-radius:10px;border:0;margin:0 6px 6px 0;' +
+    'background:' + (on ? "#0a84ff" : "#2c2c2e") + ';color:#fff;font-size:14px">' + esc(label) + '</button>';
+}
+
 function invShare(code){
   const link = invLink(code);
   const text = "Приглашение в бригаду. Откройте ссылку: " + link + "\nЕсли ссылка не открыла панель — нажмите в боте кнопку «Смета» и введите код: " + code;
@@ -4100,14 +4293,59 @@ function invShare(code){
   } else toast("Выделите и скопируйте текст на экране", "err");
 }
 let CREW_ADD_BUSY = false;
+let INV_LAST = null;               // последнее выписанное приглашение — показывается в карточке
+
+/* Создание приглашения. Код приходит ОТВЕТОМ СЕРВЕРА: клиентский код нельзя
+   ни отозвать, ни ограничить сроком, поэтому invGen остаётся только на время
+   переходного периода — пока ветки приглашений не выкачены (см. блок выше).
+   Типы «на объект» и «в бригаду» требуют идентификаторов, которых панель
+   сегодня не получает: /data не отдаёт ни object_id, ни crew_id. Это названо
+   предусловием E5, а не обойдено угадыванием — выписать приглашение «куда-то»
+   хуже, чем честно сказать, что дверь ещё не открыта.                      */
 async function crewAdd(){
   const name  = String((document.getElementById("cw_name")  || {}).value || "").trim();
   const phone = String((document.getElementById("cw_phone") || {}).value || "").trim();
+  const type  = String(INV_F.type || "app");
+  if(CREW_ADD_BUSY) return;
+
+  if(INV_NEW !== false){
+    const body = { type: type, purpose: String(INV_F.purpose || "").trim(),
+                   invitee: name, hours: String(INV_F.hours || "24"), max_uses: String(INV_F.max || "1") };
+    if(type === "object"){
+      const oid = String((D && D.object_id) || "");
+      if(!oid){ toast("Сервер пока не сообщает панели, какой это объект — приглашение на объект недоступно", "err"); return; }
+      body.object_id = oid; body.role = String(INV_F.role || "hand");
+    }
+    if(type === "crew"){
+      const cid = String((D && D.crew_id) || "");
+      if(!cid){ toast("Бригада ещё не заведена как запись — приглашение в бригаду недоступно", "err"); return; }
+      body.crew_id = cid;
+    }
+    CREW_ADD_BUSY = true;
+    try{
+      toast("Создаю приглашение…", "wait");
+      const j = await invApi("/invite", body);
+      if(!j.absent){
+        if(j.error){ toast(j.error, "err"); return; }
+        INV_LAST = { code: j.code, type: j.type || type, expires_h: j.expires_h, max_uses: j.max_uses, invitee: name };
+        INVS = null;                                   // список устарел — перечитается при заходе
+        toast("Приглашение создано");
+        render();
+        return;
+      }
+    }catch(e){ toast("Не удалось создать приглашение", "err"); return; }
+    finally{ CREW_ADD_BUSY = false; }
+  }
+
+  /* ── Переходный путь: сервер ещё не знает о приглашениях ─────────────
+     Работает ровно один случай из трёх — работник в бригаду строкой листа. */
+  if(type !== "app" && type !== "crew"){
+    toast("Пока сервер не обновлён, доступно только приглашение работника", "err"); return;
+  }
   if(!name){ toast("Введите имя работника", "err"); return; }
   if(((CREW_DATA || {}).workers || []).some(w => String(w.name || "").trim().toLowerCase() === name.toLowerCase())){
     toast("Такое имя уже есть в бригаде", "err"); return;
   }
-  if(CREW_ADD_BUSY) return;
   CREW_ADD_BUSY = true;
   try{
     toast("Создаю приглашение…", "wait");
@@ -4120,6 +4358,39 @@ async function crewAdd(){
     await openCrewScreen("crew");
   }catch(e){ toast("Не удалось создать приглашение", "err"); }
   finally{ CREW_ADD_BUSY = false; }
+}
+
+/* Карточка «позвать человека»: тип, зачем, срок, число погашений.
+   Показывается на экране бригады вместо прежних двух полей.            */
+function invForm(inp){
+  const t = String(INV_F.type || "app");
+  const lastBox = INV_LAST ? (
+    '<div class="stat" style="margin-top:10px"><div class="r"><span class="k">Код приглашения</span>' +
+      '<span class="v" style="font-family:monospace;letter-spacing:2px">' + esc(INV_LAST.code) + '</span></div>' +
+    '<div class="r"><span class="k" style="font-size:13px;opacity:.65">' +
+      (INV_T[INV_LAST.type] ? ("приглашение " + INV_T[INV_LAST.type]) : "приглашение") +
+      (INV_LAST.expires_h ? (" · действует " + esc(String(INV_LAST.expires_h)) + " ч") : "") +
+      (Number(INV_LAST.max_uses) > 1 ? (" · до " + esc(String(INV_LAST.max_uses)) + " погашений") : " · одноразовое") +
+      '</span><span class="v"></span></div>' +
+    '<div class="m" style="margin-top:8px;word-break:break-all">' + esc(invLink(INV_LAST.code)) + '</div>' +
+    '<div class="m" style="margin-top:8px"><button onclick="invCopy(\'' + attr(INV_LAST.code) + '\',\'' + attr(INV_LAST.type) + '\')" ' + CREW_BTN + '>Скопировать приглашение</button></div>' +
+    '</div>') : "";
+  return '<div class="card"><div class="lbl">Позвать человека</div>' +
+    '<div class="m" style="margin-bottom:6px">Куда зовём</div>' +
+    invPick("type", "app", "В приложение") + invPick("type", "object", "На объект") + invPick("type", "crew", "В бригаду") +
+    (t === "object" ? ('<div class="m" style="margin:8px 0 6px">Роль на объекте</div>' +
+        invPick("role", "hand", "Исполнитель") + invPick("role", "foreman", "Бригадир") + invPick("role", "owner", "Заказчик")) : "") +
+    '<div style="margin:8px 0"><input id="cw_name" value="' + attr(INV_F.invitee) + '" oninput="INV_F.invitee=this.value" placeholder="Кого зовём — имя (не обязательно)" ' + inp + "></div>" +
+    '<div style="margin:8px 0"><input id="cw_phone" placeholder="Телефон (не обязательно)" ' + inp + "></div>" +
+    '<div style="margin:8px 0"><input value="' + attr(INV_F.purpose) + '" oninput="INV_F.purpose=this.value" placeholder="Зачем — увидит приглашённый" ' + inp + "></div>" +
+    '<div class="m" style="margin:8px 0 6px">Срок действия</div>' +
+    invPick("hours", "24", "сутки") + invPick("hours", "72", "3 дня") + invPick("hours", "168", "неделя") +
+    '<div class="m" style="margin:8px 0 6px">Сколько раз можно принять</div>' +
+    invPick("max", "1", "один") + invPick("max", "5", "до пяти") + invPick("max", "20", "до двадцати") +
+    '<button class="tile pri" style="width:100%;margin-top:10px"' + (CREW_ADD_BUSY ? " disabled" : "") +
+      ' onclick="crewAdd()"><span class="nm">' + (CREW_ADD_BUSY ? "Создаю…" : "Создать приглашение") + '</span></button>' +
+    lastBox +
+    '</div>';
 }
 
 /* Отключение работника = Статус «отключён» + снятие будущих нарядов.
@@ -4968,6 +5239,63 @@ quiz(){ return qzScreen(); },
 /* Заведение объекта [чат 077, G1 шаг 5]: форма и показ ключа. */
 newobj(){ return nobjScreen(); },
 
+/* Приглашения [чат 083, E5]: список выписанных с состоянием и отзывом.
+   Состояние приходит с сервера готовым (v_invites_active), панель его не
+   вычисляет: иначе часы телефона стали бы частью правила доступа.
+   Отзыв — обязательная часть механизма, а не удобство: по решению 060
+   ссылка открывает профиль объекта ДО принятия, и выписанное по ошибке
+   приглашение без отзыва остаётся открытой дверью.                      */
+invites(){
+  const head = '<div class="hello">Приглашения</div>';
+  if(INV_NEW === false)
+    return head + '<div class="sub">серверная часть ещё не выкачена</div>' +
+      '<div class="stat"><span class="k">Пока код приглашения генерирует само приложение, у приглашения нет ни записи, ни состояния — показывать и отзывать нечего. Список появится вместе с серверными ветками приглашений.</span></div>';
+  const rows = INVS;
+  if(!rows) return head + '<div class="sub">Загружаю…</div>';
+  if(!rows.length)
+    return head + '<div class="sub">Пока ни одного</div>' +
+      '<div class="stat"><span class="k">Приглашение выписывается на экране «Бригада»: выберите, куда зовёте человека, и перешлите ему ссылку.</span></div>' +
+      '<button class="tile" style="width:100%" onclick="openCrewScreen(\'crew\')"><span class="nm">К бригаде</span></button>';
+
+  const live = rows.filter(x => String(x.state || "") === "действует").length;
+  const item = (x) => {
+    const st   = String(x.state || "");
+    const code = String(x.code || "");
+    const used = Number(x.used_count || 0), max = Number(x.max_uses || 1);
+    const by   = Array.isArray(x.accepted_by) ? x.accepted_by.filter(Boolean) : [];
+    const dead = st !== "действует";
+    return '<div class="work' + (dead ? " done" : "") + '">' +
+      '<div class="t"><span style="font-family:monospace;letter-spacing:2px">' + esc(code) + '</span> ' +
+        '<span style="font-size:13px;color:' + (INV_STC[st] || "#8e8e93") + '">' + esc(st || "—") + '</span></div>' +
+      '<div class="m">' + esc(INV_T[x.type] || String(x.type || "")) +
+        (x.role ? " · " + esc(INV_ROLE[x.role] || x.role) : "") +
+        (x.invitee ? " · " + esc(x.invitee) : "") +
+        (max > 1 ? (" · принято " + used + " из " + max) : (used ? " · принято" : "")) +
+        (x.expires_at ? (" · до " + esc(String(x.expires_at).replace("T", " ").slice(0, 16))) : "") + "</div>" +
+      (x.purpose ? '<div class="m" style="margin-top:6px">' + esc(x.purpose) + "</div>" : "") +
+      (by.length ? '<div class="m" style="margin-top:6px;opacity:.75">Приняли: ' + esc(by.join(", ")) + "</div>" : "") +
+      '<div class="m" style="margin-top:8px">' +
+        '<button onclick="invCopy(\'' + attr(code) + '\',\'' + attr(String(x.type || "")) + '\')" ' + CREW_BTN + ">Скопировать</button> " +
+        (dead ? "" :
+          (INV_ASK === code
+            ? '<button onclick="invRevoke(\'' + attr(code) + '\')" ' + CREW_BTNR + ">Точно отозвать</button> " +
+              '<button onclick="invAsk(\'' + attr(code) + '\')" ' + CREW_BTN2 + ">Не надо</button>"
+            : '<button onclick="invAsk(\'' + attr(code) + '\')" ' + CREW_BTN2 + (INV_ACT === code ? " disabled" : "") + ">" +
+              (INV_ACT === code ? "Отзываю…" : "Отозвать") + "</button>")) +
+      "</div></div>";
+  };
+
+  return head +
+    '<div class="sub">' + (live ? ("действует: " + live + " из " + rows.length) : ("все погашены или отозваны · всего " + rows.length)) + "</div>" +
+    '<div class="grid" style="margin-bottom:12px">' +
+      '<button class="tile" onclick="openInvites()"><span class="ic">🔄</span><span class="nm">Обновить</span></button>' +
+      '<button class="tile" onclick="openCrewScreen(\'crew\')"><span class="ic">➕</span><span class="nm">Позвать</span><div class="h">выписать новое</div></button>' +
+    "</div>" +
+    rows.map(item).join("") +
+    '<div class="stat"><span class="k">Отозванное приглашение перестаёт открывать профиль объекта сразу — тем, кто уже вошёл по нему, доступ сохраняется: его снимают отключением участника, а не отзывом кода.</span></div>';
+},
+
+
 home(){
   if (D.kind === "hand") return handHome();   // контур работника [чат 013]
   const worker = D.role === "worker";
@@ -5360,6 +5688,11 @@ terms(){
         '<div class="r"><span class="k">Фронтов на раздел</span>' +
           '<span class="v"><input id="capSec" type="number" min="1" step="1" value="' + t.caps.sec + '" style="width:64px;padding:6px;border-radius:8px;border:0;background:#2c2c2e;color:#fff;font-size:15px;text-align:center"></span></div>' +
         '<div class="r"><button id="capBtn" onclick="termsSaveCaps()" style="width:100%;padding:12px;border-radius:12px;border:0;background:#0a84ff;color:#fff;font-size:15px">Записать фронты</button></div>' +
+        /* Голос на «Сроках» [чат 084, G4]. Видимость — по тому же canEdit, что и форма:
+           лист 07_Настройки закрыт бригадиру с 019, и кнопку, которую сервер отобьёт,
+           ему не показывают. Разбор идёт режимом caps, запись — штатным writeCell
+           через окно подтверждения: своего пути записи у голоса здесь нет. */
+        '<div class="r"><button id="capVoiceBtn" onclick="startVoice(\'caps\')" style="width:100%;padding:12px;border-radius:12px;border:0;background:#2c2c2e;color:#fff;font-size:15px">🎤 Сказать голосом</button></div>' +
       '</div>')
     : (capStored() ? '' : '<div class="stat"><span class="k" style="font-size:13px;opacity:.75">Фронты пока не заданы в настройках объекта — считаю по одному. Это умолчание, а не измерение.</span></div>');
   return '' +
@@ -5427,15 +5760,12 @@ crew(){
       '<button class="tile" onclick="go(\'crew_orders\')"><span class="ic">🗓️</span><span class="nm">Наряды</span><div class="h">' + (todayN ? "сегодня в поле: " + todayN : "кто где завтра") + "</div></button>" +
       '<button class="tile' + (waitTm ? " pri" : "") + '" onclick="go(\'crew_time\')"><span class="ic">⏱️</span><span class="nm">Табель</span><div class="h">' + (waitTm ? waitTm + " ждут решения" : "отметки бригады") + "</div></button>" +
       '<button class="tile' + (waitRp ? " pri" : "") + '" onclick="go(\'crew_reports\')"><span class="ic">📨</span><span class="nm">Отчёты</span><div class="h">' + (waitRp ? waitRp + " новых" : "работы и материалы") + "</div></button>" +
+      '<button class="tile" onclick="openInvites()"><span class="ic">🎟️</span><span class="nm">Приглашения</span><div class="h">коды и отзыв</div></button>' +
       '<button class="tile" onclick="openCrewScreen(\'crew\')"><span class="ic">🔄</span><span class="nm">Обновить</span></button>' +
     "</div>" +
     '<div class="stat"><span class="k">Работник добавляется приглашением: создайте его, перешлите ссылку — человек откроет её, подтвердит себя, и система подключит его сама. Руками Telegram-ID не вводится.</span></div>' +
     ws.map(item).join("") +
-    '<div class="card"><div class="lbl">Добавить работника</div>' +
-      '<div style="margin:8px 0"><input id="cw_name" placeholder="Имя (как зовут в бригаде)" ' + inp + "></div>" +
-      '<div style="margin:8px 0"><input id="cw_phone" placeholder="Телефон (не обязательно)" ' + inp + "></div>" +
-      '<button class="tile pri" style="width:100%" onclick="crewAdd()"><span class="nm">Создать приглашение</span></button>' +
-    "</div>";
+    invForm(inp);
 },
 
 /* Наряды: кто где и когда. Наряд на несколько дней — N строк, не диапазон:
@@ -7422,7 +7752,11 @@ function showVError(msg){
 const VASK = {
   rooms:  { t: "Размеры и проёмы",     d: "площадь, высота, окна и двери помещения" },
   repair: { t: "Какие работы делать",  d: "покрасить, штукатурить, заменить дверь" },
-  acc:    { t: "Учёт по смете",        d: "готовность, статус, закуп материалов" }
+  acc:    { t: "Учёт по смете",        d: "готовность, статус, закуп материалов" },
+  /* caps — фронты на экране «Сроки» [чат 084, G4]. Сервер начнёт предлагать этот
+     режим в переспросе только после выката этой сборки: пока у людей стоит панель,
+     не знающая VASK.caps, кнопка отрисовалась бы пустой. */
+  caps:   { t: "Сколько работ разом",  d: "фронты в помещении и на раздел" }
 };
 let vAskText = "";
 
@@ -8159,6 +8493,105 @@ let UZ_OBS = null;
 
 /* Точные надписи. Ключ — строка целиком, как она приходит в текстовый узел. */
 const UZ = {
+  "🎤 Сказать голосом": "🎤 Ovoz bilan ayting",
+  "Сказать голосом": "Ovoz bilan ayting",
+  "Сколько работ разом": "Bir vaqtda nechta ish",
+  "фронты в помещении и на раздел": "xonada va bo'lim bo'yicha frontlar",
+  /* Экраны приглашений E5 [чат 083]. Перевод ассистента, не носителя —
+     метка достоверности та же, что у словаря 081. Динамические строки
+     («принято 2 из 5», «действует 72 ч») сюда не входят: слой ищет узел
+     целиком, а число делает строку уникальной — им нужна форма шаблона. */
+  "Приглашения": "Taklifnomalar",
+  "коды и отзыв": "kodlar va bekor qilish",
+  "Позвать": "Chaqirish",
+  "выписать новое": "yangisini yozib berish",
+  "Позвать человека": "Odamni chaqirish",
+  "Куда зовём": "Qayerga chaqiramiz",
+  "В приложение": "Ilovaga",
+  "На объект": "Obyektga",
+  "В бригаду": "Brigadaga",
+  "Роль на объекте": "Obyektdagi rol",
+  "Исполнитель": "Ijrochi",
+  "Заказчик": "Buyurtmachi",
+  "Срок действия": "Amal qilish muddati",
+  "сутки": "bir kun",
+  "3 дня": "3 kun",
+  "неделя": "bir hafta",
+  "Сколько раз можно принять": "Necha marta qabul qilish mumkin",
+  "один": "bir marta",
+  "до пяти": "beshtagacha",
+  "до двадцати": "yigirmatagacha",
+  "Создаю…": "Yaratyapman…",
+  "Код приглашения": "Taklifnoma kodi",
+  "Скопировать": "Nusxalash",
+  "Отозвать": "Bekor qilish",
+  "Точно отозвать": "Rostdan bekor qilinsinmi",
+  "Не надо": "Kerak emas",
+  "Отзываю…": "Bekor qilyapman…",
+  "Приглашение принято": "Taklifnoma qabul qilindi",
+  "Добро пожаловать": "Xush kelibsiz",
+  "Вы уже здесь": "Siz allaqachon shu yerdasiz",
+  "Открыть панель": "Panelni ochish",
+  "Принять приглашение": "Taklifnomani qabul qilish",
+  "Проверяю…": "Tekshiryapman…",
+  "Зачем позвали": "Nima uchun chaqirildingiz",
+  "Ваша роль": "Sizning rolingiz",
+  "Приглашение": "Taklifnoma",
+  "доступ выдан": "kirish berildi",
+  "К бригаде": "Brigadaga o'tish",
+  "Пока ни одного": "Hozircha bittasi ham yo'q",
+  "серверная часть ещё не выкачена": "server qismi hali chiqarilmagan",
+  "Кого зовём — имя (не обязательно)": "Kimni chaqiramiz — ism (majburiy emas)",
+  "Зачем — увидит приглашённый": "Nima uchun — taklif qilingan odam ko'radi",
+  "Приглашение отозвано": "Taklifnoma bekor qilindi",
+  "Загружаю приглашения…": "Taklifnomalar yuklanmoqda…",
+  "Не удалось загрузить приглашения": "Taklifnomalarni yuklab bo'lmadi",
+  "Не получилось отозвать": "Bekor qilib bo'lmadi",
+  "Приглашение скопировано — перешлите человеку": "Taklifnoma nusxalandi — odamga yuboring",
+  "Отзыв появится вместе с серверной частью приглашений": "Bekor qilish taklifnomalarning server qismi bilan birga paydo bo'ladi",
+  "Доступ выдан. Открываю панель…": "Kirish berildi. Panel ochilmoqda…",
+  "Повторное нажатие ничего не изменило — доступ уже был выдан.": "Qayta bosish hech narsani o'zgartirmadi — kirish allaqachon berilgan edi.",
+  "Введите код приглашения. Если вы открыли панель по ссылке-приглашению, код уже подставлен.": "Taklifnoma kodini kiriting. Agar panelni taklif havolasi orqali ochgan bo'lsangiz, kod allaqachon qo'yilgan.",
+  "Код — буквы и цифры, от 6 до 64 знаков.": "Kod — harflar va raqamlar, 6 dan 64 belgigacha.",
+  "Код приглашения не разобран — проверьте, что он скопирован целиком.": "Taklifnoma kodi o'qilmadi — uni to'liq nusxalaganingizni tekshiring.",
+  "Панель не узнала вас — откройте её через бота в Telegram.": "Panel sizni tanimadi — uni Telegramdagi bot orqali oching.",
+  "Отозвать приглашение может тот, кто его выписал, или владелец объекта.": "Taklifnomani uni yozib bergan odam yoki obyekt egasi bekor qila oladi.",
+  "Такого приглашения нет. Возможно, ссылка старая — попросите новую.": "Bunday taklifnoma yo'q. Havola eski bo'lishi mumkin — yangisini so'rang.",
+  "На этом объекте у вас уже другая роль. Сменить её может только владелец.": "Bu obyektda sizda boshqa rol bor. Uni faqat egasi o'zgartira oladi.",
+  "Приглашение больше не действует: истёк срок, оно отозвано или уже использовано.": "Taklifnoma endi amal qilmaydi: muddati tugagan, bekor qilingan yoki ishlatilgan.",
+  "Приглашение выписано неверно — проверьте тип, срок и число погашений.": "Taklifnoma noto'g'ri yozilgan — turini, muddatini va qabul sonini tekshiring.",
+  "Сервер пока не сообщает панели, какой это объект — приглашение на объект недоступно": "Server panelga qaysi obyekt ekanini hali bildirmaydi — obyektga taklifnoma mavjud emas",
+  "Бригада ещё не заведена как запись — приглашение в бригаду недоступно": "Brigada hali yozuv sifatida yaratilmagan — brigadaga taklifnoma mavjud emas",
+  "Пока сервер не обновлён, доступно только приглашение работника": "Server yangilanmaguncha faqat ishchi taklifnomasi mavjud",
+  "Код не подошёл: он мог истечь, быть использован или ваш Telegram уже подключён. Попросите новую ссылку.": "Kod to'g'ri kelmadi: muddati tugagan, ishlatilgan yoki Telegramingiz allaqachon ulangan. Yangi havola so'rang.",
+  "Пока код приглашения генерирует само приложение, у приглашения нет ни записи, ни состояния — показывать и отзывать нечего. Список появится вместе с серверными ветками приглашений.": "Taklifnoma kodini ilovaning o'zi yaratayotgan ekan, taklifnomaning na yozuvi, na holati bor — ko'rsatadigan va bekor qiladigan narsa yo'q. Ro'yxat taklifnomalarning server qismi bilan birga paydo bo'ladi.",
+  "Приглашение выписывается на экране «Бригада»: выберите, куда зовёте человека, и перешлите ему ссылку.": "Taklifnoma «Brigada» ekranida yoziladi: odamni qayerga chaqirayotganingizni tanlang va havolani unga yuboring.",
+  "Отозванное приглашение перестаёт открывать профиль объекта сразу — тем, кто уже вошёл по нему, доступ сохраняется: его снимают отключением участника, а не отзывом кода.": "Bekor qilingan taklifnoma obyekt profilini darhol ochmay qo'yadi — u orqali allaqachon kirganlarda kirish saqlanadi: u kodni bekor qilish bilan emas, ishtirokchini o'chirish bilan olinadi.",
+  /* Экран заведения объекта (сборка 077.1) [чат 081, вставка 082] */
+  "Новый объект": "Yangi obyekt",
+  "заведётся в базе по вашей подписи Telegram": "Telegram imzoyingiz bo'yicha bazada yaratiladi",
+  "Название объекта": "Obyekt nomi",
+  "Адрес — не обязательно": "Manzil — majburiy emas",
+  "Сумма договора, USD — не обязательно": "Shartnoma summasi, USD — majburiy emas",
+  "Завожу…": "Yaratilmoqda…",
+  "Завести объект": "Obyekt yaratish",
+  "Заводить объекты может владелец системы. Повторное нажатие не создаст второй объект — вернётся тот же.": "Obyekt yaratishni tizim egasi amalga oshiradi. Qayta bosish ikkinchi obyektni yaratmaydi — o'sha obyekt qaytariladi.",
+  "Объект заведён": "Obyekt yaratildi",
+  "Такой объект уже был": "Bunday obyekt allaqachon bor edi",
+  "Объект с таким названием у вас уже есть — показываю его ключ, второй не заводил.": "Bunday nomli obyekt sizda allaqachon bor — uning kalitini ko'rsatyapman, ikkinchisini yaratmadim.",
+  "Ключ доступа": "Kirish kaliti",
+  "Ключ открывает объект в браузере вне Telegram. Внутри Telegram он не нужен — система узнаёт вас по подписи.": "Kalit obyektni Telegramdan tashqarida, brauzerda ochadi. Telegram ichida u kerak emas — tizim sizni imzoyingiz bo'yicha taniydi.",
+  "Скопировать ключ": "Kalitni nusxalash",
+  "Открыть объект": "Obyektni ochish",
+  "Листов Google-книги у нового объекта нет — данные живут в базе. Понадобится таблица для глаз — заведём отдельно.": "Yangi obyektda Google kitobi varaqlari yo'q — ma'lumotlar bazada saqlanadi. Ko'z uchun jadval kerak bo'lsa — alohida yaratamiz.",
+  "Завести ещё один": "Yana bittasini yaratish",
+  "Ключ скопирован": "Kalit nusxalandi",
+  "Скопировать не вышло — выделите руками": "Nusxalab bo'lmadi — qo'lda belgilang",
+  "Название объекта обязательно": "Obyekt nomi majburiy",
+  "Объект уже был — вот его ключ": "Obyekt allaqachon bor edi — mana uning kaliti",
+  "Не получилось:": "Bo'lmadi:",
+  "например: Квартира на Мирабадской": "masalan: Mirobod ko'chasidagi kvartira",
+  "улица, дом, квартира": "ko'cha, uy, kvartira",
   /* Поправки объёма [чат 060]. Причины и цели — данные листа, слой их не
      трогает (решение 021: признак данных — остаток кириллицы). Переводятся
      только надписи интерфейса. */
