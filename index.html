@@ -9715,7 +9715,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "091.1";
+const BUILD = "091.2";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
@@ -9734,8 +9734,17 @@ load();
 langInit();                                       // кнопка языка нужна и до данных [чат 020]
 buildTag();                                       // видимый номер версии [чат 021]
 setInterval(refresh, 15000);
-document.addEventListener("visibilitychange", () => { if(!document.hidden) refresh(); });
-window.addEventListener("focus", refresh);
+/* [чат 091, хвост п. 169] Telegram Desktop восстанавливает Mini App замороженным
+   состоянием страницы. refresh() обновляет только то, что попало в снимок, —
+   списки, живущие в собственных кэшах, остаются вчерашними, и отозванное
+   приглашение выглядит действующим (ложная тревога 090). При возврате
+   видимости кэш списка сбрасывается, а открытый экран перечитывает своё. */
+function freshLists(){
+  INVS = null;
+  if(stack[stack.length - 1] === "invites") invLoad().then(() => render()).catch(() => render());
+}
+document.addEventListener("visibilitychange", () => { if(!document.hidden){ freshLists(); refresh(); } });
+window.addEventListener("focus", () => { freshLists(); refresh(); });
 </script>
 </body>
 </html>
