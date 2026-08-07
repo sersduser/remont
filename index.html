@@ -4362,7 +4362,12 @@ async function crewAdd(){
 
 /* Карточка «позвать человека»: тип, зачем, срок, число погашений.
    Показывается на экране бригады вместо прежних двух полей.            */
-function invForm(inp){
+function invForm(inp, opts){
+  /* opts.crew === false — контур заказчика: тип «в бригаду» не показываем.
+     Состояние INV_F общее на панель, поэтому протухший выбор чиним здесь же,
+     иначе скрытая кнопка осталась бы выбранной и форма ушла бы в отказ. */
+  const showCrew = !(opts && opts.crew === false);
+  if(!showCrew && String(INV_F.type || "") === "crew") INV_F.type = "app";
   const t = String(INV_F.type || "app");
   const lastBox = INV_LAST ? (
     '<div class="stat" style="margin-top:10px"><div class="r"><span class="k">Код приглашения</span>' +
@@ -4377,7 +4382,7 @@ function invForm(inp){
     '</div>') : "";
   return '<div class="card"><div class="lbl">Позвать человека</div>' +
     '<div class="m" style="margin-bottom:6px">Куда зовём</div>' +
-    invPick("type", "app", "В приложение") + invPick("type", "object", "На объект") + invPick("type", "crew", "В бригаду") +
+    invPick("type", "app", "В приложение") + invPick("type", "object", "На объект") + (showCrew ? invPick("type", "crew", "В бригаду") : "") +
     (t === "object" ? ('<div class="m" style="margin:8px 0 6px">Роль на объекте</div>' +
         invPick("role", "hand", "Исполнитель") + invPick("role", "foreman", "Бригадир") + invPick("role", "owner", "Заказчик")) : "") +
     '<div style="margin:8px 0"><input id="cw_name" value="' + attr(INV_F.invitee) + '" oninput="INV_F.invitee=this.value" placeholder="Кого зовём — имя (не обязательно)" ' + inp + "></div>" +
@@ -5727,8 +5732,18 @@ crew(){
         '<div class="r"><span class="k">Людей на объекте (всего)</span><span class="v">' + (Number(c.people) || 0) + "</span></div>" +
         '<div class="r"><span class="k">Человекодней отработано</span><span class="v">' + (Number(c.mandays) || 0) + "</span></div>" +
       "</div>" +
+      /* Вход в приглашения у заказчика [чат 088]. До этой правки плитка жила
+         только в сетке бригадира, и решение 060 «заказчик приглашает бригадира»
+         из панели было недоступно, хотя сервер под него выкачен ещё в 087.
+         Форма та же, что у бригадира, но без типа «в бригаду»: бригада — его
+         контур, а заказчику нужны «в приложение» и «на объект». */
+      '<div class="grid" style="margin-bottom:12px">' +
+        '<button class="tile" onclick="openInvites()"><span class="ic">🎟️</span><span class="nm">Приглашения</span><div class="h">коды и отзыв</div></button>' +
+        '<button class="tile" onclick="openCrewScreen(\'crew\')"><span class="ic">🔄</span><span class="nm">Обновить</span></button>' +
+      "</div>" +
       '<div class="stat"><span class="k">Отметки работников подтверждает бригадир, а его собственные часы — вы. Поимённый состав бригады остаётся его делом: вам виден объём.</span></div>' +
-      ftBlock(c);
+      ftBlock(c) +
+      invForm(CREW_INP, { crew: false });
   }
   if(c.role !== "foreman")
     return '<div class="hello">Бригада</div><div class="sub">Экран доступен бригадиру</div>';
@@ -9546,7 +9561,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "077.1";
+const BUILD = "088.1";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
