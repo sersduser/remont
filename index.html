@@ -1475,12 +1475,16 @@ function ctrParse(raw){
   if(!j || !Array.isArray(j.s) || !j.s.length) return out;
   const k = (String(j.u || "cm").toLowerCase() === "cm") ? 0.01 : 1;
   const sides = [];
-  j.s.forEach(function(x){
+  j.s.forEach(function(x, i){
     const arr = Array.isArray(x) ? x : [x];
     const n = Number(arr[0]);
     if(!isFinite(n) || n <= 0) return;
+    /* srcIdx — место стороны в исходном массиве, а не в отфильтрованном [чат 093]:
+       нулевые и отрицательные отброшены выше, и правка по порядковому номеру
+       показанной стороны попала бы не в ту сторону исходника. */
     sides.push({ len: Math.round(n * k * 1000) / 1000,
-                 left: String(arr[1] == null ? "" : arr[1]).trim().toUpperCase() === "L" });
+                 left: String(arr[1] == null ? "" : arr[1]).trim().toUpperCase() === "L",
+                 srcIdx: i });
   });
   out.sides = sides;
   if(sides.length === 2){
@@ -1534,8 +1538,19 @@ function ctrLine(r){
   if(!String(raw == null ? "" : raw).trim()) return "";
   const c = ctrParse(raw);
   if(!c.sides.length) return c.err ? ('<div class="m" style="margin-top:6px">Контур: ' + esc(c.err) + '</div>') : "";
-  const chain = c.sides.map(function(s){ return (s.left ? "↰" : "") + Math.round(s.len * 100); }).join(" · ");
-  let html = '<div class="m" style="margin-top:6px">Контур (см): ' + esc(chain);
+  /* Тык по стороне открывает правку [чат 093]. Кликабельна каждая сторона,
+     в том числе у незамкнутой формы: правка стороны — единственный способ
+     починить обход, и запирать её из-за ошибки замыкания значило бы оставить
+     человека с сообщением об ошибке и без выхода. */
+  const cCode = String((r && r.code != null) ? r.code : "");
+  const chain = c.sides.map(function(s){
+    const txt = (s.left ? "↰" : "") + Math.round(s.len * 100);
+    if(!cCode) return esc(txt);
+    return '<span onclick="ctrEdit(&quot;' + esc(cCode) + '&quot;,' + s.srcIdx + ')"' +
+           ' style="cursor:pointer;text-decoration:underline dotted;text-underline-offset:3px">' +
+           esc(txt) + '</span>';
+  }).join(" · ");
+  let html = '<div class="m" style="margin-top:6px">Контур (см): ' + chain;
   if(c.err) return html + ' · <b>' + esc(c.err) + '</b></div>';
   html += '<br>по контуру: пол <b>' + fmt(c.area) + '</b> м² · периметр <b>' + fmt(c.perim) + '</b> м';
   const fa = Number(r.floor_m2), fp = Number(r.perimeter_m);
@@ -1548,6 +1563,108 @@ function ctrLine(r){
   if(c.gapX !== null && (c.gapX > 0 || c.gapY > 0))
     html += '<br>невязка обхода: ' + fmt(c.gapX) + ' / ' + fmt(c.gapY) + ' м при допуске ' + fmt(c.tol) + ' м';
   return html + '</div>';
+}
+
+/* ── Правка одной стороны контура [чат 093, шаг B' часть 2] ──────────
+   Тык по стороне открывает окно ввода: длина в сантиметрах, предпросмотр того,
+   что получится (пол, периметр, замыкание), и запись. Механику обхода правка
+   не трогает вовсе — она пересобирает исходный JSON и отдаёт его тому же
+   ctrParse, поэтому панель и сервер продолжают считать одинаково. */
+function ctrBuildRaw(raw, srcIdx, cm){
+  /* Меняется ровно одна сторона: единицы, метки "L", порядок и форма элементов
+     остаются как в исходнике. Иначе нормализация «заодно» переписала бы чужие
+     стороны округлением, и правка одной стороны стала бы правкой всех. */
+  let j = null;
+  try { j = JSON.parse(typeof raw === "string" ? raw : JSON.stringify(raw)); }
+  catch(e){ return null; }
+  if(!j || !Array.isArray(j.s)) return null;
+  const i = Number(srcIdx);
+  if(!isFinite(i) || i < 0 || i >= j.s.length) return null;
+  const n = Number(String(cm).replace(",", "."));
+  if(!isFinite(n) || n <= 0) return null;
+  const isCm = String(j.u || "cm").toLowerCase() === "cm";
+  const val = isCm ? Math.round(n) : Math.round(n) / 100;
+  const x = j.s[i];
+  if(Array.isArray(x)){ const y = x.slice(); y[0] = val; j.s[i] = y; }
+  else j.s[i] = val;
+  return JSON.stringify(j);
+}
+
+function ctrEdit(code, srcIdx){
+  const r = roomList().find(x => x.code === code);
+  if(!r){ toast("Помещение не найдено", "err"); return; }
+  const raw = (r.contour != null ? r.contour : r["Контур"]);
+  const c0 = ctrParse(raw);
+  const s0 = c0.sides.filter(function(s){ return s.srcIdx === Number(srcIdx); })[0];
+  if(!s0){ toast("Сторона не найдена", "err"); return; }
+  const was = Math.round(s0.len * 100);
+
+  const box = document.createElement("div");
+  box.style.cssText = "position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;padding:18px";
+  box.innerHTML =
+    '<div style="background:#1c1c1e;color:#fff;border-radius:16px;padding:18px;max-width:420px;width:100%;font-size:15px">' +
+      '<div style="font-weight:700;margin-bottom:8px">' + esc(r.name || r.code) + " · сторона " + was + " см</div>" +
+      '<div style="opacity:.75;font-size:14px;margin-bottom:10px">Длина в сантиметрах' +
+        (s0.left ? " · перед этой стороной поворот налево" : "") + "</div>" +
+      '<input id="ctrIn" type="number" inputmode="decimal" value="' + was + '" style="width:100%;padding:11px;border-radius:10px;border:1px solid #3a3a3c;background:#000;color:#fff;font-size:16px;margin-bottom:10px">' +
+      '<div id="ctrPrev" style="opacity:.85;font-size:14px;margin-bottom:12px;min-height:40px"></div>' +
+      '<div style="display:flex;gap:8px">' +
+        '<button id="ctrNo" style="flex:1;padding:13px;border-radius:12px;border:0;background:#3a3a3c;color:#fff;font-size:15px">Отмена</button>' +
+        '<button id="ctrYes" style="flex:1;padding:13px;border-radius:12px;border:0;background:#0a84ff;color:#fff;font-size:15px">Записать</button>' +
+      "</div></div>";
+  document.body.appendChild(box);
+
+  const inp = box.querySelector("#ctrIn");
+  const prev = box.querySelector("#ctrPrev");
+  const yes = box.querySelector("#ctrYes");
+  let ready = null;
+
+  /* Предпросмотр считается тем же разбором, что и показ, — человек видит
+     ровно то число, которое ляжет в лист. Незамкнутую форму записывать
+     нельзя: сервер такую отвергает, и панель не должна создавать состояния,
+     которого сервер не создаёт. */
+  function preview(){
+    const raw2 = ctrBuildRaw(raw, srcIdx, inp.value);
+    const c2 = raw2 ? ctrParse(raw2) : null;
+    if(!c2 || !c2.sides.length){
+      ready = null; yes.disabled = true; yes.style.opacity = ".45";
+      prev.innerHTML = '<b>Длина должна быть больше нуля</b>';
+      return;
+    }
+    if(!c2.ok){
+      ready = null; yes.disabled = true; yes.style.opacity = ".45";
+      prev.innerHTML = '<b>' + esc(c2.err || "контур не собирается") + '</b>';
+      return;
+    }
+    ready = {raw: raw2, c: c2}; yes.disabled = false; yes.style.opacity = "1";
+    const fa = Number(r.floor_m2), fp = Number(r.perimeter_m);
+    prev.innerHTML =
+      "станет: пол <b>" + fmt(c2.area) + "</b> м² · периметр <b>" + fmt(c2.perim) + "</b> м" +
+      ((isFinite(fa) && fa > 0) ? "<br>было в листе: пол " + fmt(fa) + " м²" + ((isFinite(fp) && fp > 0) ? " · периметр " + fmt(fp) + " м" : "") : "") +
+      ((c2.gapX !== null && (c2.gapX > 0 || c2.gapY > 0))
+        ? "<br>невязка обхода: " + fmt(c2.gapX) + " / " + fmt(c2.gapY) + " м при допуске " + fmt(c2.tol) + " м" : "");
+  }
+  inp.oninput = preview;
+  preview();
+
+  box.querySelector("#ctrNo").onclick = () => box.remove();
+  yes.onclick = async () => {
+    if(!ready) return;
+    const p = ready;
+    box.remove();
+    try{
+      /* Порядок записи важен: контур первым. Оборвётся связь после него —
+         числа останутся старыми и разойдутся с контуром видимо, строкой
+         расхождения; оборвись он последним, лист хранил бы новые числа при
+         старом контуре, и расхождение было бы не видно вовсе. */
+      await writeCell("06_Помещения", code, "Контур", p.raw);
+      await writeCell("06_Помещения", code, "Пол_м2", String(p.c.area).replace(".", ","));
+      await writeCell("06_Помещения", code, "Периметр_м", String(p.c.perim).replace(".", ","));
+      toast("Контур поправлен");
+      await load();
+      render();
+    }catch(e){ toast(e.message, "err"); }
+  };
 }
 
 function roomWalls(r){
@@ -9806,7 +9923,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "092.1";
+const BUILD = "093.1";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
