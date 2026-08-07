@@ -173,6 +173,13 @@ const INVITE = String((tg && tg.initDataUnsafe && tg.initDataUnsafe.start_param)
 /* Регистр НЕ приводится [чат 083]: серверный код — 10 знаков hex в нижнем
    регистре, и toUpperCase ломал бы каждую новую ссылку. Верхний регистр
    нужен только старой ветке /register — он ставится там, на входе.      */
+/* Код ИМЕННО из start_param [чат 089]. INVITE выше берётся ещё и из ?invite —
+   это отладочный вход в обычном браузере и ручная подстановка в поле; гасить
+   код без спроса можно только тогда, когда он пришёл подписанной ссылкой.
+   INV_AUTO_DONE держит попытку в пределах сеанса панели: load() зовётся из
+   двух десятков мест, и accept не должен уходить на сервер при каждом. */
+const START_INVITE = String((tg && tg.initDataUnsafe && tg.initDataUnsafe.start_param) || "").replace(/^inv_/i, "");
+let INV_AUTO_DONE = false;
 
 let D = null;                       // данные с сервера
 let stack = ["home"];               // стек навигации
@@ -190,6 +197,19 @@ const attr = t => esc(t);
 /* ── ЗАГРУЗКА ─────────────────────────────────────────────── */
 async function load(){
   try{
+    /* Погашение кода из ссылки [чат 089]. До этой правки accept звался только
+       из catch — у аккаунта, которого сервер не узнал; знакомому панель молча
+       открывалась, а код оставался годным для следующего (used_count = 0 после
+       живого прохода 088). Теперь ответ сервера решает, что показать: у типа
+       app — ничего (человек и так внутри, а код уже сгорел), у object и crew —
+       экран выданного права, у отказа — его причину. */
+    const A = await invAuto();
+    if(A && A.err){ renderInvite({ err: A.err, code: START_INVITE, auto: true }); return; }
+    if(A && A.res && A.res.type !== "app"){
+      renderInvite({ phase: "ok", res: A.res });
+      if(!A.res.repeat) setTimeout(invOpenPanel, 2200);
+      return;
+    }
     const auth = INIT ? `initData=${encodeURIComponent(INIT)}`
                       : `key=${encodeURIComponent(KEY)}`;
     const r = await fetch(`${API}/data?${auth}`, { cache: "no-store" });
@@ -250,7 +270,7 @@ function renderInvite(s){
       (j.repeat ? '<div class="r"><span class="k" style="font-size:13px;opacity:.65">Повторное нажатие ничего не изменило — доступ уже был выдан.</span><span class="v"></span></div>'
                 : '<div class="r"><span class="k" style="font-size:13px;opacity:.65">Доступ выдан. Открываю панель…</span><span class="v"></span></div>') +
       '</div>' +
-      '<button class="tile pri" style="width:100%" onclick="location.reload()"><span class="nm">Открыть панель</span></button>';
+      '<button class="tile pri" style="width:100%" onclick="invOpenPanel()"><span class="nm">Открыть панель</span></button>';
   } else if(s.phase === "found"){
     head = "Приглашение в бригаду";
     body = '<div class="stat"><span class="k">Код принят. Вы — <b>' + esc(s.name) + '</b>, бригада: <b>' + esc(s.foreman) + '</b>?</span></div>' +
@@ -264,7 +284,12 @@ function renderInvite(s){
       '<div style="margin:10px 0"><input id="invcode" value="' + attr(code0) + '" ' + INV_INP + ' placeholder="КОД"></div>' +
       (s.err ? '<div class="warnbox">' + esc(s.err) + '</div>' : "") +
       '<button class="tile pri" style="width:100%"' + (INV_BUSY ? " disabled" : "") + ' onclick="invCheck()"><span class="nm">' +
-        (INV_BUSY ? "Проверяю…" : "Принять приглашение") + '</span></button>';
+        (INV_BUSY ? "Проверяю…" : "Принять приглашение") + '</span></button>' +
+      /* Отказ пришёл на код из ссылки [чат 089]. Причина названа выше, но
+         тупика быть не должно: у знакомого аккаунта доступ есть и без этого
+         приглашения — истёк код, не право. Кнопка ведёт в панель, и если
+         доступа всё же нет, /data вернёт сюда же. */
+      (s.auto ? '<button class="tile" style="width:100%;margin-top:10px" onclick="invOpenPanel()"><span class="nm">Открыть панель</span></button>' : "");
   }
   app.innerHTML = '<div class="hello">' + esc(head) + '</div><div class="sub">' + esc(sub) + '</div>' + body;
 }
@@ -283,7 +308,9 @@ async function invCheck(){
         if(j.error){ renderInvite({err: j.error, code}); return; }
         INV_BUSY = false;
         renderInvite({phase: "ok", res: j});
-        if(!j.repeat) setTimeout(() => location.reload(), 2200);
+        /* Не перезагрузка [чат 089]: при живом start_param reload завёл бы
+           второй круг автозова и вместо панели показал бы «Вы уже здесь». */
+        if(!j.repeat) setTimeout(invOpenPanel, 2200);
         return;
       }
     }
@@ -4216,6 +4243,30 @@ async function invApi(path, body){
     return { error: INV_MSG[code] || invClean(raw) || "Не получилось — попробуйте ещё раз.", code: code };
   }
   return j;
+}
+
+/* Автоматическое погашение кода из ссылки [чат 089].
+   Возвращает: null — звать нечего или ответ ничего не меняет (веток нет,
+   связь моргнула); {res} — сервер ответил; {err} — сервер отказал.
+   Сетевой сбой попытку НЕ расходует: код останется живым, и следующая
+   загрузка панели попробует снова — запирать вход из-за связи нельзя. */
+async function invAuto(){
+  if(INV_AUTO_DONE || !START_INVITE) return null;
+  const j = await invApi("/invite/accept", { code: START_INVITE });
+  if(j && j.net) return null;
+  INV_AUTO_DONE = true;
+  if(!j || j.absent) return null;
+  if(j.error) return { err: j.error };
+  return { res: j };
+}
+
+/* Переход с экрана приглашения в панель. Именно load(), а не location.reload():
+   перезагрузка сбрасывает INV_AUTO_DONE, и панель ушла бы на второй круг
+   автозова — у object и crew это дало бы «Вы уже здесь» вместо панели. */
+function invOpenPanel(){
+  INV_AUTO_DONE = true;
+  app.innerHTML = '<div class="hello">Открываю панель…</div>';
+  load();
 }
 
 /* Ссылка на приглашение — та же, что и раньше: бот открывает панель
@@ -8547,6 +8598,7 @@ const UZ = {
   "Добро пожаловать": "Xush kelibsiz",
   "Вы уже здесь": "Siz allaqachon shu yerdasiz",
   "Открыть панель": "Panelni ochish",
+  "Открываю панель…": "Panel ochilmoqda…",
   "Принять приглашение": "Taklifnomani qabul qilish",
   "Проверяю…": "Tekshiryapman…",
   "Зачем позвали": "Nima uchun chaqirildingiz",
@@ -9561,7 +9613,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "088.1";
+const BUILD = "089.1";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
