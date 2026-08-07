@@ -8533,14 +8533,22 @@ async function applyVoiceRooms(){
         if(e.isNew){
           const id = elemNextId();
           const val = k => (sel.find(c => c.key === k) || {}).now || "";
+          /* [093] Размеры едут вместе со строкой — дефект C2 [062]: vrElems уже
+             распознал ширину, высоту и подоконник и положил их в changes, а
+             заведение нового проёма выбрасывало их в пустые строки, и человек
+             диктовал те же числа второй раз. Низ_м пишется отдельным ходом:
+             этой колонки нет в карте листов панели (заведена в 053, разбор 22 §5),
+             и класть её в append значило бы полагаться на догадку о шапке. */
           await crewAppend("13_Элементы", [{
             "id": id, "Сторона_A": r.code, "Сторона_B": e.side,
             "Тип_план": val("plan"), "Тип_факт": val("fact") || "дверь", "Судьба": val("fate"),
             "Название": (roomList().find(x => String(x.code) === r.code) || {}).name + " ↔ " + vrSideLabel(e.side, e.said),
-            "Ширина_м": "", "Высота_м": "", "Примечание": "добавлен голосом", "Обновлено": chgStamp(),
+            "Ширина_м": val("w"), "Высота_м": val("h"), "Примечание": "добавлен голосом", "Обновлено": chgStamp(),
           }]);
+          if(val("sill")) await writeCell("13_Элементы", id, "Низ_м", val("sill"));
           (D.elements = D.elements || []).push({ id: id, a: r.code, b: e.side,
-            plan: val("plan"), fact: val("fact") || "дверь", fate: val("fate") });
+            plan: val("plan"), fact: val("fact") || "дверь", fate: val("fate"),
+            w: val("w"), h: val("h"), sill: val("sill") });
           done++;
         }else if(e.id){
           for(const c of sel){
@@ -9923,7 +9931,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "093.1";
+const BUILD = "093.2";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
