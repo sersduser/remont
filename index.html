@@ -163,7 +163,57 @@ const tg = window.Telegram?.WebApp;
 if (tg) { tg.ready(); tg.expand(); }
 
 const INIT = (tg && tg.initData) || "";                              // подписанные данные Telegram
-const KEY  = new URLSearchParams(location.search).get("key") || "";  // legacy / отладка вне Telegram
+/* Ключ объекта [чат 091, D4]. До 091 KEY был константой из ?key= и при работе
+   в Telegram вовсе не уезжал на сервер (auth был «или initData, или key»), из-за
+   чего сервер всегда попадал в фолбэк «объект единственный». Теперь ключ живёт
+   в панели: пришедший в ссылке запоминается, выбранный человеком становится
+   активным, и уезжает ВМЕСТЕ с подписью. Сервер к этому готов с 087: объект он
+   берёт из key, а роль — из initData, подменить чужой объект нельзя (доступ
+   всё равно проверяется по участию в базе).                                  */
+const OBJS_LS = "REMONT_OBJS", OBJK_LS = "REMONT_OBJ_KEY";
+
+function objsAll(){
+  try{ const a = JSON.parse(localStorage.getItem(OBJS_LS) || "[]");
+       return Array.isArray(a) ? a.filter(o => o && o.key) : []; }catch(e){ return []; }
+}
+function objsWrite(list){
+  try{ localStorage.setItem(OBJS_LS, JSON.stringify(list.slice(0, 20))); }catch(e){}
+}
+function objsRemember(key, title){
+  key = String(key || ""); if(!key) return;
+  const list = objsAll(), i = list.findIndex(o => o.key === key);
+  const rec = { key: key, title: String(title || (i >= 0 ? list[i].title : "") || ""), ts: Date.now() };
+  if(i >= 0) list[i] = rec; else list.unshift(rec);
+  objsWrite(list);
+}
+function objsActiveKey(){
+  try{ return localStorage.getItem(OBJK_LS) || ""; }catch(e){ return ""; }
+}
+function objsSetActive(key){
+  try{ key ? localStorage.setItem(OBJK_LS, key) : localStorage.removeItem(OBJK_LS); }catch(e){}
+}
+function objsTitle(key){
+  const o = objsAll().find(x => x.key === key);
+  const t = o && o.title ? String(o.title) : "";
+  return t || ("Объект …" + String(key || "").slice(-6));
+}
+
+const KEY_URL = new URLSearchParams(location.search).get("key") || "";
+if(KEY_URL){ objsRemember(KEY_URL, ""); objsSetActive(KEY_URL); }
+/* Единственный известный ключ панель применяет сама: серверный фолбэк «объект
+   один» исчезнет с появлением второго объекта, и молчание панели в этот день
+   стало бы отказом на ровном месте. */
+const OBJS_ONE = objsAll();
+let KEY = KEY_URL || objsActiveKey() || (OBJS_ONE.length === 1 ? OBJS_ONE[0].key : "");
+
+/* Единая сборка параметров доступа [чат 091]: подпись и ключ объекта не
+   исключают друг друга. Пустые не пишем — сервер сам подставит '-'. */
+function authQS(){
+  const p = [];
+  if(INIT) p.push("initData=" + encodeURIComponent(INIT));
+  if(KEY)  p.push("key=" + encodeURIComponent(KEY));
+  return p.join("&");
+}
 
 /* Код приглашения в бригаду [чат 012]: приходит в подписанном start_param
    (ссылка t.me/бота?startapp=inv_КОД) или руками через ?invite / поле ввода.
@@ -210,8 +260,7 @@ async function load(){
       if(!A.res.repeat) setTimeout(invOpenPanel, 2200);
       return;
     }
-    const auth = INIT ? `initData=${encodeURIComponent(INIT)}`
-                      : `key=${encodeURIComponent(KEY)}`;
+    const auth = authQS();
     const r = await fetch(`${API}/data?${auth}`, { cache: "no-store" });
     const BAD = "Доступ не подтверждён — откройте панель через бота в Telegram.";
     if(r.status === 401 || r.status === 403) throw new Error(BAD);
@@ -422,7 +471,7 @@ function priceStats(){
    ══════════════════════════════════════════════════════════════ */
 async function loadCatalog(force){
   if(D.catalog && !force) return true;
-  const auth = INIT ? 'initData=' + encodeURIComponent(INIT) : 'key=' + encodeURIComponent(KEY);
+  const auth = authQS();
   const r = await fetch(API + '/data?' + auth + '&catalog=1', { cache: 'no-store' });
   const raw = (await r.text()).trim();
   if(!r.ok || !raw) throw new Error('Не удалось загрузить справочник');
@@ -4061,7 +4110,7 @@ async function crewSheets(){
 let CREW_DATA = null, CREW_LOAD = false;
 
 async function crewLoad(){
-  const auth = INIT ? "initData=" + encodeURIComponent(INIT) : "key=" + encodeURIComponent(KEY);
+  const auth = authQS();
   const r = await fetch(API + "/data?" + auth + "&crew=1", { cache: "no-store" });
   const raw = (await r.text()).trim();
   let j = null; try{ j = JSON.parse(raw); }catch(e){}
@@ -5136,6 +5185,50 @@ function nobjRef(){
 
 function nobjSet(k, v){ NOBJ.f[k] = String(v == null ? "" : v); }
 
+/* ─── D4 · выбор объекта [чат 091] ───────────────────────────────────────
+   Панель показывает те объекты, ключи которых знает: пришедшие ссылкой и
+   заведённые ей самой. Серверной ветки «мои объекты» ещё нет (её SQL готовится
+   отдельно), поэтому список неполон по построению — и об этом сказано словами,
+   а не умолчанием. Переключение не перезагружает страницу: подпись Telegram
+   живёт в WebApp, и терять её ради смены объекта незачем.                    */
+function objSwitchBox(){
+  const list = objsAll();
+  if(!list.length) return "";
+  if(list.length === 1 && (!KEY || list[0].key === KEY)) return "";
+  return '<div class="stat">' +
+    '<div class="r"><span class="k">Мои объекты</span><span class="v">' + list.length + '</span></div>' +
+    '<div class="m">Сейчас открыт: ' + esc(KEY ? objsTitle(KEY) : "объект по умолчанию") + '</div>' +
+    '<button onclick="go(\'objsel\')" style="width:100%;margin-top:10px;padding:11px;border-radius:11px;border:0;background:#2c2c2e;color:#fff;font-size:15px">🔀 Выбрать объект</button>' +
+  '</div>';
+}
+
+function objSelScreen(){
+  const list = objsAll().slice().sort((a, b) => (b.ts || 0) - (a.ts || 0));
+  const rows = list.map(o => {
+    const on = (o.key === KEY);
+    return '<div onclick="objsSwitch(\'' + esc(o.key) + '\')" style="margin-top:8px;padding:12px;border-radius:12px;' +
+      'background:' + (on ? "#0a84ff" : "#2c2c2e") + ';color:#fff;cursor:pointer">' +
+      '<div style="font-size:15px">' + esc(objsTitle(o.key)) + (on ? " · открыт" : "") + '</div>' +
+      '<div style="font-size:12px;opacity:.65;margin-top:3px">ключ …' + esc(String(o.key).slice(-6)) + '</div>' +
+    '</div>';
+  }).join("");
+  return '<div class="hello">Выбор объекта</div>' +
+    '<div class="sub">панель помнит объекты, ключи которых получала</div>' +
+    (rows || '<div class="stat"><div class="m">Панель пока не знает ни одного ключа. Объект открывается ссылкой от бригадира или заводится на экране «Объект».</div></div>') +
+    '<div class="stat" style="margin-top:12px"><div class="m">Если объекта нет в списке — откройте его ссылкой ещё раз: панель запомнит ключ и покажет его здесь.</div></div>';
+}
+
+function objsSwitch(key){
+  key = String(key || ""); if(!key) return;
+  if(key === KEY){ back(); return; }
+  objsSetActive(key);
+  KEY = key;
+  D = null; INVS = null; CREW_DATA = null;
+  back();
+  app.innerHTML = '<div class="hello">Открываю объект…</div>';
+  load();
+}
+
 /* Блок на экране «Объект». Право то же, что у выгрузки: заказчик и админ.
    Владельцев системы панель не знает — их список живёт в базе, и чужому
    откажет сервер (двойной замок права, 076). */
@@ -5208,6 +5301,7 @@ function nobjCopy(){
 function nobjOpen(){
   const k = String((NOBJ.res || {}).key || "");
   if(!k) return;
+  objsRemember(k, (NOBJ.f && NOBJ.f.title) || "");   // [чат 091] объект попадает в список выбора
   location.href = location.pathname + "?key=" + encodeURIComponent(k) + (location.hash || "");
 }
 
@@ -5294,6 +5388,9 @@ quiz(){ return qzScreen(); },
 
 /* Заведение объекта [чат 077, G1 шаг 5]: форма и показ ключа. */
 newobj(){ return nobjScreen(); },
+
+/* Выбор объекта [чат 091, D4]: список известных панели ключей. */
+objsel(){ return objSelScreen(); },
 
 /* Приглашения [чат 083, E5]: список выписанных с состоянием и отзывом.
    Состояние приходит с сервера готовым (v_invites_active), панель его не
@@ -6161,6 +6258,7 @@ object(){
     planBox +
     schemaBox +
     exportBox() +
+    objSwitchBox() +
     newObjBox() +
     (gap.length ? ('<div class="warnbox" id="objGap">' +
       '<div>Пока не заданы окна и двери, объёмы работ по откосам, подоконникам и наличникам считаются наугад.</div>' +
@@ -8514,7 +8612,7 @@ async function refresh(){
   const busy = (el && ["INPUT","SELECT","TEXTAREA"].includes(el.tagName)) || vmask.classList.contains("on") || inQuiz;
   if(busy) return;                       // не мешаем вводу, голосовому окну и активному вопросу опроса [чат 059]
   try{
-    const auth = INIT ? `initData=${encodeURIComponent(INIT)}` : `key=${encodeURIComponent(KEY)}`;
+    const auth = authQS();
     const r = await fetch(`${API}/data?${auth}`, { cache:"no-store" });
     if(!r.ok) return;
     const raw = (await r.text()).trim();
@@ -8638,6 +8736,10 @@ const UZ = {
   "Новый объект": "Yangi obyekt",
   "заведётся в базе по вашей подписи Telegram": "Telegram imzoyingiz bo'yicha bazada yaratiladi",
   "Название объекта": "Obyekt nomi",
+  "Мои объекты": "Mening obyektlarim",
+  "Выбор объекта": "Obyektni tanlash",
+  "🔀 Выбрать объект": "🔀 Obyektni tanlash",
+  "панель помнит объекты, ключи которых получала": "panel kalitlarini olgan obyektlarni eslab qoladi",
   "Адрес — не обязательно": "Manzil — majburiy emas",
   "Сумма договора, USD — не обязательно": "Shartnoma summasi, USD — majburiy emas",
   "Завожу…": "Yaratilmoqda…",
@@ -9613,7 +9715,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "089.1";
+const BUILD = "091.1";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
