@@ -1460,6 +1460,96 @@ const roomGap  = () => roomList().filter(r => roomGapOf(r).length);
 /* Стены по обмерам: периметр × высота минус проёмы. Возвращает null,
    пока не хватает данных, — считать «примерно» тут нельзя, число уходит
    в объёмы работ. */
+/* ── Контур помещения [чат 092, шаг B'] ─────────────────────────────────────
+   Показ обмерного контура из листа 06_Помещения (поле «Контур», формат разбора 22
+   §4: длины целыми сантиметрами, "L" у стороны, ПЕРЕД которой поворот налево).
+   Механика повторяет серверную (Голос, узел items 062-prod) шаг в шаг: те же
+   направления обхода, тот же допуск замыкания, та же коррекция невязки и то же
+   шнурование. Иначе панель показывала бы одну площадь, а сервер писал другую —
+   формат живёт в двух местах, и расходиться им нельзя. */
+function ctrParse(raw){
+  const out = {ok:false, sides:[], perim:null, area:null, err:"", gapX:null, gapY:null, tol:null};
+  let j = null;
+  try { j = (typeof raw === "string") ? JSON.parse(raw) : raw; }
+  catch(e){ out.err = "контур записан не как JSON"; return out; }
+  if(!j || !Array.isArray(j.s) || !j.s.length) return out;
+  const k = (String(j.u || "cm").toLowerCase() === "cm") ? 0.01 : 1;
+  const sides = [];
+  j.s.forEach(function(x){
+    const arr = Array.isArray(x) ? x : [x];
+    const n = Number(arr[0]);
+    if(!isFinite(n) || n <= 0) return;
+    sides.push({ len: Math.round(n * k * 1000) / 1000,
+                 left: String(arr[1] == null ? "" : arr[1]).trim().toUpperCase() === "L" });
+  });
+  out.sides = sides;
+  if(sides.length === 2){
+    out.perim = Math.round(2 * (sides[0].len + sides[1].len) * 100) / 100;
+    out.area  = Math.round(sides[0].len * sides[1].len * 100) / 100;
+    out.ok = true; return out;
+  }
+  if(sides.length < 4){
+    if(sides.length === 3) out.err = "три стороны — не контур: прямоугольник задаётся двумя, Г-форма — шестью";
+    return out;
+  }
+  let L = 0, perim = 0;
+  sides.forEach(function(s){ perim += s.len; if(s.left) L++; });
+  out.perim = Math.round(perim * 100) / 100;
+  if(sides.length - 2 * L !== 4){
+    out.err = "форма не замыкается: поворотов направо минус налево должно быть 4 (сторон " + sides.length + ", налево " + L + ")";
+    return out;
+  }
+  const DX = [1,0,-1,0], DY = [0,-1,0,1];
+  let dir = 0; const vx = [], vy = [];
+  sides.forEach(function(s, i){
+    if(i > 0) dir = (dir + (s.left ? 3 : 1)) % 4;
+    vx.push(s.len * DX[dir]); vy.push(s.len * DY[dir]);
+  });
+  let sx = 0, sy = 0, tx = 0, ty = 0;
+  vx.forEach(function(v){ sx += v; tx += Math.abs(v); });
+  vy.forEach(function(v){ sy += v; ty += Math.abs(v); });
+  const tol = Math.max(0.05, 0.005 * perim);
+  out.gapX = Math.round(Math.abs(sx) * 100) / 100;
+  out.gapY = Math.round(Math.abs(sy) * 100) / 100;
+  out.tol  = Math.round(tol * 100) / 100;
+  if(Math.abs(sx) > tol || Math.abs(sy) > tol){
+    out.err = "стороны не сходятся: по горизонтали " + out.gapX + " м, по вертикали " + out.gapY + " м (допуск " + out.tol + " м) — проверьте длины";
+    return out;
+  }
+  const cx = vx.map(function(v){ return tx > 0 ? v - sx * Math.abs(v) / tx : v; });
+  const cy = vy.map(function(v){ return ty > 0 ? v - sy * Math.abs(v) / ty : v; });
+  const px = [0], py = [0];
+  for(let i = 0; i < cx.length; i++){ px.push(px[i] + cx[i]); py.push(py[i] + cy[i]); }
+  let s2 = 0;
+  for(let a = 0; a < cx.length; a++){ const b = (a + 1) % cx.length; s2 += px[a] * py[b] - px[b] * py[a]; }
+  out.area = Math.round(Math.abs(s2) / 2 * 100) / 100;
+  out.ok = true;
+  return out;
+}
+
+/* Строка контура в карточке помещения. Молчит, когда контура нет: поле приезжает
+   пустой строкой у всех помещений, кроме размеченных, — это норма, а не дефект. */
+function ctrLine(r){
+  const raw = (r && (r.contour != null ? r.contour : r["Контур"]));
+  if(!String(raw == null ? "" : raw).trim()) return "";
+  const c = ctrParse(raw);
+  if(!c.sides.length) return c.err ? ('<div class="m" style="margin-top:6px">Контур: ' + esc(c.err) + '</div>') : "";
+  const chain = c.sides.map(function(s){ return (s.left ? "↰" : "") + Math.round(s.len * 100); }).join(" · ");
+  let html = '<div class="m" style="margin-top:6px">Контур (см): ' + esc(chain);
+  if(c.err) return html + ' · <b>' + esc(c.err) + '</b></div>';
+  html += '<br>по контуру: пол <b>' + fmt(c.area) + '</b> м² · периметр <b>' + fmt(c.perim) + '</b> м';
+  const fa = Number(r.floor_m2), fp = Number(r.perimeter_m);
+  const bad = [];
+  if(isFinite(fa) && fa > 0 && Math.abs(c.area - fa) > 0.01)
+    bad.push("пол расходится на " + fmt(Math.round(Math.abs(c.area - fa) * 100) / 100) + " м² (записано " + fmt(fa) + ")");
+  if(isFinite(fp) && fp > 0 && Math.abs(c.perim - fp) > 0.01)
+    bad.push("периметр расходится на " + fmt(Math.round(Math.abs(c.perim - fp) * 100) / 100) + " м (записано " + fmt(fp) + ")");
+  if(bad.length) html += '<br><b>' + esc(bad.join(" · ")) + '</b>';
+  if(c.gapX !== null && (c.gapX > 0 || c.gapY > 0))
+    html += '<br>невязка обхода: ' + fmt(c.gapX) + ' / ' + fmt(c.gapY) + ' м при допуске ' + fmt(c.tol) + ' м';
+  return html + '</div>';
+}
+
 function roomWalls(r){
   const p = Number(r.perimeter_m), h = Number(r.height_m);
   if(!(p > 0) || !(h > 0)) return null;
@@ -6210,6 +6300,7 @@ object(){
         " · периметр " + numOrDash(r.perimeter_m, "м") + " · высота " + numOrDash(r.height_m, "м") + "</div>" +
       '<div class="m" style="margin-top:4px">стены ' + numOrDash(r.wall_m2, "м²") + " · потолок " + numOrDash(r.ceiling_m2, "м²") +
         " · окон " + numOrDash(r.windows, "") + " · дверей " + numOrDash(r.doors, "") + "</div>" +
+      ctrLine(r) +
       planCCompareLine(r) +
       wallLine +
       /* Поле и «Нет» стоят всегда [чат 029]. До 029.2 ввод показывался только
@@ -9715,7 +9806,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "091.2";
+const BUILD = "092.1";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
