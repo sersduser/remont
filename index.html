@@ -249,9 +249,11 @@ async function objsrvLoad(){
     body: JSON.stringify({ initData: INIT, key: KEY }) });
   const txt = await r.text();
   let j = null; try{ j = JSON.parse(txt); }catch(e){}
-  /* Незарегистрированный путь n8n отдаёт 404 без тела — только это считается
-     «ветки ещё нет» (образец invApi, 083). Отказ ветки приходит с телом. */
-  if(r.status === 404 && !j){ OBJSRV.state = "absent"; return; }
+  /* «Ветки ещё нет» опознаётся по НЕ-JSON ответу, а не по коду 404: этот n8n
+     на незарегистрированный webhook отвечает 500 и HTML-страницей «not registered»
+     — проверено на проде и на контрольном несуществующем пути [096]. Отказ самой
+     ветки приходит телом JSON и человеку показывается. */
+  if(!j && (!r.ok || r.status === 404)){ OBJSRV.state = "absent"; return; }
   const list = Array.isArray(j) ? j
              : (j && Array.isArray(j.list)) ? j.list
              : (j && Array.isArray(j.objects)) ? j.objects
@@ -10038,7 +10040,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "096.1";
+const BUILD = "096.2";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
