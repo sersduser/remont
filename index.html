@@ -6065,13 +6065,25 @@ profile(){
       items;
   }
 
-  const inPrice = (cat.price || []).filter(p => p.active !== false).map(p => p.code); // [чат 011] только активный прайс
-  const pool = (cat.kinds || []).filter(k => k.active !== false && k.area !== 'объектная' && (inPrice.length ? inPrice.indexOf(k.code) >= 0 : true)); // [чат 011] объектные строки сметы в профиль не попадают
+  /* [чат 096, дефект найден чтением в 094] Фолбэк «прайса нет — показать весь
+     классификатор» задумывался для НОВОГО бригадира, у которого прайса ещё нет.
+     Прежнее условие смотрело на число АКТИВНЫХ строк, поэтому бригадир, погасивший
+     у себя все виды, получал полный список вместо пустого — «запретить всё» давало
+     обратный эффект. Различаем «строк нет вовсе» и «строки есть, активных ноль». */
+  const priceRows = (cat.price || []);
+  const inPrice = priceRows.filter(p => p.active !== false).map(p => p.code); // [чат 011] только активный прайс
+  const priceEmpty = priceRows.length === 0;                                  // прайса нет вовсе
+  const priceAllOff = !priceEmpty && inPrice.length === 0;                    // всё погашено намеренно
+  const pool = (cat.kinds || []).filter(k => k.active !== false && k.area !== 'объектная' && (priceEmpty ? true : inPrice.indexOf(k.code) >= 0)); // [чат 011] объектные строки сметы в профиль не попадают
   const picked = profPicked();
   const already = profInEstimate(room.code);   // [чат 017] что по этому помещению уже стоит в смете
   const groups = {};
   pool.forEach(k => { const g = k.section || 'Прочее'; (groups[g] = groups[g] || []).push(k); });
 
+  /* Пустой список должен объясняться, иначе он читается как поломка [096]. */
+  const poolNote = priceAllOff
+    ? '<div class="stat"><span class="k">В вашем прайсе исполнителя нет ни одной активной строки, поэтому выбирать нечего. Включите нужные виды в прайсе — они появятся здесь.</span></div>'
+    : '';
   const blocks = Object.keys(groups).sort((a,b) => a.localeCompare(b,'ru')).map(g => {
     const items = groups[g].map(k => {
       const on = !!picked[k.code];
@@ -6112,7 +6124,9 @@ profile(){
       '<div class="r" style="margin-top:8px"><button onclick="startVoice(\'repair\')" style="flex:1;padding:12px;border-radius:12px;border:0;background:#1c1c1e;color:#fff;font-size:15px;border:1px solid #3a3a3c">🎤 Продиктовать работы</button></div>' +
       '<div class="r"><span class="k" style="font-size:13px;opacity:.75">Выбор сохраняется: пройдите остальные помещения, смета соберётся одной кнопкой на общем экране.</span></div>' +
     '</div>' +
-    (pool.length ? blocks : '<div class="stat"><span class="k">Справочник пуст.</span></div>');
+    poolNote +
+    (pool.length ? blocks
+      : (priceAllOff ? '' : '<div class="stat"><span class="k">Справочник пуст.</span></div>'));
 },
 
 terms(){
@@ -10040,7 +10054,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "096.2";
+const BUILD = "096.3";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
