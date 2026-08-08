@@ -10062,7 +10062,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "097.1";
+const BUILD = "097.2";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
@@ -10088,7 +10088,17 @@ setInterval(refresh, 15000);
    видимости кэш списка сбрасывается, а открытый экран перечитывает своё. */
 function freshLists(){
   INVS = null;
+  /* [чат 097] Тот же хвост п. 169 на экране выбора объекта. OBJSRV.state ставится
+     один раз за жизнь страницы — objsrvKick() начинается с проверки «не idle → выйти», —
+     поэтому после восстановления замороженного WebView экран показывал бы вчерашний
+     серверный список, а состояния «ветки ещё нет» и «нет подписи» держались бы и после
+     того, как ветку выкатили. Идущий запрос не трогаем: два ответа слились бы в
+     хранилище дважды. Список участий без ключа сброс переживает — objsMerge переписывает
+     OBJSRV.nokey только при удачном ответе, поэтому при отказе на экране останется
+     прежний. */
+  if(OBJSRV.state !== "load"){ OBJSRV.state = "idle"; OBJSRV.err = ""; }
   if(stack[stack.length - 1] === "invites") invLoad().then(() => render()).catch(() => render());
+  if(stack[stack.length - 1] === "objsel") objsrvKick();
 }
 document.addEventListener("visibilitychange", () => { if(!document.hidden){ freshLists(); refresh(); } });
 window.addEventListener("focus", () => { freshLists(); refresh(); });
