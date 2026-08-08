@@ -182,7 +182,8 @@ function objsWrite(list){
 function objsRemember(key, title){
   key = String(key || ""); if(!key) return;
   const list = objsAll(), i = list.findIndex(o => o.key === key);
-  const rec = { key: key, title: String(title || (i >= 0 ? list[i].title : "") || ""), ts: Date.now() };
+  const rec = { key: key, title: String(title || (i >= 0 ? list[i].title : "") || ""), ts: Date.now(),
+                 role: (i >= 0 ? (list[i].role || "") : "") };   /* роль с сервера не теряется [096] */
   if(i >= 0) list[i] = rec; else list.unshift(rec);
   objsWrite(list);
 }
@@ -196,6 +197,86 @@ function objsTitle(key){
   const o = objsAll().find(x => x.key === key);
   const t = o && o.title ? String(o.title) : "";
   return t || ("Объект …" + String(key || "").slice(-6));
+}
+
+/* ─── D4 · серверный список участий [чат 096] ────────────────────────────
+   До этой правки список объектов был памятью панели: в нём жили только те
+   ключи, которые она когда-то получала ссылкой или завела сама. Ветка
+   `POST /remont/objects` (функция базы `my_objects`, готова файлом в 095)
+   отдаёт участия человека по подписи Telegram: объект, имя, роль и ключ,
+   которым именно он имеет право входить.
+
+   Два следствия, ради которых D4 и делался: у объектов появляются НАСТОЯЩИЕ
+   имена вместо «Объект …a1b2c3», и в списке оказываются объекты, ссылку на
+   которые панель никогда не открывала.
+
+   Мина, названная разведкой 095: `objsAll()` отбрасывает записи без `key`,
+   поэтому участие без годного ключа в общее хранилище класть НЕЛЬЗЯ — оно
+   исчезнет молча, и потеряется ровно тот случай, ради которого всё затеяно.
+   Такие участия живут отдельным списком в памяти страницы (`OBJSRV.nokey`) и
+   рисуются некликабельной строкой.                                         */
+const OBJ_ROLE_RU = { owner: "заказчик", foreman: "бригадир", hand: "исполнитель", admin: "администратор" };
+
+/* state: idle → load → done | absent (ветки ещё нет) | nosign (вне Telegram) */
+let OBJSRV = { state: "idle", nokey: [], err: "" };
+
+function objsMerge(list){
+  if(!Array.isArray(list)) return;
+  const cur = objsAll(), nokey = [];
+  for(const r of list){
+    if(!r) continue;
+    const key = String(r.key || ""), title = String(r.title || ""), role = String(r.role || "");
+    if(!key){
+      /* ключа нет — в хранилище нельзя (objsAll такие отбрасывает) */
+      nokey.push({ id: String(r.object_id || ""), title: title, role: role });
+      continue;
+    }
+    const i = cur.findIndex(o => o.key === key);
+    if(i >= 0){
+      /* имя с сервера главнее локального: локальное вписано при заведении и могло устареть */
+      cur[i] = { key: key, title: title || cur[i].title || "", ts: cur[i].ts || 0, role: role || cur[i].role || "" };
+    }else{
+      /* панель этот объект не открывала — ts = 0, чтобы он не встал выше живых */
+      cur.unshift({ key: key, title: title, ts: 0, role: role });
+    }
+  }
+  objsWrite(cur);
+  OBJSRV.nokey = nokey;
+}
+
+async function objsrvLoad(){
+  const r = await fetch(API + "/objects", { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ initData: INIT, key: KEY }) });
+  const txt = await r.text();
+  let j = null; try{ j = JSON.parse(txt); }catch(e){}
+  /* Незарегистрированный путь n8n отдаёт 404 без тела — только это считается
+     «ветки ещё нет» (образец invApi, 083). Отказ ветки приходит с телом. */
+  if(r.status === 404 && !j){ OBJSRV.state = "absent"; return; }
+  const list = Array.isArray(j) ? j
+             : (j && Array.isArray(j.list)) ? j.list
+             : (j && Array.isArray(j.objects)) ? j.objects
+             : (j && Array.isArray(j.payload)) ? j.payload : null;
+  if(!r.ok || !list){
+    OBJSRV.state = "done";
+    OBJSRV.err = (j && j.error) ? String(j.error).replace(/\s*\[line \d+\]\s*$/, "")
+                                : ("сервер ответил " + r.status);
+    return;
+  }
+  objsMerge(list);
+  OBJSRV.state = "done"; OBJSRV.err = "";
+}
+
+/* Зовётся при открытии экрана выбора и ровно один раз: экран рисуется из
+   локального списка сразу, ответ ветки лишь дополняет его. Своего try/catch
+   здесь мало не бывает — общего обработчика отказов у панели нет, и
+   непойманный 404 уронил бы отрисовку экрана (проверено чтением, 095). */
+function objsrvKick(){
+  if(OBJSRV.state !== "idle") return;
+  if(!INIT){ OBJSRV.state = "nosign"; return; }   /* ветка живёт только с подписью */
+  OBJSRV.state = "load";
+  objsrvLoad()
+    .catch(function(e){ OBJSRV.state = "done"; OBJSRV.err = "нет связи с сервером"; })
+    .then(function(){ if(stack[stack.length - 1] === "objsel") render(); });
 }
 
 const KEY_URL = new URLSearchParams(location.search).get("key") || "";
@@ -5409,20 +5490,46 @@ function objSwitchBox(){
   '</div>';
 }
 
+function objSelRole(r){
+  const k = String(r || "");
+  return k ? (OBJ_ROLE_RU[k] || k) : "";
+}
 function objSelScreen(){
   const list = objsAll().slice().sort((a, b) => (b.ts || 0) - (a.ts || 0));
   const rows = list.map(o => {
     const on = (o.key === KEY);
+    const role = objSelRole(o.role);
     return '<div onclick="objsSwitch(\'' + esc(o.key) + '\')" style="margin-top:8px;padding:12px;border-radius:12px;' +
       'background:' + (on ? "#0a84ff" : "#2c2c2e") + ';color:#fff;cursor:pointer">' +
       '<div style="font-size:15px">' + esc(objsTitle(o.key)) + (on ? " · открыт" : "") + '</div>' +
-      '<div style="font-size:12px;opacity:.65;margin-top:3px">ключ …' + esc(String(o.key).slice(-6)) + '</div>' +
+      '<div style="font-size:12px;opacity:.65;margin-top:3px">' + (role ? esc(role) + ' · ' : '') +
+        'ключ …' + esc(String(o.key).slice(-6)) + '</div>' +
     '</div>';
   }).join("");
+  /* Участия без годного ключа: показываем, но переключиться нечем — человеку
+     нужна ссылка от бригадира. В хранилище они не попадают (objsAll их режет). */
+  const nokey = (OBJSRV.nokey || []).map(o => {
+    const role = objSelRole(o.role);
+    return '<div style="margin-top:8px;padding:12px;border-radius:12px;background:#1c1c1e;color:#8e8e93">' +
+      '<div style="font-size:15px">' + esc(o.title || "Объект без названия") + '</div>' +
+      '<div style="font-size:12px;margin-top:3px">' + (role ? esc(role) + ' · ' : '') +
+        'ключа нет — попросите ссылку у бригадира</div>' +
+    '</div>';
+  }).join("");
+  /* Подзаголовок обязан быть честным: пока ветка не ответила, список — память
+     панели, и обещать «все ваши объекты» нельзя. */
+  const sub = (OBJSRV.state === "done") ? "объекты, где вы участвуете"
+            : (OBJSRV.state === "load") ? "спрашиваю сервер о ваших объектах…"
+            : "панель помнит объекты, ключи которых получала";
+  const note = (OBJSRV.state === "done")
+      ? 'Список пришёл с сервера по вашей подписи. Если объекта нет и здесь — вас ещё не добавили на него.'
+      : 'Если объекта нет в списке — откройте его ссылкой ещё раз: панель запомнит ключ и покажет его здесь.';
   return '<div class="hello">Выбор объекта</div>' +
-    '<div class="sub">панель помнит объекты, ключи которых получала</div>' +
-    (rows || '<div class="stat"><div class="m">Панель пока не знает ни одного ключа. Объект открывается ссылкой от бригадира или заводится на экране «Объект».</div></div>') +
-    '<div class="stat" style="margin-top:12px"><div class="m">Если объекта нет в списке — откройте его ссылкой ещё раз: панель запомнит ключ и покажет его здесь.</div></div>';
+    '<div class="sub">' + sub + '</div>' +
+    (rows || (nokey ? "" : '<div class="stat"><div class="m">Панель пока не знает ни одного ключа. Объект открывается ссылкой от бригадира или заводится на экране «Объект».</div></div>')) +
+    nokey +
+    (OBJSRV.err ? '<div class="stat" style="margin-top:12px"><div class="m">Список с сервера не пришёл: ' + esc(OBJSRV.err) + '. Показаны объекты, которые панель помнит.</div></div>' : '') +
+    '<div class="stat" style="margin-top:12px"><div class="m">' + note + '</div></div>';
 }
 
 function objsSwitch(key){
@@ -5597,7 +5704,7 @@ quiz(){ return qzScreen(); },
 newobj(){ return nobjScreen(); },
 
 /* Выбор объекта [чат 091, D4]: список известных панели ключей. */
-objsel(){ return objSelScreen(); },
+objsel(){ objsrvKick(); return objSelScreen(); },
 
 /* Приглашения [чат 083, E5]: список выписанных с состоянием и отзывом.
    Состояние приходит с сервера готовым (v_invites_active), панель его не
@@ -9931,7 +10038,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "093.2";
+const BUILD = "096.1";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
