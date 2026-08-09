@@ -650,6 +650,98 @@ async function savePrice(el){
 
 let CREWS = null;        // список своих бригад: [{crew, name, members, created}]
 let CREW_PICK = null;    // выбранная бригада — адрес приглашения «в бригаду»
+/* ══════════════════════════════════════════════════════════════
+   ДОГОВОР КАК СУЩНОСТЬ [B2–B3 разбора 35, чат 112]
+   До 112 договор был одним числом в «07_Настройки». Теперь это снимок
+   сметы с состоянием: предложен → признан (заморозка) либо отклонён.
+   Позиции собирает СЕРВЕР из тех же работ, что видит экран, и сверяет
+   их сумму с названной до цента: рассинхрон экрана и базы становится
+   видимым отказом, а не тихой ошибкой в документе.
+   ══════════════════════════════════════════════════════════════ */
+let CONTRACTS = null;        // [{id, no, state, total, succession, items:[…], …}]
+let CONTRACT_LOAD = false;   // замок от параллельных загрузок
+let CONTRACT_BUSY = false;   // замок от двойного тапа по действию [грабля 012]
+
+async function contractApi(body){
+  let r, txt;
+  try{
+    r = await fetch(API + '/contract', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(Object.assign({ initData: INIT, key: KEY }, body || {})) });
+    txt = (await r.text()).trim();
+  }catch(e){ return { ok: false, error: 'Нет связи с сервером — попробуйте ещё раз.' }; }
+  let j = null; try{ j = JSON.parse(txt); }catch(e){}
+  /* Ветки ещё нет — n8n отвечает не-JSON на незарегистрированный вебхук [096 · 097]. */
+  if(!j) return { ok: false, absent: true, error: 'Серверная часть договора ещё не выкачена' };
+  return j;
+}
+async function contractsLoad(force){
+  if(CONTRACTS && !force) return CONTRACTS;
+  const j = await contractApi({ mode: 'list', object_id: D.object_id });
+  CONTRACTS = (j && j.ok && Array.isArray(j.contracts)) ? j.contracts : [];
+  return CONTRACTS;
+}
+/* Ленивая подгрузка при первом показе экрана: рисуем «загружаю», затем перерисовываем. */
+function contractsEnsure(){
+  if(CONTRACTS !== null || CONTRACT_LOAD) return;
+  CONTRACT_LOAD = true;
+  contractsLoad(true).then(() => { CONTRACT_LOAD = false; render(); })
+                     .catch(() => { CONTRACT_LOAD = false; CONTRACTS = []; render(); });
+}
+/* Сумма сметы, которая пойдёт в договор: живые работы с ценой — ровно то,
+   что соберёт сервер. Если экран и база разойдутся, сервер откажет с обоими числами. */
+function contractSum(){
+  return Math.round((D.works || [])
+    .filter(w => w.code && w.status !== 'Снято' && w.status !== 'Пропущен' && (Number(w.price_alloc_usd) || 0) > 0)
+    .reduce((s, w) => s + Number(w.price_alloc_usd), 0) * 100) / 100;
+}
+const contractNoPrice = () => (D.works || []).filter(w => w.code && w.status !== 'Снято' && w.status !== 'Пропущен' && !((Number(w.price_alloc_usd) || 0) > 0));
+const contractOpen   = () => (CONTRACTS || []).find(c => c.state === 'предложен') || null;
+const contractFrozen = () => (CONTRACTS || []).find(c => c.state === 'признан' || c.state === 'подписан') || null;
+
+let CONTRACT_SUCC = 'inherit';   // опция преемственности по умолчанию — наследование цен договора
+function contractSucc(v){ CONTRACT_SUCC = v; render(); }
+
+async function contractPropose(){
+  if(CONTRACT_BUSY) return;
+  const sum = contractSum();
+  if(!(sum > 0)){ toast('В смете нет работ с ценой', 'err'); return; }
+  const nop = contractNoPrice();
+  if(nop.length && !confirm('В смете ' + nop.length + ' работ без цены — в договор они не войдут:\n' +
+      nop.slice(0, 8).map(w => '· ' + w.name).join('\n') + (nop.length > 8 ? '\n…' : '') +
+      '\n\nПредложить договор без них?')) return;
+  if(!confirm('Предложить договор на ' + fmt(sum) + ' $ ?\n' +
+      'Опция преемственности: ' + (CONTRACT_SUCC === 'inherit' ? 'наследование цен договора' : 'прайс бригадира на дату допа') +
+      '\n\nПосле признания второй стороной позиции замораживаются.')) return;
+  CONTRACT_BUSY = true;
+  toast('Отправляю…', 'wait');
+  const j = await contractApi({ mode: 'propose', object_id: D.object_id, total: sum,
+                                succession: CONTRACT_SUCC, allow_no_price: true });
+  CONTRACT_BUSY = false;
+  if(!j.ok){
+    if(j.items_sum !== undefined) toast('Сумма позиций ' + fmt(j.items_sum) + ' $ не сошлась с ' + fmt(j.named) + ' $ — обновите экран', 'err');
+    else toast(j.error || 'Не удалось предложить договор', 'err');
+    return;
+  }
+  toast('Договор № ' + j.no + ' предложен: ' + j.items + ' позиций на ' + fmt(j.total) + ' $');
+  await contractsLoad(true);
+  render();
+}
+async function contractDecide(id, yes){
+  if(CONTRACT_BUSY) return;
+  let reason = null;
+  if(!yes){
+    reason = prompt('Что не так с договором? Причина уйдёт второй стороне.');
+    if(reason === null) return;
+  } else if(!confirm('Признать договор? После этого позиции замораживаются и не меняются — правки пойдут допсоглашением.')) return;
+  CONTRACT_BUSY = true;
+  toast(yes ? 'Признаю…' : 'Отправляю отказ…', 'wait');
+  const j = await contractApi({ mode: yes ? 'accept' : 'reject', contract_id: id, reason: reason });
+  CONTRACT_BUSY = false;
+  if(!j.ok){ toast(j.error || 'Не удалось', 'err'); return; }
+  toast(yes ? 'Договор признан и заморожен' : 'Договор отклонён');
+  await contractsLoad(true);
+  render();
+}
 let CREW_NEW_BUSY = false;
 let CREW_SUGGEST = [];
 
@@ -726,6 +818,71 @@ async function crewCreate(){
     back();
   }catch(e){ toast(e.message, 'err'); }
   finally{ CREW_NEW_BUSY = false; }
+}
+
+/* Блок «Договор» на экране «Договор» [B3, чат 112]: состояние, позиции,
+   решение второй стороны. Пустота объясняется словами, а не молчит [037]. */
+function contractBlock(){
+  const btn  = 'style="padding:10px 14px;border-radius:10px;border:0;background:#0a84ff;color:#fff;font-size:15px"';
+  const btnG = 'style="padding:10px 14px;border-radius:10px;border:0;background:var(--ok);color:#fff;font-size:15px"';
+  const btnR = 'style="padding:10px 14px;border-radius:10px;border:0;background:var(--bad);color:#fff;font-size:15px"';
+  const btnQ = 'style="padding:8px 12px;border-radius:10px;border:1px solid #3a3a3c;background:transparent;color:#fff;font-size:14px"';
+  if(CONTRACTS === null){ contractsEnsure(); return '<div class="card"><div class="lbl">Договор</div><div class="m">Загружаю…</div></div>'; }
+
+  const frozen = contractFrozen(), open = contractOpen();
+  const succName = s => s === 'inherit' ? 'наследование разнесённых цен договора' : 'прайс бригадира на дату дополнительной услуги';
+
+  if(frozen){
+    const items = (frozen.items || []);
+    return '<div class="card">' +
+      '<div class="lbl">Договор № ' + esc(frozen.no) + ' — заморожен</div>' +
+      '<div class="m">Признан ' + esc(frozen.accepted_at || '') + (frozen.accepted_by ? ' · ' + esc(frozen.accepted_by) : '') + '.</div>' +
+      '<div class="r"><span class="k">Сумма</span><span class="v ok">' + usd(frozen.total) + ' $</span></div>' +
+      '<div class="r"><span class="k">Позиций</span><span class="v">' + items.length + '</span></div>' +
+      '<div class="r"><span class="k">Преемственность цен</span><span class="v" style="font-size:13px">' + esc(succName(frozen.succession)) + '</span></div>' +
+      '<div class="m" style="margin-top:8px;color:var(--hint)">Позиции договора больше не меняются — ни разнесением, ни правкой цены. ' +
+        'Всё новое оформляется дополнительным соглашением.</div>' +
+    '</div>';
+  }
+
+  if(open){
+    const mine = !!open.proposed_mine;
+    return '<div class="card">' +
+      '<div class="lbl">Договор № ' + esc(open.no) + ' — ждёт решения</div>' +
+      '<div class="r"><span class="k">Сумма</span><span class="v">' + usd(open.total) + ' $</span></div>' +
+      '<div class="r"><span class="k">Позиций</span><span class="v">' + (open.items || []).length + '</span></div>' +
+      '<div class="r"><span class="k">Преемственность цен</span><span class="v" style="font-size:13px">' + esc(succName(open.succession)) + '</span></div>' +
+      '<div class="m" style="margin-top:6px">Предложил ' + esc(open.proposed_by || '—') + ' · ' + esc(open.proposed_at || '') + '</div>' +
+      (mine
+        ? '<div class="m" style="margin-top:10px;color:var(--warn)">Ждём решения второй стороны.</div>' +
+          '<div class="row" style="margin-top:8px"><button onclick="contractDecide(\'' + attr(open.id) + '\', false)" ' + btnQ + '>Отозвать</button></div>'
+        : '<div class="row" style="gap:8px;margin-top:10px">' +
+            '<button onclick="contractDecide(\'' + attr(open.id) + '\', true)" ' + btnG + '>Признать</button>' +
+            '<button onclick="contractDecide(\'' + attr(open.id) + '\', false)" ' + btnR + '>Оспорить</button>' +
+          '</div>') +
+    '</div>';
+  }
+
+  if(!canAlloc()) return '';
+  const last = (CONTRACTS || []).find(c => c.state === 'отклонён');
+  const nop = contractNoPrice();
+  return '<div class="card">' +
+    '<div class="lbl">Договор</div>' +
+    '<div class="m">Договор — это снимок сметы, который обе стороны признали. После признания позиции замораживаются: ' +
+      'цены больше не меняются ни разнесением, ни правкой.</div>' +
+    (last ? '<div class="m" style="color:var(--warn);margin-top:6px">Прошлое предложение отклонено' +
+      (last.reject_reason ? ': ' + esc(last.reject_reason) : '') + '</div>' : '') +
+    (nop.length ? '<div class="m" style="color:var(--warn);margin-top:6px">Работ без цены: ' + nop.length + ' — в договор они не войдут</div>' : '') +
+    '<div class="r" style="margin-top:8px"><span class="k">Пойдёт в договор</span><span class="v ok">' + usd(contractSum()) + ' $</span></div>' +
+    '<div class="sub" style="margin-top:10px">Преемственность цен на дополнительные услуги</div>' +
+    '<div class="row" style="gap:8px;margin-top:6px">' +
+      '<button onclick="contractSucc(\'inherit\')" style="flex:1;padding:9px;border-radius:10px;font-size:13.5px;border:' +
+        (CONTRACT_SUCC === 'inherit' ? '2px solid #30d158' : '1px solid #3a3a3c') + ';background:transparent;color:#fff">Наследовать цены договора</button>' +
+      '<button onclick="contractSucc(\'pricelist\')" style="flex:1;padding:9px;border-radius:10px;font-size:13.5px;border:' +
+        (CONTRACT_SUCC === 'pricelist' ? '2px solid #30d158' : '1px solid #3a3a3c') + ';background:transparent;color:#fff">Прайс на дату допа</button>' +
+    '</div>' +
+    '<div class="row" style="margin-top:10px"><button onclick="contractPropose()" ' + btn + '>Предложить к признанию</button></div>' +
+  '</div>';
 }
 
 /* Блок «Мои бригады» на экране бригадира: выбор адреса приглашения и вход
@@ -7249,6 +7406,7 @@ deal(){
         : "Базовых цен пока нет — они появятся при сборке сметы или при первом разнесении."}</div>
       ${allocUndoPlan().rows.length ? `<button onclick="allocUndoShow()" style="margin-top:8px;width:100%;padding:10px 14px;border-radius:10px;border:1px solid #3a3a3c;background:transparent;color:#fff;font-size:15px">↩︎ Отменить разнесение</button>` : ""}
     </div>` : ""}
+    ${contractBlock()}
     <div class="card">
       <div class="lbl">Входит в цену</div>
       <div style="font-size:13.5px;line-height:1.9">
@@ -10006,6 +10164,21 @@ const UZ = {
 "Нечего возвращать":"Qaytaradigan narsa yo'q",
 "Базовых цен пока нет — они появятся при сборке сметы или при первом разнесении":"Asosiy narxlar hali yo'q — ular smeta yig'ilganda yoki birinchi taqsimlashda paydo bo'ladi",
 "Цена по договору, $":"Shartnoma narxi, $",
+"Договор":"Shartnoma",
+"Предложить к признанию":"Tan olishga taklif qilish",
+"Признать":"Tan olish",
+"Оспорить":"E'tiroz bildirish",
+"Отозвать":"Qaytarib olish",
+"Позиций":"Pozitsiyalar",
+"Преемственность цен":"Narxlar vorisligi",
+"Преемственность цен на дополнительные услуги":"Qo'shimcha xizmatlar narxlari vorisligi",
+"Наследовать цены договора":"Shartnoma narxlarini meros qilish",
+"Прайс на дату допа":"Qo'shimcha sanasidagi narxnoma",
+"Пойдёт в договор":"Shartnomaga kiradi",
+"Ждём решения второй стороны.":"Ikkinchi tomon qarorini kutmoqdamiz.",
+"Договор признан и заморожен":"Shartnoma tan olindi va muzlatildi",
+"Договор отклонён":"Shartnoma rad etildi",
+"Загружаю…":"Yuklanmoqda…",
 "Базовая":"Asosiy",
 "не задана":"belgilanmagan",
 "Записываю…":"Yozyapman…",
@@ -10560,7 +10733,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "112.1";
+const BUILD = "112.2";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
