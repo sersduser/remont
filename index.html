@@ -630,6 +630,141 @@ async function savePrice(el){
 }
 
 /* ══════════════════════════════════════════════════════════════
+   БРИГАДА КАК СУЩНОСТЬ [чат 110, разбор 34 работа A]
+
+   До этой правки бригаду нельзя было завести ни одним путём: таблица `crews`
+   в базе была, функции — нет, ветки — нет, экрана — нет, а `crewAdd()`
+   создавал ПРИГЛАШЕНИЕ, а не бригаду. Второй блокер вскрылся при чтении
+   прода: даже у заведённой руками бригады приглашение «в бригаду» не
+   работало, потому что ядро `/data` **не отдаёт `crew_id` вовсе** — панель
+   не знала идентификатора той бригады, в которую зовёт.
+
+   Поэтому список бригад приходит не из ядра, а своей веткой `POST /remont/crew`
+   (режим «список»): узел сборки JSON на 26 КБ не трогается, а панель получает
+   id, имя и состав. Выбранная бригада становится адресом приглашения.
+
+   Имя бригады — публичный лейбл, уникальный глобально, как никнейм в Telegram
+   (решение 089). Занятость проверяется ДО записи тем же вызовом с `check`,
+   и сервер сам предлагает три свободных варианта.
+   ══════════════════════════════════════════════════════════════ */
+
+let CREWS = null;        // список своих бригад: [{crew, name, members, created}]
+let CREW_PICK = null;    // выбранная бригада — адрес приглашения «в бригаду»
+let CREW_NEW_BUSY = false;
+let CREW_SUGGEST = [];
+
+async function crewApi(body){
+  let r, txt;
+  try{
+    r = await fetch(API + '/crew', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(Object.assign({ initData: INIT, key: KEY }, body || {})) });
+    txt = (await r.text()).trim();
+  }catch(e){ return { ok: false, error: 'Нет связи с сервером — попробуйте ещё раз.' }; }
+  let j = null; try{ j = JSON.parse(txt); }catch(e){}
+  /* Ветки ещё нет — этот n8n отвечает не-JSON на незарегистрированный вебхук [096 · 097]. */
+  if(!j) return { ok: false, absent: true, error: 'Серверная часть бригад ещё не выкачена' };
+  return j;
+}
+
+async function crewsLoad(force){
+  if(CREWS && !force) return CREWS;
+  const j = await crewApi({ list: true });
+  CREWS = (j && j.ok && Array.isArray(j.list)) ? j.list : [];
+  if(CREWS.length && !CREWS.find(c => c.crew === CREW_PICK)) CREW_PICK = CREWS[0].crew;
+  if(!CREWS.length) CREW_PICK = null;
+  return CREWS;
+}
+
+function crewPick(id){ CREW_PICK = id; render(); }
+
+function crewNewOpen(){ CREW_SUGGEST = []; go('crewnew'); }
+
+function crewNameVal(){ return String((document.getElementById('cwn_name') || {}).value || '').trim(); }
+
+function crewMsg(html){ const el = document.getElementById('cwn_msg'); if(el) el.innerHTML = html; }
+
+async function crewNameCheck(){
+  const name = crewNameVal();
+  if(!name){ crewMsg('<span class="k">Введите название бригады.</span>'); return null; }
+  crewMsg('<span class="k">Проверяю имя…</span>');
+  const j = await crewApi({ name: name, check: true });
+  if(j.ok && j.free){ CREW_SUGGEST = []; crewMsg('<span class="k">Имя свободно — можно заводить.</span>'); return true; }
+  if(j.ok && j.repeat){ CREW_SUGGEST = []; crewMsg('<span class="k">Такая бригада у вас уже есть.</span>'); return false; }
+  if(j.taken){
+    CREW_SUGGEST = Array.isArray(j.suggest) ? j.suggest : [];
+    crewMsg('<span class="k">Имя занято другой бригадой.' + (CREW_SUGGEST.length ? ' Свободные рядом: ' +
+      CREW_SUGGEST.map(s => '<button onclick="crewUse(\'' + attr(s) + '\')" style="margin:4px 4px 0 0;padding:6px 10px;border-radius:8px;border:0;background:#3a3a3c;color:#fff;font-size:13px">' + esc(s) + '</button>').join('') : '') + '</span>');
+    return false;
+  }
+  crewMsg('<span class="k">' + esc(j.error || 'Не удалось проверить имя') + '</span>');
+  return false;
+}
+
+function crewUse(name){
+  const el = document.getElementById('cwn_name');
+  if(el){ el.value = name; }
+  CREW_SUGGEST = [];
+  crewMsg('<span class="k">Подставил «' + esc(name) + '». Проверьте и заводите.</span>');
+}
+
+async function crewCreate(){
+  if(CREW_NEW_BUSY) return;
+  const name = crewNameVal();
+  if(!name){ toast('Введите название бригады', 'err'); return; }
+  CREW_NEW_BUSY = true;
+  try{
+    toast('Завожу бригаду…', 'wait');
+    const j = await crewApi({ name: name });
+    if(!j.ok){
+      if(j.taken){ await crewNameCheck(); toast('Имя занято — выберите свободное', 'err'); }
+      else toast(j.error || 'Не удалось завести бригаду', 'err');
+      return;
+    }
+    await crewsLoad(true);
+    CREW_PICK = j.crew || CREW_PICK;
+    toast(j.repeat ? 'Такая бригада у вас уже была' : 'Бригада заведена');
+    back();
+  }catch(e){ toast(e.message, 'err'); }
+  finally{ CREW_NEW_BUSY = false; }
+}
+
+/* Блок «Мои бригады» на экране бригадира: выбор адреса приглашения и вход
+   в заведение новой. Пустой список объясняется словами, а не молчит [037]. */
+function crewsBlock(){
+  const btn = 'style="padding:8px 12px;border-radius:10px;border:0;background:#3a3a3c;color:#fff;font-size:14px"';
+  if(CREWS === null) return '<div class="stat"><span class="k">Загружаю список бригад…</span></div>';
+  const rows = CREWS.map(c => {
+    const on = c.crew === CREW_PICK;
+    return '<div class="work"' + (on ? ' style="border-left:3px solid #30d158;padding-left:9px"' : '') + '>' +
+      '<div class="t">' + (on ? '✅ ' : '⬜ ') + esc(c.name) + '</div>' +
+      '<div class="m">людей: ' + (Number(c.members) || 0) + (c.created ? ' · заведена ' + esc(c.created) : '') + '</div>' +
+      (on ? '' : '<div class="m" style="margin-top:6px"><button onclick="crewPick(\'' + attr(c.crew) + '\')" ' + btn + '>Сделать текущей</button></div>') +
+      '</div>';
+  }).join('');
+  return '<div class="sub" style="margin-top:14px">Мои бригады' + (CREWS.length ? (' (' + CREWS.length + ')') : '') + '</div>' +
+    (CREWS.length ? rows : '<div class="stat"><span class="k">Бригад пока нет. Пока её нет, звать людей «в бригаду» некуда — заведите первую.</span></div>') +
+    '<div class="m" style="margin:8px 0 4px"><button onclick="crewNewOpen()" style="width:100%;padding:12px;border-radius:12px;border:0;background:#0a84ff;color:#fff;font-size:15px">➕ Новая бригада</button></div>';
+}
+
+/* Экран заведения. Имя проверяется до записи, отказ приходит словами. */
+function crewNewScreen(){
+  const inp = 'style="width:100%;padding:12px;border-radius:12px;border:1px solid #3a3a3c;background:#000;color:#fff;font-size:15px"';
+  return '' +
+    '<div class="hello">Новая бригада</div>' +
+    '<div class="sub">имя видно другим — оно как никнейм</div>' +
+    '<div class="stat"><span class="k">Название бригады уникально во всей системе: два «Ремонт-мастер» существовать не могут. Внутри система зовёт бригаду машинным кодом, поэтому имя можно будет сменить.</span></div>' +
+    '<div class="stat">' +
+      '<div class="r"><input id="cwn_name" placeholder="Например: Бригада Юрия" ' + inp + '></div>' +
+      '<div class="r" id="cwn_msg" style="margin-top:8px"><span class="k">Имя проверяется до заведения.</span></div>' +
+      '<div class="r" style="display:flex;gap:8px;margin-top:10px">' +
+        '<button onclick="crewNameCheck()" style="flex:1;padding:12px;border-radius:12px;border:0;background:#3a3a3c;color:#fff;font-size:15px">Проверить имя</button>' +
+        '<button onclick="crewCreate()" style="flex:1;padding:12px;border-radius:12px;border:0;background:#0a84ff;color:#fff;font-size:15px">Завести бригаду</button>' +
+      '</div>' +
+    '</div>' +
+    '<div class="stat"><span class="k">Вы станете бригадиром этой бригады и сразу её работником — так устроена модель (решение 089). Позвать людей можно на экране «Бригада».</span></div>';
+}
+
+/* ══════════════════════════════════════════════════════════════
    H2 · СТАРТОВЫЙ ПРАЙС БРИГАДИРА [чат 110, разбор 30]
 
    Две вещи, которых экрану прайса не хватало:
@@ -4603,6 +4738,7 @@ async function openCrewScreen(k){
   try{
     toast("Загружаю бригаду…", "wait");
     await crewLoad();
+    try{ await crewsLoad(); }catch(e){}   // [110] список своих бригад — своей веткой, ядро его не отдаёт
     toast("Готово");
     if(stack[stack.length - 1] === k) render(); else go(k);
   }catch(e){ toast("Не удалось загрузить бригаду", "err"); }
@@ -4902,8 +5038,10 @@ async function crewAdd(){
       body.object_id = oid; body.role = String(INV_F.role || "hand");
     }
     if(type === "crew"){
-      const cid = String((D && D.crew_id) || "");
-      if(!cid){ toast("Бригада ещё не заведена как запись — приглашение в бригаду недоступно", "err"); return; }
+      /* [110] Адрес берётся из выбранной бригады: ядро /data crew_id не отдаёт,
+         список приходит веткой /crew (режим «список»). */
+      const cid = String(CREW_PICK || (D && D.crew_id) || "");
+      if(!cid){ toast("Сначала заведите бригаду: экран «Бригада» → «Новая бригада»", "err"); return; }
       body.crew_id = cid;
     }
     CREW_ADD_BUSY = true;
@@ -5900,6 +6038,9 @@ quiz(){ return qzScreen(); },
 /* Заведение объекта [чат 077, G1 шаг 5]: форма и показ ключа. */
 newobj(){ return nobjScreen(); },
 
+/* Заведение бригады [чат 110, разбор 34 A]: имя-лейбл с проверкой занятости. */
+crewnew(){ return crewNewScreen(); },
+
 /* Выбор объекта [чат 091, D4]: список известных панели ключей. */
 objsel(){ objsrvKick(); return objSelScreen(); },
 
@@ -6469,6 +6610,7 @@ crew(){
   return '' +
     '<div class="hello">Бригада</div>' +
     '<div class="sub">' + (ws.length ? ("Работников: " + ws.length) : "Пока вы работаете один — это нормально") + "</div>" +
+    crewsBlock() +
     '<div class="grid" style="margin-bottom:12px">' +
       '<button class="tile" onclick="go(\'crew_orders\')"><span class="ic">🗓️</span><span class="nm">Наряды</span><div class="h">' + (todayN ? "сегодня в поле: " + todayN : "кто где завтра") + "</div></button>" +
       '<button class="tile' + (waitTm ? " pri" : "") + '" onclick="go(\'crew_time\')"><span class="ic">⏱️</span><span class="nm">Табель</span><div class="h">' + (waitTm ? waitTm + " ждут решения" : "отметки бригады") + "</div></button>" +
@@ -9216,6 +9358,16 @@ let UZ_OBS = null;
 
 /* Точные надписи. Ключ — строка целиком, как она приходит в текстовый узел. */
 const UZ = {
+  /* Бригада как сущность [чат 110]. Перевод ассистента, не носителя. */
+  "Новая бригада": "Yangi brigada",
+  "➕ Новая бригада": "➕ Yangi brigada",
+  "Мои бригады": "Mening brigadalarim",
+  "Проверить имя": "Nomni tekshirish",
+  "Завести бригаду": "Brigada ochish",
+  "Сделать текущей": "Joriy qilish",
+  "Бригада заведена": "Brigada ochildi",
+  "Завожу бригаду…": "Brigada ochyapman…",
+  "имя видно другим — оно как никнейм": "nom boshqalarga ko'rinadi — u taxallusga o'xshaydi",
   /* H2 · стартовый прайс [чат 110]. Перевод ассистента, не носителя —
      метка достоверности та же, что у словаря 081. */
   "🪄 Заполнить по средним ценам": "🪄 O'rtacha narxlar bilan to'ldirish",
@@ -10293,7 +10445,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "110.1";
+const BUILD = "110.2";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
