@@ -630,6 +630,128 @@ async function savePrice(el){
 }
 
 /* ══════════════════════════════════════════════════════════════
+   H2 · СТАРТОВЫЙ ПРАЙС БРИГАДИРА [чат 110, разбор 30]
+
+   Две вещи, которых экрану прайса не хватало:
+
+   (1) «Заполнить по средним ценам». Цены рынка живут в справочнике
+   (Базовая_ставка_USD и вилка, наполнены в 108 по Ташкенту), а прайс
+   исполнителя принадлежит бригадиру. Кнопка переносит ориентир в его
+   строку — но только туда, где цены НЕТ. Заполненное не трогается вовсе,
+   поэтому повторное нажатие не затирает его правки, и признак
+   «источник цены» (разбор 30 §3) не нужен: идемпотентность держится
+   не колонкой, а тем, что кнопка не переписывает.
+
+   (2) «Запретить себе» — это Активно=нет в своей строке прайса
+   (разбор 30 §4): новой сущности не нужно, механика фильтра профиля уже
+   гасит такой вид (лечение 096). Запрет — свойство бригадира, общее для
+   всех его бригад; это осознанное упрощение, а не недосмотр: колонки
+   бригады в строке прайса нет.
+
+   Мина адресации [грабля 109]: правка идёт ПО КОДУ ВИДА, а в прайсе
+   18 кодов задвоены — один вызов меняет все строки с этим кодом. Поэтому
+   план заполнения берёт код один раз, а после записи локально правятся
+   все строки этого кода; в строке с дублем это сказано словами.
+   ══════════════════════════════════════════════════════════════ */
+
+/* Сколько строк прайса носят этот код (задвоенные строки — 18 кодов). */
+function bookDupIndex(){
+  const m = {};
+  ((D.catalog || {}).price || []).forEach(p => { m[p.code] = (m[p.code] || 0) + 1; });
+  return m;
+}
+
+/* Что даст «Заполнить по средним ценам»: списки к записи и причины пропуска.
+   Ноль ориентира — не цена [урок 109]: «рынок не продаёт отдельно» стоит
+   нулём в справочнике, и в прайс он не переносится. */
+function bookFillPlan(){
+  const cat    = D.catalog || { kinds: [], price: [] };
+  const byCode = {}; (cat.kinds || []).forEach(k => { byCode[k.code] = k; });
+  const seen = {}, fill = [], noRate = [], unitBad = [], kindOff = [];
+  (cat.price || []).forEach(p => {
+    if(p.active === false) return;                       // запрещённое себе не заполняем
+    if(Number(p.price_usd) > 0) return;                  // заполненное не трогаем
+    if(seen[p.code]) return; seen[p.code] = 1;           // одна запись на код (дубли)
+    const k = byCode[p.code];
+    if(!k || k.active === false){ kindOff.push(p.code); return; }
+    const pu = String(p.unit || '').trim(), ku = String(k.unit || '').trim();
+    if(pu && ku && pu !== ku){ unitBad.push(p.code); return; }
+    const rate = rateNum(k);
+    if(!(rate > 0)){ noRate.push(p.code); return; }
+    fill.push({ code: p.code, name: p.name || k.name || p.code,
+                value: Math.round(rate * 100) / 100, unit: ku || pu });
+  });
+  return { fill: fill, noRate: noRate, unitBad: unitBad, kindOff: kindOff };
+}
+
+/* Предпросмотр до записи [образец 093: человек видит «станет: …»]. */
+function bookFillAsk(){
+  const plan = bookFillPlan();
+  if(!plan.fill.length){
+    toast('Заполнять нечего: у активных строк с известной ценой рынка цена уже стоит', 'err');
+    return;
+  }
+  const sum  = plan.fill.reduce((s, x) => s + x.value, 0);
+  const show = plan.fill.slice(0, 12).map(x =>
+    '<div class="m">' + esc(x.code) + ' · ' + esc(x.name) + ' — ' + x.value.toFixed(2) + ' за ' + esc(x.unit || 'ед') + '</div>').join('');
+  const box = document.createElement('div');
+  box.style.cssText = 'position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;padding:18px';
+  box.innerHTML =
+    '<div style="background:#1c1c1e;color:#fff;border-radius:16px;padding:18px;max-width:440px;width:100%;max-height:80vh;overflow:auto;font-size:15px">' +
+      '<div style="font-weight:700;margin-bottom:8px">Заполнить по средним ценам</div>' +
+      '<div style="opacity:.75;font-size:14px;margin-bottom:10px">Возьму ориентиры справочника (типовая ставка, иначе середина вилки) и поставлю их в строки без цены. Заполненное не тронется.</div>' +
+      '<div style="margin:8px 0;padding:8px 10px;background:rgba(255,255,255,.07);border-radius:10px">' +
+        '<div class="m">Будет заполнено строк: <b>' + plan.fill.length + '</b></div>' +
+        '<div class="m">Сумма ставок: <b>' + sum.toFixed(2) + ' USD</b></div>' +
+        (plan.noRate.length ? '<div class="m">Останутся без цены (рынок не даёт ставку): ' + plan.noRate.length + '</div>' : '') +
+        (plan.unitBad.length ? '<div class="m">Пропущу из-за расхождения единиц: ' + plan.unitBad.join(', ') + '</div>' : '') +
+        (plan.kindOff.length ? '<div class="m">Пропущу погашенные в классификаторе: ' + plan.kindOff.length + '</div>' : '') +
+      '</div>' +
+      '<div style="opacity:.6;font-size:13px;margin-bottom:12px">' + show + (plan.fill.length > 12 ? '<div class="m">…и ещё ' + (plan.fill.length - 12) + '</div>' : '') + '</div>' +
+      '<div style="display:flex;gap:8px">' +
+        '<button id="bfNo" style="flex:1;padding:13px;border-radius:12px;border:0;background:#3a3a3c;color:#fff;font-size:15px">Отмена</button>' +
+        '<button id="bfYes" style="flex:1;padding:13px;border-radius:12px;border:0;background:#0a84ff;color:#fff;font-size:15px">Заполнить</button>' +
+      '</div>' +
+    '</div>';
+  document.body.appendChild(box);
+  if(typeof uzApply === 'function') uzApply(box);
+  box.querySelector('#bfNo').onclick  = () => box.remove();
+  box.querySelector('#bfYes').onclick = () => { box.remove(); bookFillRun(plan.fill); };
+}
+
+/* Запись плана: по одной строке, с прогрессом и честным итогом. */
+async function bookFillRun(list){
+  if(!list || !list.length){ toast('Нечего записывать', 'err'); return; }
+  const box = document.createElement('div');
+  box.style.cssText = 'position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;padding:18px;color:#fff;font-size:16px';
+  box.innerHTML = '<div style="background:#1c1c1e;border-radius:16px;padding:20px;min-width:240px;text-align:center">Заполняю прайс…<div id="bfN" style="opacity:.7;font-size:14px;margin-top:8px">0 из ' + list.length + '</div></div>';
+  document.body.appendChild(box);
+  let ok = 0, fail = 0;
+  for(const it of list){
+    try{
+      await writeCell('Прайс_исполнителя', it.code, 'Цена_за_ед', String(it.value));
+      ((D.catalog || {}).price || []).forEach(p => { if(p.code === it.code) p.price_usd = it.value; });
+      ok++;
+    }catch(e){ fail++; }
+    const el = box.querySelector('#bfN'); if(el) el.textContent = (ok + fail) + ' из ' + list.length;
+  }
+  box.remove();
+  toast(fail ? ('Заполнено ' + ok + ', не удалось ' + fail) : ('Заполнено строк: ' + ok), fail ? 'err' : 'ok');
+  render();
+}
+
+/* «Запретить себе» / «Вернуть в прайс» — Активно=нет/да в своей строке.
+   Правка адресуется по коду, поэтому локально гасятся ВСЕ строки этого кода. */
+async function bookActive(code, on){
+  try{
+    await writeCell('Прайс_исполнителя', code, 'Активно', on ? 'да' : 'нет');
+    ((D.catalog || {}).price || []).forEach(p => { if(p.code === code) p.active = !!on; });
+    toast(on ? 'Вид снова в вашем прайсе' : 'Вид запрещён для себя');
+    render();
+  }catch(e){ toast(e.message, 'err'); }
+}
+
+/* ══════════════════════════════════════════════════════════════
    ПРОФИЛЬ РЕМОНТА — сборка сметы из обмеров и прайса [чат 007]
    К помещению применяются виды работ; объём считается из его размеров
    по колонке «База_объёма» справочника, цена — из прайса исполнителя.
@@ -6070,39 +6192,64 @@ prices(){
 book(){
   const cat    = D.catalog || { kinds: [], price: [] };
   const byCode = {}; (cat.kinds || []).forEach(k => { byCode[k.code] = k; });
-  const rows   = (cat.price || []).filter(p => p.active !== false); // [чат 011] неактивные строки прайса не показываем
+  const all    = (cat.price || []);
+  const rows   = all.filter(p => p.active !== false);          // [чат 011] активные строки прайса
+  const off    = all.filter(p => p.active === false);          // [чат 110] запрещённые себе — видны отдельным блоком
   const st     = bookStats();
-  const money  = n => (Number(n) || 0).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const plan   = bookFillPlan();
+  const dup    = bookDupIndex();
 
-  const groups = {};
-  rows.forEach(p => {
-    const k = byCode[p.code] || {};
-    const g = k.section || 'Прочее';
-    (groups[g] = groups[g] || []).push(p);
-  });
-
-  const blocks = Object.keys(groups).sort((a, b) => a.localeCompare(b, 'ru')).map(g => {
-    const items = groups[g].map(p => {
-      const k = byCode[p.code] || {};
-      const val = (p.price_usd === null || p.price_usd === undefined || p.price_usd === '') ? '' : p.price_usd;
-      const hint = rateHint(k);   // типовая, вилка и источник [чат 018]
-      return '<div class="work">' +
-        '<div class="t">' + esc(p.name || k.name || p.code) + '</div>' +
-        '<div class="m">' + esc(p.code) + ' · за ' + esc(k.unit || p.unit || 'ед') + ' · ' + esc(hint) + '</div>' +
-        '<div class="m" style="margin-top:6px">' +
+  const item = (p, isOff) => {
+    const k    = byCode[p.code] || {};
+    const val  = (p.price_usd === null || p.price_usd === undefined || p.price_usd === '') ? '' : p.price_usd;
+    const hint = rateHint(k);   // типовая, вилка и источник [чат 018]
+    const dupN = dup[p.code] || 1;
+    return '<div class="work"' + (isOff ? ' style="opacity:.55"' : '') + '>' +
+      '<div class="t">' + esc(p.name || k.name || p.code) + '</div>' +
+      '<div class="m">' + esc(p.code) + ' · за ' + esc(k.unit || p.unit || 'ед') + ' · ' + esc(hint) +
+        (dupN > 1 ? (' · строк с этим кодом: ' + dupN + ' (правка применится ко всем)') : '') + '</div>' +
+      '<div class="m" style="margin-top:6px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">' +
+        (isOff ? '' :
           '<input type="number" step="0.01" inputmode="decimal" data-code="' + esc(p.code) + '" value="' + esc(val) + '"' +
           ' onchange="savePrice(this)" placeholder="' + (rateNum(k) ? rateNum(k).toFixed(2) : '0.00') + '"' +
-          ' style="width:120px;padding:8px;border-radius:10px;border:1px solid #3a3a3c;background:#000;color:#fff;font-size:15px"> USD' +
-        '</div></div>';
-    }).join('');
-    return '<div class="sub" style="margin-top:14px">' + esc(g) + '</div>' + items;
-  }).join('');
+          ' style="width:120px;padding:8px;border-radius:10px;border:1px solid #3a3a3c;background:#000;color:#fff;font-size:15px"><span> USD</span>') +
+        '<button onclick="bookActive(\'' + esc(p.code) + '\', ' + (isOff ? 'true' : 'false') + ')"' +
+        ' style="padding:8px 12px;border-radius:10px;border:0;background:' + (isOff ? '#0a84ff' : '#3a3a3c') + ';color:#fff;font-size:14px">' +
+        (isOff ? '↩︎ Вернуть в прайс' : '🚫 Запретить себе') + '</button>' +
+      '</div></div>';
+  };
+
+  const groups = {};
+  rows.forEach(p => { const g = (byCode[p.code] || {}).section || 'Прочее'; (groups[g] = groups[g] || []).push(p); });
+  const blocks = Object.keys(groups).sort((a, b) => a.localeCompare(b, 'ru')).map(g =>
+    '<div class="sub" style="margin-top:14px">' + esc(g) + '</div>' + groups[g].map(p => item(p, false)).join('')).join('');
+
+  /* Блок запрещённых. Список длинный (у бригадира пилота их семь десятков),
+     поэтому показывается началом — иначе экран становится нечитаемым. */
+  const offShown = off.slice(0, 40);
+  const offBlock = off.length ? (
+    '<div class="sub" style="margin-top:18px">Запрещено для себя' +
+      (off.length > 40 ? (' (первые 40 из ' + off.length + ')') : (' (' + off.length + ')')) + '</div>' +
+    '<div class="stat"><span class="k">Эти виды не попадут в профиль ремонта и в смету, пока вы их не вернёте.</span></div>' +
+    offShown.map(p => item(p, true)).join('')) : '';
+
+  /* Кнопка стартового прайса. Когда заполнять нечего — говорим словами,
+     а не прячем кнопку молча [правило 037: пустое действие объясняется]. */
+  const fillBox = plan.fill.length
+    ? ('<div class="warnbox">Можно заполнить <b>' + plan.fill.length + '</b> ' + (plan.fill.length === 1 ? 'строку' : 'строк') + ' по ценам рынка из справочника. Заполненное не тронется.' +
+        '<div style="margin-top:10px"><button onclick="bookFillAsk()" style="width:100%;padding:12px;border-radius:12px;border:0;background:#0a84ff;color:#fff;font-size:15px">🪄 Заполнить по средним ценам</button></div></div>')
+    : ('<div class="stat"><span class="k">Заполнять по средним ценам нечего: там, где рынок даёт ставку, цена у вас уже стоит.' +
+        (plan.noRate.length ? (' Без ставки рынка осталось ' + plan.noRate.length + '.') : '') +
+        (plan.unitBad.length ? (' Расходятся единицы: ' + plan.unitBad.join(', ') + '.') : '') + '</span></div>');
 
   return '' +
     '<div class="hello">Прайс исполнителя</div>' +
-    '<div class="sub" id="bookCap">Задано ' + st.set + ' из ' + st.all + (st.empty ? (' · не задано ' + st.empty) : ' · всё заполнено') + '</div>' +
+    '<div class="sub" id="bookCap">Задано ' + st.set + ' из ' + st.all + (st.empty ? (' · не задано ' + st.empty) : ' · всё заполнено') +
+      (off.length ? (' · запрещено ' + off.length) : '') + '</div>' +
     '<div class="stat"><span class="k">Цена ставится за единицу вида работы и хранится в общей базе, а не в этом объекте: на следующем объекте задавать её заново не нужно. Объём подставится из профиля помещения.</span></div>' +
-    (rows.length ? blocks : '<div class="stat"><span class="k">В прайсе пока нет ни одной позиции.</span></div>');
+    fillBox +
+    (rows.length ? blocks : '<div class="stat"><span class="k">В прайсе нет ни одной активной позиции' + (off.length ? ' — все запрещены вами ниже' : '') + '.</span></div>') +
+    offBlock;
 },
 
 profile(){
@@ -9069,6 +9216,16 @@ let UZ_OBS = null;
 
 /* Точные надписи. Ключ — строка целиком, как она приходит в текстовый узел. */
 const UZ = {
+  /* H2 · стартовый прайс [чат 110]. Перевод ассистента, не носителя —
+     метка достоверности та же, что у словаря 081. */
+  "🪄 Заполнить по средним ценам": "🪄 O'rtacha narxlar bilan to'ldirish",
+  "Заполнить по средним ценам": "O'rtacha narxlar bilan to'ldirish",
+  "🚫 Запретить себе": "🚫 O'zimga taqiqlash",
+  "↩︎ Вернуть в прайс": "↩︎ Narxnomaga qaytarish",
+  "Заполняю прайс…": "Narxnomani to'ldiryapman…",
+  "Вид запрещён для себя": "Tur o'zingiz uchun taqiqlandi",
+  "Вид снова в вашем прайсе": "Tur yana narxnomangizda",
+  "Эти виды не попадут в профиль ремонта и в смету, пока вы их не вернёте.": "Bu turlar siz qaytarmaguningizcha ta'mir profiliga va smetaga tushmaydi.",
   "🎤 Сказать голосом": "🎤 Ovoz bilan ayting",
   "Сказать голосом": "Ovoz bilan ayting",
   "Сколько работ разом": "Bir vaqtda nechta ish",
@@ -10136,7 +10293,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "108.1";
+const BUILD = "110.1";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
