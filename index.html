@@ -4219,6 +4219,24 @@ async function upd(sheet, code, field, value, opts){
       throw new Error(t.includes("403") ? "Это поле только для чтения" : "Не удалось сохранить");
     }
     patch(sheet, code, field, value);
+    /* [чат 107] «Готово» и 100 % — одно состояние, и оно должно доехать до сервера.
+       Правило «статус Готово ⇒ готовность 100» жило только в patch(), то есть в памяти
+       страницы: в базе пять принятых работ стояли с нулём, общий прогресс врал вниз,
+       а карточка показывала «Готово, % = 0» сразу после перезагрузки. Здесь значение
+       value уже переписано на заявку для исполнителя, поэтому «Готово» в этой точке
+       означает ровно подтверждённую приёмку. Досыл идёт тем же /update; если он не
+       прошёл — перечитываем правду сервера, чтобы расхождение не осталось невидимым. */
+    if(sheet === "01_Работы" && field === "Статус" && value === "Готово"){
+      try{
+        const rp = await fetch(`${API}/update`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ initData: INIT, key: KEY, sheet, code, field: "Готовность_%", value: 100 })
+        });
+        const tp = (await rp.text()).trim();
+        if(!rp.ok || !tp) load(); else patch(sheet, code, "Готовность_%", 100);
+      }catch(e){ load(); }
+    }
     tg?.HapticFeedback?.notificationOccurred("success");
     toast(claimed ? (crewSide() ? "Заявлено — ждёт приёмки заказчиком" : "Отправлено работнику на подтверждение") : "Сохранено");
     return true;
