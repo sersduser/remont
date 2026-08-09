@@ -516,6 +516,40 @@ function depAsk(w, blockers){
   });
 }
 
+/* ═══ Встречная заявка на одну работу [чат 108] ═══════════════════════
+   Одну и ту же работу могут заявить обе стороны: 09.08 SP-01 заявил
+   бригадир с личного аккаунта, а следом заказчик голосом — и панель
+   молча положила вторую заявку поверх первой, оставив работу висеть
+   в ожидании у обоих. По смыслу второе «Готово» той стороны, которая
+   ещё не заявляла, — это не новая заявка, а согласие с чужой: ровно то,
+   что делает кнопка «Принять» на экране приёмки. Спрашиваем и, при
+   согласии, идём тем же путём; отказ не пишет ничего.               */
+function claimAsk(w, theirStatus){
+  return new Promise(resolve => {
+    /* «Заявлено» ставит исполнительская сторона, «На приёмке у работника» — заказчик. */
+    const who = theirStatus === "Заявлено" ? "Заявил бригадир — ждёт вашей приёмки"
+                                           : "Заявил заказчик — ждёт вашей приёмки";
+    const box = document.createElement("div");
+    box.style.cssText = "position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;padding:18px";
+    box.innerHTML =
+      '<div style="background:#1c1c1e;color:#fff;border-radius:16px;padding:18px;max-width:420px;width:100%;max-height:80vh;overflow:auto;font-size:15px">' +
+        '<div style="font-weight:700;margin-bottom:8px">Работа уже заявлена выполненной</div>' +
+        '<div style="margin:8px 0;padding:8px 10px;background:rgba(255,255,255,.07);border-radius:10px">' +
+          '<b>' + esc((w && w.name) || "") + '</b><br><span style="opacity:.65;font-size:13px">' +
+          esc(String((w && w.room) || "").split(" (")[0]) + (w && w.section ? ' · ' + esc(w.section) : '') + '</span></div>' +
+        '<div style="opacity:.7;font-size:14px;margin:6px 0">' + who + '</div>' +
+        '<div style="opacity:.6;font-size:13px;margin:10px 0 14px">Подтверждение закроет встречную заявку у обеих сторон. Отказ оставит всё как есть.</div>' +
+        '<div style="display:flex;gap:8px">' +
+          '<button id="clNo" style="flex:1;padding:13px;border-radius:12px;border:0;background:#3a3a3c;color:#fff;font-size:15px">Оставить как есть</button>' +
+          '<button id="clYes" style="flex:1;padding:13px;border-radius:12px;border:0;background:#30d158;color:#fff;font-weight:600;font-size:15px">Подтвердить приёмку</button>' +
+        '</div>' +
+      '</div>';
+    document.body.appendChild(box);
+    box.querySelector("#clNo").onclick  = () => { box.remove(); resolve(false); };
+    box.querySelector("#clYes").onclick = () => { box.remove(); resolve(true);  };
+  });
+}
+
 /* Баланс от приёмки: сколько из выданного аванса уже отработано принятыми
    работами. null — если считать не из чего (нет ни оплат, ни приёмки).  */
 function advCalc(field){
@@ -4204,8 +4238,21 @@ async function upd(sheet, code, field, value, opts){
       if (!_go) { toast("Отменено", "err"); return false; }
     }
   }
-  if(claimed) value = crewSide() ? "Заявлено" : "На приёмке у работника";
-  toast(claimed ? "Отправляю на приёмку…" : "Сохраняю…", "wait");
+  /* [чат 108] Встречная заявка: работу уже заявила ВТОРАЯ сторона и она ждёт
+     приёмки — значит это «Готово» не новая заявка, а согласие. Спрашиваем;
+     при согласии пишем «Готово» (тот же путь, что кнопка «Принять»), при
+     отказе не пишем ничего и оставляем работу ждать.                     */
+  let accepting = false;
+  if (claimed && sheet === "01_Работы") {
+    const _cw = (D.works || []).find(x => x.code === code);
+    const _theirs = crewSide() ? "На приёмке у работника" : "Заявлено";
+    if (String((_cw && _cw.status) || "").trim() === _theirs) {
+      if (!(await claimAsk(_cw, _theirs))) { toast("Оставлено как есть"); return false; }
+      accepting = true;
+    }
+  }
+  if(claimed && !accepting) value = crewSide() ? "Заявлено" : "На приёмке у работника";
+  toast(accepting ? "Подтверждаю приёмку…" : (claimed ? "Отправляю на приёмку…" : "Сохраняю…"), "wait");
   try{
     const r = await fetch(`${API}/update`, {
       method: "POST",
@@ -4238,7 +4285,7 @@ async function upd(sheet, code, field, value, opts){
       }catch(e){ load(); }
     }
     tg?.HapticFeedback?.notificationOccurred("success");
-    toast(claimed ? (crewSide() ? "Заявлено — ждёт приёмки заказчиком" : "Отправлено работнику на подтверждение") : "Сохранено");
+    toast(accepting ? "Приёмка подтверждена" : (claimed ? (crewSide() ? "Заявлено — ждёт приёмки заказчиком" : "Отправлено работнику на подтверждение") : "Сохранено"));
     return true;
   }catch(e){
     tg?.HapticFeedback?.notificationOccurred("error");
@@ -9643,7 +9690,16 @@ const UZ = {
 "Отменить":"Bekor qilish","сколько часов":"necha soat","часов":"soat",
 "не заданы: окна, двери":"berilmagan: deraza, eshik","не заданы: окна":"berilmagan: deraza",
 "не заданы: двери":"berilmagan: eshik","окна, двери":"deraza, eshik",
-"доп D-01, закрыт":"qo'shimcha D-01, yopilgan"
+"доп D-01, закрыт":"qo'shimcha D-01, yopilgan",
+"Работа уже заявлена выполненной":"Ish allaqachon bajarilgan deb bildirilgan",
+"Заявил бригадир — ждёт вашей приёмки":"Brigadir bildirgan — sizning qabulingizni kutmoqda",
+"Заявил заказчик — ждёт вашей приёмки":"Buyurtmachi bildirgan — sizning qabulingizni kutmoqda",
+"Подтверждение закроет встречную заявку у обеих сторон. Отказ оставит всё как есть.":"Tasdiqlash har ikki tomondagi qarshi bildirishnomani yopadi. Rad etish hammasini o'zgarishsiz qoldiradi.",
+"Оставить как есть":"Shundayligicha qoldirish",
+"Подтвердить приёмку":"Qabulni tasdiqlash",
+"Подтверждаю приёмку…":"Qabul tasdiqlanmoqda…",
+"Приёмка подтверждена":"Qabul tasdiqlandi",
+"Оставлено как есть":"Shundayligicha qoldirildi"
 
 
 };
@@ -10080,7 +10136,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "107.1";
+const BUILD = "108.1";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
