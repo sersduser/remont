@@ -1169,6 +1169,9 @@ async function profBuild(){
         'Ставка_USD': (!skip && rate) ? rate : '',
         'Категория': 'База',
         'Цена_аллокация_USD': (!skip && rate) ? Math.round(vol * rate * 100) / 100 : '',
+        /* Базовая цена — снимок «объём × цена прайса бригадира» на дату сборки [B1, чат 112].
+           Она не меняется разнесением и служит точкой возврата. */
+        'Цена_база_USD': (!skip && rate) ? Math.round(vol * rate * 100) / 100 : '',
         'Статус': skip ? 'Пропущен' : 'Не начато',
         'Готовность_%': 0,
         'Источник': 'профиль ремонта',
@@ -3489,6 +3492,77 @@ function objGoRoom(code){
   setTimeout(() => { el.style.boxShadow = prev; }, 1400);
 }
 
+/* ══════════════════════════════════════════════════════════════
+   ОТМЕНА РАЗНЕСЕНИЯ [B1 разбора 35, чат 112]
+   До 112 разнесение было необратимо: цены умножались на коэффициент,
+   а числа, от которых он считался, стирались. Теперь у строки два слоя —
+   базовая цена (объём × цена прайса бригадира на дату сборки; при первом
+   разнесении ею становится цена до сжатия) и рабочая (результат разнесения
+   и ручных правок). «Отменить разнесение» возвращает рабочую к базовой.
+   Коэффициент не хранится намеренно: после ручных правок он перестаёт быть
+   одним числом на смету, а база и результат — хранятся оба.
+   ══════════════════════════════════════════════════════════════ */
+const workBase = w => Number((w && w.price_base_usd) || 0) || 0;
+const allocLive = () => (D.works || []).filter(w => w.code && w.status !== 'Снято' && w.status !== 'Пропущен');
+/* Сумма сметы по базовым ценам: там, где базы нет, берётся нынешняя цена —
+   иначе итог занижался бы на строки, собранные до 112. */
+function allocBaseSum(){
+  return Math.round(allocLive().reduce((s, w) => s + (workBase(w) || (Number(w.price_alloc_usd) || 0)), 0) * 100) / 100;
+}
+function allocUndoPlan(){
+  const rows = allocLive()
+    .filter(w => workBase(w) > 0)
+    .map(w => ({ code: w.code, name: w.name, room: w.room,
+                 was: Math.round((Number(w.price_alloc_usd) || 0) * 100) / 100,
+                 now: Math.round(workBase(w) * 100) / 100 }))
+    .filter(r => r.was !== r.now);
+  const sum = Math.round(rows.reduce((s, r) => s + r.now, 0) * 100) / 100;
+  return { rows, sum, base: allocBaseSum() };
+}
+function allocUndoShow(){
+  const plan = allocUndoPlan();
+  if(!plan.rows.length){ toast('Нечего возвращать: цены и так базовые', 'err'); return; }
+  const head = plan.rows.slice(0, 12).map(r =>
+    '<div class="vitem sel"><div class="vchk">✓</div><div style="flex:1;min-width:0">' +
+      '<div class="vv">' + esc(r.name) + '</div>' +
+      '<div class="vd">' + esc(r.code) + ' · ' + fmt(r.was) + ' → <b style="color:var(--ok)">' + fmt(r.now) + '</b> $</div>' +
+    '</div></div>').join('');
+  const more = plan.rows.length > 12 ? '<div class="vd" style="margin:6px 0 10px">и ещё работ: ' + (plan.rows.length - 12) + '</div>' : '';
+  openVSheet(
+    '<div class="vh">Возврат к базовым ценам</div>' +
+    '<div class="vs">Цены вернутся к тем, что посчитаны по прайсу бригадира. Сумма сметы станет ' +
+      fmt(allocBaseSum()) + ' $. Договор пересчитается тем же числом.</div>' +
+    '<div id="vlist">' + head + '</div>' + more +
+    '<div class="vrow">' +
+      '<button class="vbtn-cancel" onclick="closeVSheet()">Отмена</button>' +
+      '<button class="vbtn-ok" id="allocUndoGo" onclick="allocUndoApply()">Вернуть базовые цены</button>' +
+    '</div>');
+}
+async function allocUndoApply(){
+  const plan = allocUndoPlan();
+  if(!plan.rows.length){ toast('Нечего возвращать', 'err'); return; }
+  const btn = document.getElementById('allocUndoGo');
+  if(btn && btn.disabled) return;                 // замок от двойного тапа [грабля 012]
+  if(btn){ btn.disabled = true; btn.textContent = 'Возвращаю…'; }
+  let done = 0, fail = 0;
+  for(const r of plan.rows){
+    try{
+      await writeCell('01_Работы', r.code, 'Цена_аллокация_USD', String(r.now).replace('.', ','));
+      done++;
+      if(btn) btn.textContent = 'Возвращаю… ' + done + ' из ' + plan.rows.length;
+    }catch(e){ fail++; }
+  }
+  /* Договор идёт следом за ценами: сумма работ и Договор_USD обязаны сойтись,
+     иначе экран денег начнёт спорить сам с собой (то же правило, что в allocApply). */
+  try{
+    await writeCell('07_Настройки', 'Договор_USD', 'Значение', String(allocBaseSum()).replace('.', ','));
+  }catch(e){ fail++; }
+  closeVSheet();
+  toast(fail ? ('Возвращено ' + done + ', с ошибкой ' + fail) : 'Цены вернулись к базовым', fail ? 'err' : 'ok');
+  await load();
+  render();
+}
+
 /* Окно разнесения: показать, как названная сумма ляжет на работы, и только
    потом писать. Молча переписать все цены сметы нельзя — это те же деньги,
    что стороны потом делят при приёмке. */
@@ -3528,6 +3602,12 @@ async function allocApply(total){
   let done = 0, fail = 0;
   for(const r of plan.rows){
     try{
+      /* Снимок базы перед первым сжатием [B1, чат 112]: если базовой цены у строки
+         ещё нет, ею становится нынешняя — именно к ней вернёт «Отменить разнесение».
+         У строк, собранных из профиля после 112, база уже стоит с момента сборки. */
+      const _w = (D.works || []).find(x => x.code === r.code);
+      if(_w && !(Number(_w.price_base_usd) > 0))
+        await writeCell('01_Работы', r.code, 'Цена_база_USD', String(r.was).replace('.', ','));
       await writeCell('01_Работы', r.code, 'Цена_аллокация_USD', String(r.now).replace('.', ','));
       done++;
       if(btn) btn.textContent = 'Записываю… ' + done + ' из ' + plan.rows.length;
@@ -3871,6 +3951,10 @@ let DSC_BUSY = false;   /* замок от повторного входа: дв
 
 /* Скидку на договорные цены предлагает та сторона, которой сервер отдаёт
    разнесение (price_alloc_usd) — то есть заказчик. */
+/* Право назначать общую цену и разносить её по работам — у ОБЕИХ сторон
+   [решение Дмитрия «Оба», чат 110; работа B1 разбора 35]. До 112 блок видел
+   только заказчик, и бригадир не мог назвать свою цену внутри приложения. */
+const canAlloc = () => ['admin','owner','foreman'].includes(D.role);
 const dscCan = () => ['admin','owner'].includes(D.role);
 const dscRoomName = w => String((w && w.room) || '—').split(' (')[0];
 const dscNum = s => Number(String(s == null ? '' : s).replace(/[^0-9,.\-]/g, '').replace(',', '.')) || 0;
@@ -4561,6 +4645,7 @@ function patch(sheet, code, field, value){
     if(field === "Готовность_%")  w.progress = Number(value) || 0;
     if(field === "Цена_Юрия_USD") w.price_contractor_usd = value === "" ? null : Number(value);
     if(field === "Цена_аллокация_USD") w.price_alloc_usd = value === "" ? null : Number(value);
+    if(field === "Цена_база_USD")      w.price_base_usd  = value === "" ? null : Number(value);
     if(field === "Комментарий")   w.comment  = value;
     if(w.status === "Готово") w.progress = 100;
   }
@@ -4591,7 +4676,7 @@ async function disputeWork(code){ if(await upd("01_Работы", code, "Ста�
    от кода ноды нельзя. Порядок листов — как в ranges GET-ветки.
    ══════════════════════════════════════════════════════════════ */
 const OBJ_SHEETS = [
-  { sheet: "01_Работы", header: ["Код","Помещение","Раздел","Работа","Ед","Объём","Ставка_USD","Категория","Цена_аллокация_USD","Цена_Юрия_USD","Статус","Готовность_%","Обновлено","Комментарий","Источник","Примечание","Зависит_от","Длительность_дней"] },
+  { sheet: "01_Работы", header: ["Код","Помещение","Раздел","Работа","Ед","Объём","Ставка_USD","Категория","Цена_аллокация_USD","Цена_Юрия_USD","Статус","Готовность_%","Обновлено","Комментарий","Источник","Примечание","Зависит_от","Длительность_дней","Цена_база_USD"] },
   { sheet: "02_Допы", header: ["Код","Доп","Статус","Запрошено_сум","Оплачено_сум","Расчёт_USD","Расчёт_сум","Переплата_×","±","Компонент","Расчёт","Источник"] },
   { sheet: "03_Материалы", header: ["Материал","Ед","Куплено","Израсходовано","Остаток","Цена_за_ед_сум","Сумма_сум","Кто_купил","Чек","Источник"] },
   { sheet: "04_Платежи", header: ["Дата","Кому","Сумма","Валюта","Назначение","Подтверждение","Статус_сверки"] },
@@ -6271,6 +6356,21 @@ works(){
           <input type="number" min="0" value="${w.price_contractor_usd ?? ""}" placeholder="— впишите"
             onchange="upd('01_Работы','${w.code}','Цена_Юрия_USD',this.value)">
         </div>` : `
+        ${canAlloc() ? `
+        <div class="row">
+          <label>Цена по договору, $</label>
+          <input type="number" min="0" step="0.01" value="${w.price_alloc_usd ?? ""}" placeholder="— впишите"
+            onchange="upd('01_Работы','${w.code}','Цена_аллокация_USD',this.value)">
+        </div>
+        <div class="row">
+          <label>Базовая</label>
+          <div style="flex:1;font-size:13.5px;color:var(--hint)">
+            ${w.price_base_usd ? "$" + w.price_base_usd + (w.price_alloc_usd && Math.abs(w.price_base_usd - w.price_alloc_usd) >= 0.01
+              ? " · отклонение " + (w.price_alloc_usd > w.price_base_usd ? "+" : "−") + "$" + (Math.round(Math.abs(w.price_alloc_usd - w.price_base_usd) * 100) / 100) : "")
+              : "не задана"}
+            ${w.price_contractor_usd != null ? ` · Юрий: $${w.price_contractor_usd}` : ""}
+          </div>
+        </div>` : `
         <div class="row">
           <label>Оценка</label>
           <div style="flex:1;font-weight:600;font-size:14px">
@@ -6278,7 +6378,7 @@ works(){
             ${w.price_contractor_usd != null
               ? ` <span style="color:var(--hint);font-weight:400">· Юрий: $${w.price_contractor_usd}</span>` : ""}
           </div>
-        </div>`}
+        </div>`}`}
       </div>`).join("")}`;
 },
 
@@ -7135,7 +7235,7 @@ deal(){
       <div class="r"><span class="k">Выплачено</span><span class="v ok">${usd(paidSum())} $</span></div>
       <div class="r"><span class="k">Остаток</span><span class="v">${usd(dealRest())} $</span></div>
     </div>
-    ${D.role === "admin" || D.role === "owner" ? `
+    ${canAlloc() ? `
     <div class="card">
       <div class="lbl">Назначить сумму и разнести по работам</div>
       <div class="m" style="margin-bottom:8px">Цены работ изменятся пропорционально их нынешним долям, сумма сойдётся до цента. Принятые изменения считаются сверх этой суммы.</div>
@@ -7144,6 +7244,10 @@ deal(){
           style="flex:1;padding:10px;border-radius:10px;border:1px solid #3a3a3c;background:#000;color:#fff;font-size:15px">
         <button onclick="allocShow()" style="padding:10px 14px;border-radius:10px;border:0;background:#0a84ff;color:#fff;font-size:15px">Разнести</button>
       </div>
+      <div class="m" style="margin-top:10px">${allocUndoPlan().rows.length
+        ? ("Базовая сумма сметы: " + fmt(allocBaseSum()) + " $ — к ней вернёт отмена.")
+        : "Базовых цен пока нет — они появятся при сборке сметы или при первом разнесении."}</div>
+      ${allocUndoPlan().rows.length ? `<button onclick="allocUndoShow()" style="margin-top:8px;width:100%;padding:10px 14px;border-radius:10px;border:1px solid #3a3a3c;background:transparent;color:#fff;font-size:15px">↩︎ Отменить разнесение</button>` : ""}
     </div>` : ""}
     <div class="card">
       <div class="lbl">Входит в цену</div>
@@ -9893,6 +9997,17 @@ const UZ = {
 "Разнести":"Taqsimlash",
 "Разнесение суммы":"Summani taqsimlash",
 "Записать цены":"Narxlarni yozish",
+"↩︎ Отменить разнесение":"↩︎ Taqsimlashni bekor qilish",
+"Возврат к базовым ценам":"Asosiy narxlarga qaytish",
+"Вернуть базовые цены":"Asosiy narxlarni qaytarish",
+"Возвращаю…":"Qaytarayapman…",
+"Цены вернулись к базовым":"Narxlar asosiy qiymatlarga qaytdi",
+"Нечего возвращать: цены и так базовые":"Qaytaradigan narsa yo'q: narxlar allaqachon asosiy",
+"Нечего возвращать":"Qaytaradigan narsa yo'q",
+"Базовых цен пока нет — они появятся при сборке сметы или при первом разнесении":"Asosiy narxlar hali yo'q — ular smeta yig'ilganda yoki birinchi taqsimlashda paydo bo'ladi",
+"Цена по договору, $":"Shartnoma narxi, $",
+"Базовая":"Asosiy",
+"не задана":"belgilanmagan",
 "Записываю…":"Yozyapman…",
 "Введите сумму договора":"Shartnoma summasini kiriting",
 "В смете нет работ с ценой — сначала соберите смету":"Smetada narxli ish yo'q — avval smetani yig'ing",
@@ -10445,7 +10560,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "110.2";
+const BUILD = "112.1";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
