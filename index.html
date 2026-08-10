@@ -417,6 +417,8 @@ function renderInvite(s){
       (s.err ? '<div class="warnbox">' + esc(s.err) + '</div>' : "") +
       '<button class="tile pri" style="width:100%"' + (INV_BUSY ? " disabled" : "") + ' onclick="invCheck()"><span class="nm">' +
         (INV_BUSY ? "Проверяю…" : "Принять приглашение") + '</span></button>' +
+        /* Заказчик без объекта [чат 113]: без этой ветки новый человек упирался в экран ввода кода — кода у него нет и быть не может, а завести объект панель предлагала только тому, у кого уже есть роль owner. */
+        '<div class="stat" style="margin-top:12px"><div class="m">Кода нет, потому что объекта ещё нет? Если вы заказчик — заведите объект сами, приглашение для этого не нужно.</div>' + '<button onclick="go(\'newobj\')" style="width:100%;margin-top:10px;padding:11px;border-radius:11px;border:0;background:#2c2c2e;color:#fff;font-size:15px">➕ Завести объект</button>' + '</div>' +
       /* Отказ пришёл на код из ссылки [чат 089]. Причина названа выше, но
          тупика быть не должно: у знакомого аккаунта доступ есть и без этого
          приглашения — истёк код, не право. Кнопка ведёт в панель, и если
@@ -6103,7 +6105,7 @@ function objSelScreen(){
       : 'Если объекта нет в списке — откройте его ссылкой ещё раз: панель запомнит ключ и покажет его здесь.';
   return '<div class="hello">Выбор объекта</div>' +
     '<div class="sub">' + sub + '</div>' +
-    (rows || (nokey ? "" : '<div class="stat"><div class="m">Панель пока не знает ни одного ключа. Объект открывается ссылкой от бригадира или заводится на экране «Объект».</div></div>')) +
+    (rows || (nokey ? "" : '<div class="stat"><div class="m">Панель пока не знает ни одного ключа. Объект открывается ссылкой от бригадира — либо заведите свой.</div>' + '<button onclick="go(\'newobj\')" style="width:100%;margin-top:10px;padding:11px;border-radius:11px;border:0;background:#2c2c2e;color:#fff;font-size:15px">➕ Завести объект</button>' + '</div>')) +
     nokey +
     (OBJSRV.err ? '<div class="stat" style="margin-top:12px"><div class="m">Список с сервера не пришёл: ' + esc(OBJSRV.err) + '. Показаны объекты, которые панель помнит.</div></div>' : '') +
     '<div class="stat" style="margin-top:12px"><div class="m">' + note + '</div></div>';
