@@ -8015,6 +8015,8 @@ async function qzSay(){
   if(!q) return;
   if(!text){ toast("Скажите или впишите ответ", "wait"); return; }
   if(qzCommand(text)) return;
+  /* [чат 113] Перечень комнат разбираем на месте — см. roomsFromText. */
+  if(q && String(q.id) === "rooms:new"){ roomsFromText(text); return; }
   vMode = String(q.mode || "rooms");
   vQ = String(q.id || "");
   openVSheet('<div class="vh">Разбираю…</div><div class="vspin"></div>' +
@@ -8933,7 +8935,47 @@ async function vRetry(mode){
 }
 
 /* Показ распознанного. items===[] → выбраковка (ничего не поняли). */
+async function roomsFromText(src){
+  /* [чат 113] Перечень комнат заводится панелью напрямую: классификатор Голоса
+     ищет раздел работ и на списке названий бессилен (скрин Дмитрия 11.08 00:41).
+     Разбираем список здесь, показываем что поняли, и зовём ветку заведения. */
+  const parts = String(src||"").replace(/\n/g,",").split(/[,;]|\s+и\s+/)
+    .map(s=>s.replace(/^[\s.·-]+|[\s.·-]+$/g,"").trim())
+    .filter(s=>s.length>1 && !/^(это|ещё|еще|также|всё|все)$/i.test(s))
+    .map(s=>s.charAt(0).toUpperCase()+s.slice(1));
+  const uniq=[]; parts.forEach(s=>{ if(!uniq.some(x=>x.toLowerCase()===s.toLowerCase())) uniq.push(s); });
+  if(!uniq.length){ showVError("Не разобрал перечень комнат. Скажите их через запятую."); return; }
+  window.__ROOMS_PEND = uniq;
+  openVSheet('<div class="vh">Заведу помещения</div>'
+    + '<div class="vs">' + uniq.map(function(s){ return "• " + esc(s); }).join("<br>") + '</div>'
+    + '<div style="display:flex;gap:8px;margin-top:12px">'
+    + '<button class="tile" style="flex:1" onclick="closeVSheet()"><span class="nm">Отмена</span></button>'
+    + '<button class="tile pri" style="flex:1" onclick="roomsSend()"><span class="nm">Завести ' + uniq.length + '</span></button>'
+    + '</div>');
+}
+async function roomsSend(){
+  const names = window.__ROOMS_PEND || [];
+  if(!names.length) return;
+  openVSheet('<div class="vh">Завожу…</div><div class="vspin"></div>');
+  try{
+    const r = await fetch(API + "/rooms", { method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({ initData: INIT, key: KEY, names: names }) });
+    const raw = (await r.text()).trim();
+    let d=null; try{ d=JSON.parse(raw); }catch(e){}
+    if(!d || !d.ok){ showVError(d && d.error ? String(d.error) : "Сервер не завёл помещения. Попробуйте ещё раз."); return; }
+    const made = (d.rooms||[]).filter(function(x){ return x.created; }).length;
+    closeVSheet();
+    toast("Заведено помещений: " + made + " из " + (d.rooms||[]).length, "ok");
+    window.__ROOMS_PEND = null;
+    await load();
+  }catch(e){ showVError(e.message || "Нет связи с сервером"); }
+}
 function showVResult(d){
+  /* [чат 113] Ответ на вопрос состава помещений в классификатор не идёт. */
+  if(String(typeof vQ !== "undefined" ? vQ : "") === "rooms:new"){
+    const said = d && (d.recognized || d.text || "");
+    if(said){ roomsFromText(said); return; }
+  }
   /* Пустой разбор с ask — не тупик, а развилка: показать её раньше, чем ветки
      нарисуют своё «Не разобрал» [чат 030]. */
   if(d && d.ask && Array.isArray(d.options) && d.options.length){
