@@ -6458,8 +6458,8 @@ plan(){
                                   (Array.isArray(s.steps) ? s.steps : []).length).length;
 
   const sum = '<div class="stat"><span class="k">Этапов ' + stages.length +
-    ', занятых работой ' + busy + '</span><span class="v">' +
-    (total ? ('встречные шаги ' + done + ' из ' + total) : 'встречных шагов нет') + '</span></div>';
+    ' · занятых работой ' + busy +
+    (total ? (' · встречные шаги ' + done + ' из ' + total) : ' · встречных шагов нет') + '</span></div>';
 
   const DUTY = { 'заказчик':'#ff9500', 'спецмастер':'#5856d6', 'проектировщик':'#34c759', 'исполнитель':'#8e8e93' };
   const STC  = { 'сделан':'#34c759', 'не нужен':'#8e8e93', 'ожидает':'#ff9500' };
@@ -6497,21 +6497,22 @@ plan(){
       '<div class="h">' + (empty ? 'на этом объекте пусто' :
         ((works ? ('работ ' + works) : 'работ нет') +
          (steps.length ? (' · встречных ' + sdone + ' из ' + steps.length) : ''))) +
-        (s.src ? ' · лист ' + esc(String(s.src)) : '') + '</div></button>';
+        (s.src ? ' · ' + esc(String(s.src)) : '') + '</div></button>';
     if(!open || empty) return cap;
     const body = items.map(i => {
       const ws = Array.isArray(i.works) ? i.works : [];
       if(!ws.length) return '';
-      return '<div class="sub" style="margin:6px 0 2px">' + esc(String(i.title || i.kind || '')) + '</div>' +
+      return '<div class="sub" style="margin:6px 0 2px">' + esc(String(i.title || i.kind || '')) +
+             (i.gap ? ' <span style="color:#ff9500">· вида нет</span>' : '') + '</div>' +
              ws.map(workRow).join('');
     }).join('') + steps.map(stepRow).join('');
     return cap + '<div style="margin:0 0 10px 8px">' + (body || '<div class="sub">пусто</div>') + '</div>';
   };
 
   const tail = orphan.length
-    ? '<div class="hello" style="margin-top:14px">Вне хода работ</div>' +
+    ? '<div class="hello" style="margin-top:14px">Вне хода работ · ' + orphan.length + '</div>' +
       '<div class="stat"><span class="k">Эти работы сметы не попали ни в один этап шаблона — ' +
-      'они не потеряны, но их место в порядке пока не назначено.</span><span class="v">' + orphan.length + '</span></div>' +
+      'они не потеряны, но их место в порядке пока не назначено.</span></div>' +
       orphan.map(workRow).join('')
     : '';
 
@@ -11076,7 +11077,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "118.1";
+const BUILD = "118.2";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
