@@ -690,6 +690,92 @@ async function contractsLoad(force){
   CONTRACTS = (j && j.ok && Array.isArray(j.contracts)) ? j.contracts : [];
   return CONTRACTS;
 }
+
+/* ═══════════════════════════════════════════════════════════════════════
+   ХОД РАБОТ [чат 118, путь D разбора 38] — тракт к ветке POST /remont/plan.
+   Порядок работ принадлежит проекту, а не виду: этапы, привязки и зона
+   ответственности живут в шаблоне на сервере, панель их только показывает
+   и отмечает встречные шаги. Три режима ветки: view / apply / step.
+   ═══════════════════════════════════════════════════════════════════════ */
+let PLAN = null, PLAN_LOAD = false, PLAN_BUSY = false, PLAN_OPEN = {}, PLAN_ABSENT = false;
+
+async function planApi(body){
+  let r, txt;
+  try{
+    r = await fetch(API + '/plan', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(Object.assign({ initData: INIT, key: KEY }, body || {})) });
+    txt = (await r.text()).trim();
+  }catch(e){ return { ok: false, error: 'Нет связи с сервером — попробуйте ещё раз.' }; }
+  let j = null; try{ j = JSON.parse(txt); }catch(e){}
+  /* Ветки ещё нет — n8n отвечает не-JSON на незарегистрированный вебхук [096 · 097]. */
+  if(!j){ PLAN_ABSENT = true; return { ok: false, absent: true, error: 'Серверная часть хода работ ещё не выкачена' }; }
+  return j;
+}
+
+async function planFetch(){
+  const j = await planApi({ mode: 'view', object_id: D.object_id });
+  PLAN = (j && j.ok) ? j : { ok: false, error: (j && j.error) || 'ход работ недоступен' };
+  return PLAN;
+}
+
+/* Ленивая подгрузка при первом показе экрана — как у договора. */
+function planEnsure(){
+  if(PLAN !== null || PLAN_LOAD) return;
+  PLAN_LOAD = true;
+  planFetch().then(() => { PLAN_LOAD = false; render(); })
+             .catch(() => { PLAN_LOAD = false; PLAN = { ok:false, error:'ход работ недоступен' }; render(); });
+}
+
+async function openPlan(){
+  if(PLAN_LOAD) return;
+  PLAN_LOAD = true;
+  try{
+    toast('Загружаю ход работ…', 'wait');
+    await planFetch();
+    if(PLAN && PLAN.ok) toast('Готово'); else toast(String((PLAN && PLAN.error) || 'Не удалось загрузить'), 'err');
+  }catch(e){ toast('Не удалось загрузить ход работ', 'err'); }
+  finally{ PLAN_LOAD = false; }
+  if(stack[stack.length - 1] === 'plan') render(); else go('plan');
+}
+
+/* Разворот этапа — по тапу, состояние держится в панели: этапов 24,
+   разворачивать все сразу значит показать простыню на 288 строк. */
+function planToggle(no){ PLAN_OPEN[no] = !PLAN_OPEN[no]; render(); }
+
+/* Право отмечать проверяет сервер; панель прячет кнопки, чтобы не звать зря. */
+function planMayMark(){ return ['owner','foreman','admin'].includes(String((PLAN && PLAN.role) || D.role || '')); }
+
+/* Круг статусов встречного шага: ожидает → сделан → не нужен → ожидает.
+   Отметка обратима, поэтому подтверждения не спрашиваем — как у обмеров. */
+const PLAN_NEXT = { 'ожидает': 'сделан', 'сделан': 'не нужен', 'не нужен': 'ожидает' };
+async function planStep(id, was){
+  if(PLAN_BUSY) return;
+  PLAN_BUSY = true;
+  const to = PLAN_NEXT[String(was || 'ожидает')] || 'сделан';
+  try{
+    toast('Отмечаю…', 'wait');
+    const j = await planApi({ mode: 'step', step_id: id, status: to });
+    if(j && j.ok){ toast('Отмечено: ' + to); await planFetch(); render(); }
+    else toast(String((j && j.error) || 'Не удалось отметить'), 'err');
+  }catch(e){ toast('Не удалось отметить', 'err'); }
+  finally{ PLAN_BUSY = false; }
+}
+
+/* Применение шаблона — распорядительное действие, поэтому в два тапа. */
+let PLAN_ASK = false;
+function planAsk(){ PLAN_ASK = !PLAN_ASK; render(); }
+async function planApply(){
+  if(PLAN_BUSY) return;
+  PLAN_BUSY = true; PLAN_ASK = false;
+  try{
+    toast('Назначаю ход работ…', 'wait');
+    const j = await planApi({ mode: 'apply', object_id: D.object_id });
+    if(j && j.ok){ toast('Ход работ назначен'); await planFetch(); render(); }
+    else toast(String((j && j.error) || 'Не удалось назначить'), 'err');
+  }catch(e){ toast('Не удалось назначить', 'err'); }
+  finally{ PLAN_BUSY = false; }
+}
+
 /* Ленивая подгрузка при первом показе экрана: рисуем «загружаю», затем перерисовываем. */
 function contractsEnsure(){
   if(CONTRACTS !== null || CONTRACT_LOAD) return;
@@ -6338,6 +6424,100 @@ const SCREENS = {
 /* Мастер-опрос [чат 059]: экран целиком собирает модуль опроса. */
 quiz(){ return qzScreen(); },
 
+/* Ход работ [чат 118, путь D разбора 38]: этапы шаблона по порядку,
+   работы сметы внутри этапа, встречные шаги с отметкой. Порядок и зона
+   ответственности приходят с сервера готовыми — панель их не вычисляет. */
+plan(){
+  const head = '<div class="hello">Ход работ</div>';
+  if(PLAN === null){ planEnsure(); return head + '<div class="sub">Загружаю…</div>'; }
+  if(PLAN.absent || PLAN_ABSENT)
+    return head + '<div class="sub">серверная часть ещё не выкачена</div>';
+  if(!PLAN.ok)
+    return head + '<div class="sub">' + esc(String(PLAN.error || 'недоступно')) + '</div>';
+
+  /* Шаблон к объекту не применён: показываем, что это значит, и кнопку. */
+  if(PLAN.applied === false){
+    const may = planMayMark();
+    return head + '<div class="sub">ход работ для этого объекта не назначен</div>' +
+      '<div class="stat"><span class="k">Ход работ — это порядок этапов ремонта: что за чем идёт, ' +
+      'какие работы попадают в этап и какие встречные шаги нужны от заказчика. ' +
+      'Пока он не назначен, смета живёт без порядка.</span></div>' +
+      (may ? (PLAN_ASK
+        ? '<button class="tile" style="width:100%" onclick="planApply()"><span class="nm">Точно назначить ход работ</span>' +
+          '<div class="h">шаблон ZEM24 · 24 этапа</div></button>' +
+          '<button class="tile" style="width:100%" onclick="planAsk()"><span class="nm">Отмена</span></button>'
+        : '<button class="tile" style="width:100%" onclick="planAsk()"><span class="nm">Назначить ход работ</span>' +
+          '<div class="h">шаблон ZEM24 · 24 этапа</div></button>')
+        : '<div class="stat"><span class="k">Назначить ход работ может владелец объекта или бригадир.</span></div>');
+  }
+
+  const stages = Array.isArray(PLAN.stages) ? PLAN.stages : [];
+  const done = Number(PLAN.steps_done || 0), total = Number(PLAN.steps_total || 0);
+  const orphan = Array.isArray(PLAN.orphan_works) ? PLAN.orphan_works : [];
+  const busy = stages.filter(s => (Array.isArray(s.items) ? s.items : []).length ||
+                                  (Array.isArray(s.steps) ? s.steps : []).length).length;
+
+  const sum = '<div class="stat"><span class="k">Этапов ' + stages.length +
+    ', занятых работой ' + busy + '</span><span class="v">' +
+    (total ? ('встречные шаги ' + done + ' из ' + total) : 'встречных шагов нет') + '</span></div>';
+
+  const DUTY = { 'заказчик':'#ff9500', 'спецмастер':'#5856d6', 'проектировщик':'#34c759', 'исполнитель':'#8e8e93' };
+  const STC  = { 'сделан':'#34c759', 'не нужен':'#8e8e93', 'ожидает':'#ff9500' };
+  const may  = planMayMark();
+
+  const stepRow = (x) => {
+    const st = String(x.status || 'ожидает');
+    const cl = (st === 'сделан' || st === 'не нужен') ? ' done' : '';
+    const mark = may
+      ? '<button class="tile" style="padding:6px 10px;min-width:0" onclick="planStep(\'' + esc(String(x.id)) + '\',\'' + esc(st) + '\')">' +
+        '<span class="nm" style="font-size:13px">' + (st === 'ожидает' ? 'отметить' : st === 'сделан' ? 'не нужен' : 'вернуть') + '</span></button>'
+      : '';
+    return '<div class="work' + cl + '">' +
+      '<div class="t">' + esc(String(x.title || '')) +
+        ' <span style="font-size:12px;color:' + (DUTY[String(x.duty)] || '#8e8e93') + '">' + esc(String(x.duty || '')) + '</span></div>' +
+      '<div class="h"><span style="color:' + (STC[st] || '#8e8e93') + '">' + esc(st) + '</span>' +
+        (x.note ? ' · ' + esc(String(x.note)) : '') + '</div>' + mark + '</div>';
+  };
+
+  const workRow = (w) => '<div class="work' + (String(w.status||'') === 'принято' ? ' done' : '') + '">' +
+    '<div class="t">' + esc(String(w.title || w.code || '')) + '</div>' +
+    '<div class="h">' + esc(String(w.room || '')) + (w.status ? ' · ' + esc(String(w.status)) : '') +
+      (Number(w.pct) ? ' · ' + Number(w.pct) + '%' : '') + '</div></div>';
+
+  const stageBlock = (s) => {
+    const no = Number(s.no || 0);
+    const items = Array.isArray(s.items) ? s.items : [];
+    const steps = Array.isArray(s.steps) ? s.steps : [];
+    const works = items.reduce((a, i) => a + ((Array.isArray(i.works) ? i.works : []).length), 0);
+    const sdone = steps.filter(x => String(x.status||'') !== 'ожидает').length;
+    const empty = !works && !steps.length;
+    const open  = !!PLAN_OPEN[no];
+    const cap = '<button class="tile" style="width:100%;text-align:left" onclick="planToggle(' + no + ')">' +
+      '<span class="nm">' + no + '. ' + esc(String(s.title || '')) + '</span>' +
+      '<div class="h">' + (empty ? 'на этом объекте пусто' :
+        ((works ? ('работ ' + works) : 'работ нет') +
+         (steps.length ? (' · встречных ' + sdone + ' из ' + steps.length) : ''))) +
+        (s.src ? ' · лист ' + esc(String(s.src)) : '') + '</div></button>';
+    if(!open || empty) return cap;
+    const body = items.map(i => {
+      const ws = Array.isArray(i.works) ? i.works : [];
+      if(!ws.length) return '';
+      return '<div class="sub" style="margin:6px 0 2px">' + esc(String(i.title || i.kind || '')) + '</div>' +
+             ws.map(workRow).join('');
+    }).join('') + steps.map(stepRow).join('');
+    return cap + '<div style="margin:0 0 10px 8px">' + (body || '<div class="sub">пусто</div>') + '</div>';
+  };
+
+  const tail = orphan.length
+    ? '<div class="hello" style="margin-top:14px">Вне хода работ</div>' +
+      '<div class="stat"><span class="k">Эти работы сметы не попали ни в один этап шаблона — ' +
+      'они не потеряны, но их место в порядке пока не назначено.</span><span class="v">' + orphan.length + '</span></div>' +
+      orphan.map(workRow).join('')
+    : '';
+
+  return head + sum + stages.map(stageBlock).join('') + tail;
+},
+
 /* Заведение объекта [чат 077, G1 шаг 5]: форма и показ ключа. */
 newobj(){ return nobjScreen(); },
 
@@ -6513,6 +6693,9 @@ home(){
         <span class="nm">Точка<br>отсчёта</span>
         <div class="h">${refPending() ? (String(refPending().by||'') === String(D.who) ? 'ждёт вторую сторону' : 'ждёт вашего решения')
           : (refLive() ? ('зафиксирована ' + (refFixedAt(refLive()) || String(refLive().at||'')).slice(0,10)) : 'не зафиксирована')}</div></button>
+      <button class="tile" onclick="openPlan()"><span class="ic">📅</span>
+        <span class="nm">Ход работ</span>
+        <div class="h">этапы, порядок, встречные шаги</div></button>
       ${(D.kind === 'foreman' || D.role === 'foreman') ? `<button class="tile" onclick="openCrew()"><span class="ic">🛠️</span>
         <span class="nm">Бригада</span>
         <div class="h">работники и приглашения</div></button>` : ""}
@@ -10893,7 +11076,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "116.2";
+const BUILD = "118.1";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
