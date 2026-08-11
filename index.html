@@ -7241,7 +7241,7 @@ object(){
       gap.map(r => '<div onclick="objGoRoom(\'' + esc(r.code) + '\')" style="margin-top:6px;padding:8px 10px;border-radius:10px;background:rgba(255,255,255,.06);cursor:pointer">' +
         esc(String(r.name || r.code)) + ' · нужно: ' + roomGapOf(r).join(" и ") + '</div>').join("") +
       '<div style="margin-top:10px;display:flex;gap:8px">' +
-        '<button onclick="qzStart()" style="flex:1;padding:10px;border-radius:10px;border:0;background:#0a84ff;color:#fff;font-size:14px">Пройти вопросами</button>' +
+        '<button onclick="qzStart()" style="flex:1;padding:10px;border-radius:10px;border:0;background:#0a84ff;color:#fff;font-size:14px">Заполнить пробелы опросом</button>' +
         '<button onclick="startVoice(\'rooms\')" style="flex:1;padding:10px;border-radius:10px;border:1px solid #3a3a3c;background:#1c1c1e;color:#fff;font-size:14px">Продиктовать проёмы</button>' +
       '</div></div>') : "") +
     (() => {
@@ -8333,7 +8333,7 @@ function qzScreen(){
   const q = qzCur();
   const total = qzTotal();
   const later = Object.keys(QZ.later).length;
-  const head = '<div class="hello">Опрос</div>';
+  const head = '<div class="hello">Опрос · ' + esc(objNowTitle()) + '</div>';
 
   if(!q){
     return head + '<div class="sub">пройдено · дыр не осталось</div>' + qzSummaryHtml();
@@ -8414,9 +8414,16 @@ function qzScreen(){
       QZ.log.map(s => '<div class="m" style="margin-top:4px">· ' + esc(s) + "</div>").join("") + "</div>"
     : "";
 
-  return head +
-    '<div class="sub">вопрос ' + idx + " из " + total + (later ? (" · отложено " + later) : "") +
-      (room ? (" · " + esc(qzName(room))) : "") + "</div>" +
+  /* [чат 114.3, просьба Дмитрия на живом проходе] Шапка опроса липкая и НАЗЫВАЕТ
+     ОБЪЕКТ. Оба свойства из одного случая: список вопросов длинный, шапка уезжала
+     вверх, а объект в опросе не показывался нигде — и человек продиктовал обмеры
+     в пилот, думая, что работает в новом объекте. Экран «Объект» имя показывает
+     с 114.1, но в опросе человек проводит больше времени, чем на нём. */
+  return '<div style="position:sticky;top:0;z-index:50;background:#000;padding:8px 0 6px;margin:-4px 0 2px;box-shadow:0 8px 12px -10px rgba(0,0,0,.95)">' +
+      '<div class="hello" style="margin:0">Опрос · ' + esc(objNowTitle()) + '</div>' +
+      '<div class="sub" style="margin:2px 0 0">вопрос ' + idx + " из " + total + (later ? (" · отложено " + later) : "") +
+        (room ? (" · " + esc(qzName(room))) : "") + "</div>" +
+    "</div>" +
     '<div class="stat">' +
       (isLate ? '<div class="m" style="color:#ff9f0a">Возвращаюсь к отложенному</div>' : "") +
       '<div style="font-size:19px;line-height:1.35;margin:4px 0 6px">' + esc(q.text) + "</div>" +
@@ -9846,6 +9853,7 @@ const UZ = {
      надписи экрана. */
   "Опрос": "So'rov",
   "Пройти вопросами": "Savollar bo'yicha o'tish",
+  "Заполнить пробелы опросом": "Bo'shliqlarni so'rov bilan to'ldirish",
   "Пройти<br>вопросами": "Savollar<br>bo'yicha",
   "система спросит сама": "tizim o'zi so'raydi",
   "🧭 Пройти вопросами": "🧭 Savollar bo'yicha o'tish",
@@ -10812,7 +10820,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "114.2";
+const BUILD = "114.3";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
