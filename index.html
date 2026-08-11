@@ -7761,7 +7761,7 @@ const vsheet = document.getElementById("vsheet");
    цена перезапуска названа честно — отложенные вернутся раньше срока.
    ═════════════════════════════════════════════════════════════════ */
 
-let QZ = { on:false, pos:0, later:{}, log:[], ring:false, seenRing:{} };
+let QZ = { on:false, pos:0, later:{}, log:[], ring:false, seenRing:{}, hist:[], forced:null };
 
 const QZ_MAX_LOG = 12;
 
@@ -7959,6 +7959,9 @@ function qzList(){
 }
 
 function qzCur(){
+  /* [чат 116] Вопрос, к которому вернулись, лежит вне очереди: очередь держит
+     только незаполненное, а возвращаются как раз к отвеченному. */
+  if(QZ.forced) return QZ.forced;
   const l = qzList();
   if(!l.length) return null;
   if(QZ.pos >= l.length) QZ.pos = l.length - 1;
@@ -7974,7 +7977,7 @@ async function qzStart(){
     await loadCatalog();
   }catch(e){ /* без справочника опрос всё равно ведёт обмеры */ }
   if(typeof PROF !== "object" || !PROF || !PROF.plan) PROF = { room: null, plan: {} };
-  QZ = { on:true, pos:0, later:{}, log:[], ring:false, seenRing:{} };
+  QZ = { on:true, pos:0, later:{}, log:[], ring:false, seenRing:{}, hist:[], forced:null };
   qzSyncRoom();
   go("quiz");
 }
@@ -7987,14 +7990,30 @@ function qzSyncRoom(){
 }
 
 function qzNext(){
+  /* [чат 116] Выход из возврата очередь не двигает: человек вернулся посмотреть
+     или исправить и жмёт «Дальше» — он ждёт, что окажется там, где остановился,
+     а не перескочит вопрос. */
+  if(QZ.forced){ QZ.forced = null; qzSyncRoom(); render(); return; }
   const l = qzList();
   if(QZ.pos < l.length - 1){ QZ.pos++; qzSyncRoom(); render(); }
   else { QZ.pos = Math.max(0, l.length - 1); qzSyncRoom(); render(); }
 }
 function qzPrev(){
-  if(QZ.pos > 0){ QZ.pos--; qzSyncRoom(); render(); }
+  /* [чат 116] Отвеченный вопрос выпадает из очереди, позиция снова 0 — и прежнее
+     условие `QZ.pos > 0` не давало вернуться никогда после первого же ответа.
+     Шаг назад берётся из истории предъявленных вопросов. */
+  const h = QZ.hist || [];
+  const cur = qzCur();
+  let i = h.length;
+  if(cur){ for(let k = h.length - 1; k >= 0; k--){ if(h[k].id === cur.id){ i = k; break; } } }
+  if(i > 0){ QZ.forced = h[i - 1]; qzSyncRoom(); render(); return; }
+  if(!QZ.forced && QZ.pos > 0){ QZ.pos--; qzSyncRoom(); render(); return; }
+  toast("Это первый вопрос — назад некуда");
 }
 function qzLater(){
+  /* [чат 116] Отложить можно только незаданный вопрос: тот, к которому вернулись,
+     уже отвечен и в очереди его нет — откладывать там нечего. */
+  QZ.forced = null;
   const q = qzCur();
   if(!q) return;
   QZ.later[q.id] = 1;
@@ -8006,6 +8025,7 @@ function qzLater(){
   render();
 }
 function qzStop(){
+  QZ.forced = null;
   QZ.on = false;
   toast("Опрос закрыт — записанное сохранено");
   go("home");
@@ -8016,6 +8036,10 @@ function qzShort(q){
 }
 
 function qzNote(s){
+  /* [чат 116] Любая запись ответа выводит из режима возврата: человек исправил
+     значение и должен оказаться там, где остановился, а не залипнуть на старом
+     вопросе. Через qzNote проходят все пути записи и «Позже». */
+  QZ.forced = null;
   QZ.log.unshift(String(s));
   if(QZ.log.length > QZ_MAX_LOG) QZ.log.length = QZ_MAX_LOG;
 }
@@ -8331,6 +8355,13 @@ function qzAuto(){
 /* ── Экран опроса ─────────────────────────────────────────────── */
 function qzScreen(){
   const q = qzCur();
+  /* [чат 116] История предъявленных вопросов — то, по чему работает «Назад».
+     Пишется при показе: единой точки «ответ дан» в коде нет — ответ приходит
+     числом, парой ширина-высота, выбором и голосом. */
+  if(q && !QZ.forced){
+    const h = QZ.hist || (QZ.hist = []);
+    if(!h.length || h[h.length - 1].id !== q.id){ h.push(q); if(h.length > 40) h.shift(); }
+  }
   const total = qzTotal();
   const later = Object.keys(QZ.later).length;
   const head = '<div class="hello">Опрос · ' + esc(objNowTitle()) + '</div>';
@@ -8425,6 +8456,7 @@ function qzScreen(){
         (room ? (" · " + esc(qzName(room))) : "") + "</div>" +
     "</div>" +
     '<div class="stat">' +
+      (QZ.forced ? '<div class="m" style="color:#ff9f0a">Возврат к отвеченному — ответьте заново, чтобы заменить</div>' : "") +
       (isLate ? '<div class="m" style="color:#ff9f0a">Возвращаюсь к отложенному</div>' : "") +
       '<div style="font-size:19px;line-height:1.35;margin:4px 0 6px">' + esc(q.text) + "</div>" +
       (q.hint ? '<div class="m" style="opacity:.75">' + esc(q.hint) + "</div>" : "") +
@@ -9861,6 +9893,8 @@ const UZ = {
   "Записать": "Yozish",
   "Разобрать": "Tahlil qilish",
   "Назад": "Orqaga",
+  "Возврат к отвеченному — ответьте заново, чтобы заменить": "Javob berilganga qaytish — almashtirish uchun qayta javob bering",
+  "Это первый вопрос — назад некуда": "Bu birinchi savol — orqaga qaytadigan joy yo'q",
   "Позже": "Keyinroq",
   "Дальше": "Keyingi",
   "Хватит": "Yetarli",
@@ -10820,7 +10854,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "114.3";
+const BUILD = "116.1";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
