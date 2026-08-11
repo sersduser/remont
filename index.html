@@ -1062,7 +1062,40 @@ async function bookActive(code, on){
    на встрече пара проходит квартиру подряд, а смета собирается одним
    действием в конце — возврата к таблице между комнатами быть не должно.
    ══════════════════════════════════════════════════════════════ */
-let PROF = { room: null, plan: {} };   // текущее помещение и план по всем помещениям: plan[код помещения][код вида] = {vol, manual}
+let PROF = { room: null, plan: {} };
+
+/* [чат 116] План ремонта пережил бы разговор, но не переживал перезапуск: он
+   лежал только в памяти вкладки. Человек отвечал «что делаем в помещении», обновлял
+   приложение — и вопрос возвращался, потому что вопрос ставится по факту «работ и
+   отметок нет», а отметки жили в оперативной памяти. Храним по объекту: ключ доступа
+   в имени, иначе план одного объекта показался бы в другом. */
+const PLAN_LS = "REMONT_PLAN";
+let PLAN_RESTORED = 0;
+function planKey(){
+  try{ return PLAN_LS + "_" + String(KEY || localStorage.getItem(OBJK_LS) || "-").slice(-12); }
+  catch(e){ return PLAN_LS + "_-"; }
+}
+function planSave(){
+  try{
+    const p = (typeof PROF === "object" && PROF && PROF.plan) || null;
+    if(!p) return;
+    if(!Object.keys(p).length){ localStorage.removeItem(planKey()); return; }
+    localStorage.setItem(planKey(), JSON.stringify(p));
+  }catch(e){}
+}
+function planLoad(){
+  try{
+    const raw = localStorage.getItem(planKey());
+    if(!raw) return false;
+    const p = JSON.parse(raw);
+    if(!p || typeof p !== "object" || Array.isArray(p)) return false;
+    if(typeof PROF !== "object" || !PROF) PROF = { room: null, plan: {} };
+    /* Уже набранное в этой сессии главнее сохранённого: восстановление не должно
+       затирать то, что человек только что наговорил. */
+    Object.keys(p).forEach(rc => { if(!PROF.plan[rc]) PROF.plan[rc] = p[rc]; });
+    return true;
+  }catch(e){ return false; }
+}   // текущее помещение и план по всем помещениям: plan[код помещения][код вида] = {vol, manual}
 
 async function openProfile(){
   try{
@@ -6259,6 +6292,12 @@ async function mkObject(){
 }
 
 function render(toTop){
+  /* [чат 116] Восстановление — один раз, как только известен объект; сохранение —
+     при каждой перерисовке: она случается после любого изменения плана, и это
+     надёжнее, чем ловить семь мест правки поимённо. Порядок важен: сначала
+     восстановить, потом сохранять, иначе пустой план затёр бы сохранённый. */
+  if(!PLAN_RESTORED && KEY){ PLAN_RESTORED = 1; planLoad(); }
+  planSave();
   const k = stack[stack.length - 1];
   const keep = window.scrollY || 0;               // где человек стоял до перерисовки
   app.innerHTML = (SCREENS[k] || SCREENS.home)();
@@ -10854,7 +10893,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "116.1";
+const BUILD = "116.2";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
