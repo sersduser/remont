@@ -193,6 +193,14 @@ function objsActiveKey(){
 function objsSetActive(key){
   try{ key ? localStorage.setItem(OBJK_LS, key) : localStorage.removeItem(OBJK_LS); }catch(e){}
 }
+/* Название открытого объекта [чат 114, замечание Дмитрия: «догадываюсь, что
+   нахожусь в нужном объекте, но очевидного подтверждения не вижу»]. Источник —
+   тот же список участий, что и у переключателя: имя приходит с сервера и
+   главнее локального. Ключа нет (вход по подписи, объект один) — заголовок
+   остаётся прежним словом. */
+function objNowTitle(){
+  try{ return KEY ? objsTitle(KEY) : "Объект"; }catch(e){ return "Объект"; }
+}
 function objsTitle(key){
   const o = objsAll().find(x => x.key === key);
   const t = o && o.title ? String(o.title) : "";
@@ -1998,7 +2006,10 @@ const roomGap  = () => roomList().filter(r => roomGapOf(r).length);
    в объёмы работ. */
 /* ── Контур помещения [чат 092, шаг B'] ─────────────────────────────────────
    Показ обмерного контура из листа 06_Помещения (поле «Контур», формат разбора 22
-   §4: длины целыми сантиметрами, "L" у стороны, ПЕРЕД которой поворот налево).
+   §4: длины целыми сантиметрами, "L" у стороны, ПЕРЕД которой человек огибает
+   ВНУТРЕННИЙ УГОЛ — угол выступа. Формулировка «поворот налево» снята в 114
+   (не инвариантна направлению обхода: пойдёшь по комнате в другую сторону —
+   и все левые повороты станут правыми); формат хранения прежний, метка "L").
    Механика повторяет серверную (Голос, узел items 062-prod) шаг в шаг: те же
    направления обхода, тот же допуск замыкания, та же коррекция невязки и то же
    шнурование. Иначе панель показывала бы одну площадь, а сервер писал другую —
@@ -2036,7 +2047,15 @@ function ctrParse(raw){
   sides.forEach(function(s){ perim += s.len; if(s.left) L++; });
   out.perim = Math.round(perim * 100) / 100;
   if(sides.length - 2 * L !== 4){
-    out.err = "форма не замыкается: поворотов направо минус налево должно быть 4 (сторон " + sides.length + ", налево " + L + ")";
+    /* [чат 114] Отказ говорит человеку, что поправить, а не пересказывает
+       формулу. Отмеченных углов для замкнутого контура нужно ровно
+       (сторон − 4) / 2: у прямоугольника ноль, у Г-формы один. */
+    const needL = (sides.length - 4) / 2;
+    out.err = (sides.length % 2)
+      ? "сторон названо " + sides.length + " — нечётное число: контур из прямых углов так не замыкается, проверьте, не пропущена ли сторона"
+      : (L > needL
+         ? "внутренних углов отмечено " + L + ", а для " + sides.length + " сторон нужно " + needL + ": отмечайте только те углы, где стена выступает внутрь комнаты, — обычные углы отмечать не надо"
+         : "внутренних углов отмечено " + L + ", а для " + sides.length + " сторон нужно " + needL + ": похоже, какой-то выступ не отмечен");
     return out;
   }
   const DX = [1,0,-1,0], DY = [0,-1,0,1];
@@ -2141,7 +2160,7 @@ function ctrEdit(code, srcIdx){
     '<div style="background:#1c1c1e;color:#fff;border-radius:16px;padding:18px;max-width:420px;width:100%;font-size:15px">' +
       '<div style="font-weight:700;margin-bottom:8px">' + esc(r.name || r.code) + " · сторона " + was + " см</div>" +
       '<div style="opacity:.75;font-size:14px;margin-bottom:10px">Длина в сантиметрах' +
-        (s0.left ? " · перед этой стороной поворот налево" : "") + "</div>" +
+        (s0.left ? " · перед этой стороной — внутренний угол" : "") + "</div>" +
       '<input id="ctrIn" type="number" inputmode="decimal" value="' + was + '" style="width:100%;padding:11px;border-radius:10px;border:1px solid #3a3a3c;background:#000;color:#fff;font-size:16px;margin-bottom:10px">' +
       '<div id="ctrPrev" style="opacity:.85;font-size:14px;margin-bottom:12px;min-height:40px"></div>' +
       '<div style="display:flex;gap:8px">' +
@@ -6409,7 +6428,7 @@ home(){
 
   return `
     <div class="hello">${esc(D.who)}, добрый день</div>
-    <div class="sub">${new Date().toLocaleDateString("ru-RU",{day:"numeric",month:"long"})}</div>
+    <div class="sub">${new Date().toLocaleDateString("ru-RU",{day:"numeric",month:"long"})} · ${esc(objNowTitle())}</div>
     ${head}${cheki}
     <div class="grid">
       <button class="tile pri" onclick="startVoice()">
@@ -7200,8 +7219,12 @@ object(){
         '<div class="m" style="opacity:.55">Расположение придумано схемой: связи верны, география условна — плана квартиры мы не рисуем.</div>' +
       '</div>';
   return "" +
-    '<div class="hello">Объект</div>' +
-    '<div class="sub">' + rooms.length + " помещений" + (gap.length ? (" · в " + gap.length + " не заданы проёмы") : " · обмеры полны") + "</div>" +
+    '<div class="hello">' + esc(objNowTitle()) + '</div>' +
+    /* [чат 114] Пустой объект не бывает «полным по обмерам»: дыр нет потому,
+       что нет помещений. Формально верно, по смыслу — ложь. */
+    '<div class="sub">' + (rooms.length
+        ? (rooms.length + " помещений" + (gap.length ? (" · в " + gap.length + " не заданы проёмы") : " · обмеры полны"))
+        : "помещений нет — начните с опроса") + "</div>" +
     '<div class="grid">' +
       '<button class="tile pri" onclick="qzStart()"><span class="ic">🧭</span><span class="nm">Пройти<br>вопросами</span><div class="h">система спросит сама</div></button>' +
       '<button class="tile" onclick="startVoice(\'rooms\')"><span class="ic">🎤</span><span class="nm">Продиктовать<br>размеры</span><div class="h">пол, потолок, окна, двери</div></button>' +
@@ -7807,8 +7830,8 @@ function qzQueue(){
     if(qzNeed(r.floor_m2) && qzNeed(r.perimeter_m)){
       out.push({
         id: "contour:" + rc, room: rc, mode: "rooms", input: "voice",
-        text: "Мы в помещении «" + rn + "». Пройдём по полу от двери: диктуйте длину каждой стены в сантиметрах, а где стена поворачивает налево — так и скажите: «поворот налево»",
-        hint: "Прямоугольная комната — достаточно двух сторон: «пять двадцать на три семнадцать»"
+        text: "Мы в помещении «" + rn + "». Пройдём по полу от двери: диктуйте длину каждой стены в сантиметрах, а где огибаете внутренний угол — так и скажите: «огибаю внутренний угол»",
+        hint: "Прямоугольная комната — достаточно двух сторон: «пять двадцать на три семнадцать». Отмечать нужно только угол выступа — обычные углы комнаты не называйте"
       });
     }
     if(qzNeed(r.height_m)){
@@ -9249,7 +9272,10 @@ function showVRooms(d){
   }).join("");
   openVSheet(`
     <div class="vh">Обмеры помещений</div>
-    <div class="vs">${!selN ? "Нового в сказанном нет: всё это уже записано так. Отметьте строку, если нужно заменить." : (conflicts ? "Отмеченное запишу. Значения, которые уже стояли, не отмечены — подтвердите замену вручную." : "Проверьте и подтвердите — запишу в профиль объекта.")}</div>
+    <div class="vs">${!pickN ? "Нового в сказанном нет: всё это уже записано так."
+      : (!selN ? "Сказанное расходится с записанным — заранее ничего не отмечено. Коснитесь строк, которые нужно заменить."
+      : (conflicts ? "Отмеченное запишу. Значения, которые уже стояли, не отмечены — подтвердите замену вручную."
+      : "Проверьте и подтвердите — запишу в профиль объекта."))}</div>
     ${quote}
     ${selN ? '<div class="vfilter"><button onclick="vSelOnly(this)">Только отмеченные</button></div>' : ""}
     <div id="vlist">${rows}</div>
@@ -9412,7 +9438,11 @@ function showVRepair(d){
   }).join("");
   openVSheet(`
     <div class="vh">Работы по помещениям</div>
-    <div class="vs">${!repSelN ? "Нового в сказанном нет: эти виды уже стоят в смете. Отметьте строку, если нужно записать заново." : "Отмеченное перенесу в профиль ремонта: объём посчитается из обмеров, а смета соберётся кнопкой «Добавить в смету»."}</div>
+    <div class="vs">${!repSelN
+      ? (vRep.some(r => !r.isNew && (r.kinds || []).length)
+          ? "Нового в сказанном нет: эти виды уже стоят в смете. Отметьте строку, если нужно записать заново."
+          : "Помещений из сказанного в объекте нет — заведите их на экране «Объект», тогда объёмы посчитаются из обмеров.")
+      : "Отмеченное перенесу в профиль ремонта: объём посчитается из обмеров, а смета соберётся кнопкой «Добавить в смету»."}</div>
     ${quote}
     ${repSelN ? '<div class="vfilter"><button onclick="vSelOnly(this)">Только отмеченные</button></div>' : ""}
     <div id="vlist">${rows}</div>
@@ -9864,6 +9894,9 @@ const UZ = {
 "не трогаем":"tegmaymiz","заменить":"almashtirish","демонтировать":"demontaj","заложить":"berkitish","пробить":"ochish","перенести":"ko'chirish","установить":"o'rnatish",
 "Нечего строить: нет ни смежности, ни проёмов":"Tuzadigan narsa yo'q: na qo'shnilik, na ochiqlar bor",
 "Проёмы этого помещения не заведены":"Bu xonaning ochiqlari kiritilmagan",
+"Нового в сказанном нет: всё это уже записано так.":"Aytilganda yangilik yo'q: bularning hammasi shunday yozilgan.",
+"Сказанное расходится с записанным — заранее ничего не отмечено. Коснитесь строк, которые нужно заменить.":"Aytilgan yozilgandan farq qiladi — oldindan hech narsa belgilanmagan. Almashtirish kerak bo'lgan qatorlarga tegining.",
+"Помещений из сказанного в объекте нет — заведите их на экране «Объект», тогда объёмы посчитаются из обмеров.":"Aytilgan xonalar obyektda yo'q — ularni «Obyekt» ekranida kiriting, shunda hajmlar o'lchamlardan hisoblanadi.",
 "улица":"ko'cha","подъезд":"podezd",
 "на плане дверь":"rejada eshik","на плане окно":"rejada deraza","на плане проём":"rejada ochiq","на плане нет":"rejada yo'q",
 "сумма договора, $":"shartnoma summasi, $",
@@ -10502,6 +10535,7 @@ const UZ_RULES = [
   [/^(−?[\d\s .,]+) \$ к договору · работ: (\d+)$/, "shartnomaga $1 $ · ish: $2"],
   [/^(\d+) помещений · в (\d+) не заданы проёмы$/, "$1 xona · $2 tasida ochiqliklar berilmagan"],
   [/^(\d+) помещений · обмеры полны$/, "$1 xona · o'lchamlar to'liq"],
+  [/^помещений нет — начните с опроса$/, "xona yo'q — so'rovdan boshlang"],
   [/^нужно: окна и двери$/, "kerak: derazalar va eshiklar"],
   [/^нужно: окна$/, "kerak: derazalar"],
   [/^нужно: двери$/, "kerak: eshiklar"],
@@ -10777,7 +10811,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "113.2";
+const BUILD = "114.1";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
