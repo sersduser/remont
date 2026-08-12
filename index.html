@@ -19,6 +19,17 @@
 body{background:var(--bg);color:var(--txt);font:15px/1.5 -apple-system,"Segoe UI",Roboto,sans-serif;
   padding:calc(14px + var(--tg-safe-area-inset-top,0px) + var(--tg-content-safe-area-inset-top,0px)) 14px 40px;overscroll-behavior-y:contain}
 
+/* Полоса объекта [указание Дмитрия 12.08, чат 126]: не уезжает при
+   прокрутке. Отрицательные поля вытягивают её на всю ширину поверх
+   бокового padding body, sticky держит у верхнего края. Слой ниже
+   модальных окон (у них z-index от 9997) и выше содержимого. */
+.objbar{position:sticky;top:0;z-index:60;display:flex;align-items:center;gap:10px;
+  margin:calc(-14px - var(--tg-safe-area-inset-top,0px) - var(--tg-content-safe-area-inset-top,0px)) -14px 12px;
+  padding:9px 14px;background:rgba(28,28,30,.97);border-bottom:1px solid rgba(255,255,255,.09);cursor:pointer}
+.objbar .ob-t{font-size:14.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.objbar .ob-s{font-size:11.5px;color:var(--hint);margin-top:1px}
+.objbar .ob-b{margin-left:auto;flex:0 0 auto;font-size:13px;padding:7px 11px;border-radius:9px;
+  background:#2c2c2e;color:#fff;white-space:nowrap}
 .hello{font-size:19px;font-weight:600}
 .sub{font-size:12px;color:var(--hint);margin-bottom:14px}
 
@@ -150,6 +161,7 @@ input[type=number]{text-align:center}
 </head>
 <body>
 
+<div id="objbar" class="objbar" onclick="objBarTap()" style="display:none"></div>
 <div id="app"><div class="load">Загружаю…</div></div>
 <div class="toast" id="toast"></div>
 
@@ -6808,6 +6820,44 @@ async function mkObject(){
   NOBJ.busy = false; render();
 }
 
+/* ── Полоса объекта [указание Дмитрия 12.08, чат 126] ───────────────────────
+   Объект — определяющая опция для всех экранов: цифры сметы, работ, сроков и
+   договора принадлежат тому объекту, который открыт сейчас. До 126.2 это было
+   видно только на «Объекте» и только при нескольких объектах — здесь полоса
+   говорит это всегда и с любого экрана.
+
+   Рисуется отдельно от render(): содержимое #app переписывается при каждой
+   перерисовке, а полоса — только когда меняется то, что на ней написано. */
+function objBarDraw(){
+  const el = document.getElementById('objbar');
+  if(!el) return;
+  const scr = stack[stack.length - 1];
+  const known = !!(KEY || (D && D.title));
+  /* На самом экране выбора полоса не нужна: она вела бы туда, где человек уже
+     стоит. И до первой загрузки её показывать нечего. */
+  if(!known || scr === 'objsel'){ el.style.display = 'none'; return; }
+  const title = String((D && D.title) || objNowTitle() || 'Объект');
+  const roleK = String((D && (D.kind || D.role)) || '');
+  const role  = OBJ_ROLE_RU[roleK] || '';
+  const n = objsAll().length + ((OBJSRV && OBJSRV.nokey) ? OBJSRV.nokey.length : 0);
+  const html =
+    '<div style="min-width:0;flex:1 1 auto">' +
+      '<div class="ob-t">🏠 ' + esc(title) + '</div>' +
+      '<div class="ob-s">' + (role ? esc(role) : 'объект') +
+        (n > 1 ? (' · объектов ' + n) : '') + '</div>' +
+    '</div>' +
+    '<div class="ob-b">' + (n > 1 ? 'Сменить' : 'Мои объекты') + '</div>';
+  if(el.getAttribute('data-h') !== html){ el.innerHTML = html; el.setAttribute('data-h', html); }
+  el.style.display = 'flex';
+  if(typeof uzApply === 'function') uzApply(el);
+}
+
+function objBarTap(){
+  const scr = stack[stack.length - 1];
+  if(scr === 'objsel') return;
+  go('objsel');
+}
+
 function render(toTop){
   /* [чат 116] Восстановление — один раз, как только известен объект; сохранение —
      при каждой перерисовке: она случается после любого изменения плана, и это
@@ -6820,6 +6870,7 @@ function render(toTop){
   const keep = window.scrollY || 0;               // где человек стоял до перерисовки
   app.innerHTML = (SCREENS[k] || SCREENS.home)();
   uzApply(app);                                   // языковой слой E1 [чат 020]
+  objBarDraw();                                   // полоса объекта [чат 126]
   if(k === "object" && objPlan()) setTimeout(objShowPlan, 0);   // картинка плана грузится отдельным запросом [чат 016]
   /* Переход (toTop) открывает экран там, где его оставили в прошлый раз;
      перерисовка от данных не двигает страницу вовсе. Восстановление отложено
@@ -11565,7 +11616,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "126.1";
+const BUILD = "126.2";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
