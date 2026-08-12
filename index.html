@@ -1161,6 +1161,65 @@ function planKey(){
   try{ return PLAN_LS + "_" + String(KEY || localStorage.getItem(OBJK_LS) || "-").slice(-12); }
   catch(e){ return PLAN_LS + "_-"; }
 }
+
+/* ── Профиль ремонта на сервере [чат 119, слот 2 смены 12.08] ───────────────
+   Профиль («что делаем в помещении») жил только в localStorage телефона: с
+   другого устройства его не было, вторая сторона не видела вовсе. Теперь он
+   живёт в базе (object_profiles, ветка POST /remont/profile), а localStorage
+   остаётся запасным — сеть может молчать, а набор идти.
+   Право писать — владелец и бригадир; работнику сервер ответит 403, и это не
+   должно ломать ему экран: отказ гасится молча, локальная копия продолжает жить.
+   Набранное в этой сессии главнее серверного — то же правило, что и с
+   localStorage (чат 116): восстановление не затирает сказанное только что. */
+let PROF_PULLED = 0, PROF_PUSH_T = null, PROF_PUSH_LAST = "", PROF_SRV = null;
+
+async function profileApi(body){
+  let r, txt;
+  try{
+    r = await fetch(API + '/profile', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(Object.assign({ initData: INIT, key: KEY }, body || {})) });
+    txt = (await r.text()).trim();
+  }catch(e){ return { ok: false, error: 'нет связи' }; }
+  let j = null; try{ j = JSON.parse(txt); }catch(e){}
+  /* Ветки ещё нет — n8n отвечает не-JSON на незарегистрированный вебхук [096 · 097]. */
+  if(!j) return { ok: false, absent: true, error: 'серверная часть профиля ещё не выкачена' };
+  return j;
+}
+
+async function profilePull(){
+  try{
+    if(PROF_PULLED) return false;
+    if(typeof D !== 'object' || !D || !D.object_id) return false;
+    PROF_PULLED = 1;
+    const j = await profileApi({ mode: 'get', object_id: D.object_id });
+    if(!j || !j.ok) return false;
+    const p = j.plan;
+    if(!p || typeof p !== 'object' || Array.isArray(p)) return false;
+    PROF_SRV = j.updated_at || null;
+    if(typeof PROF !== 'object' || !PROF) PROF = { room: null, plan: {} };
+    if(!PROF.plan || typeof PROF.plan !== 'object') PROF.plan = {};
+    Object.keys(p).forEach(function(rc){ if(!PROF.plan[rc]) PROF.plan[rc] = p[rc]; });
+    PROF_PUSH_LAST = JSON.stringify(PROF.plan || {});
+    if(typeof render === 'function') render();
+    return true;
+  }catch(e){ return false; }
+}
+
+function profilePushSoon(){
+  try{
+    if(typeof D !== 'object' || !D || !D.object_id) return;
+    const s = JSON.stringify((typeof PROF === 'object' && PROF && PROF.plan) || {});
+    if(s === PROF_PUSH_LAST) return;           /* перерисовка без изменений сеть не трогает */
+    PROF_PUSH_LAST = s;
+    if(PROF_PUSH_T) clearTimeout(PROF_PUSH_T);
+    PROF_PUSH_T = setTimeout(function(){
+      PROF_PUSH_T = null;
+      profileApi({ mode: 'set', object_id: D.object_id, plan: s }).then(function(j){
+        if(j && j.ok) PROF_SRV = j.updated_at || PROF_SRV;
+      }).catch(function(){});
+    }, 1500);
+  }catch(e){}
+}
 function planSave(){
   try{
     const p = (typeof PROF === "object" && PROF && PROF.plan) || null;
@@ -1188,6 +1247,7 @@ async function openProfile(){
     if(!D.catalog) toast('Загружаю справочник…');
     await loadCatalog();
     PROF = { room: null, plan: {} };
+    PROF_PULLED = 0; profilePull();               /* [119] профиль с сервера, поверх локального */
     go('profile');
   }catch(e){ toast(e.message, 'err'); }
 }
@@ -6384,6 +6444,7 @@ function render(toTop){
      восстановить, потом сохранять, иначе пустой план затёр бы сохранённый. */
   if(!PLAN_RESTORED && KEY){ PLAN_RESTORED = 1; planLoad(); }
   planSave();
+  profilePushSoon();                              /* [119] и на сервер, с задержкой */
   const k = stack[stack.length - 1];
   const keep = window.scrollY || 0;               // где человек стоял до перерисовки
   app.innerHTML = (SCREENS[k] || SCREENS.home)();
@@ -11077,7 +11138,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "118.2";
+const BUILD = "119.1";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
