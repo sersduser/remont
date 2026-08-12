@@ -1105,7 +1105,25 @@ function contractFileShow(doc, id){
   document.body.appendChild(box);
   if(typeof uzApply === 'function') uzApply(box);
   const fr = box.querySelector('#dfFrame');
-  fr.setAttribute('srcdoc', doc.html);
+  /* Экранный слой поверх печатной формы [дефект 3 очереди 125]. Документ
+     собран для бумаги: семь колонок и nowrap у чисел дают 573 px при окне
+     390 px, и две правые колонки на телефоне выглядят потерянными. Слой
+     помечен media="screen" — на печать и на PDF он не влияет ничем,
+     то есть бумажный вид документа остаётся ровно тем, о котором стороны
+     договорились. */
+  const SCREEN_FIX = '<style media="screen">@media (max-width:640px){' +
+    'body{padding:10px}' +
+    'table{font-size:11px;table-layout:auto;width:100%}' +
+    'th,td{padding:3px 4px;word-break:break-word}' +
+    'td.r,th.r,td.c,th.c{white-space:normal}' +
+    'td.n{width:20px}' +
+    '.pbtn{display:none}' +
+    '.grid{gap:10px}.card{flex:1 1 100%}' +
+  '}</style>';
+  const docHtml = String(doc.html || '');
+  fr.setAttribute('srcdoc', docHtml.indexOf('</head>') >= 0
+    ? docHtml.replace('</head>', SCREEN_FIX + '</head>')
+    : (SCREEN_FIX + docHtml));
   box.querySelector('#dfClose').onclick = () => box.remove();
 
   /* Печать и скачивание в мобильном Telegram не работают вовсе [наблюдение 124,
@@ -11326,7 +11344,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "125.3";
+const BUILD = "125.4";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
