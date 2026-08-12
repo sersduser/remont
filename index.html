@@ -14,22 +14,29 @@
   --btn:  var(--tg-theme-button-color, #5288c1);
   --btxt: var(--tg-theme-button-text-color, #ffffff);
   --ok:#4dcd5e; --warn:#f5a623; --bad:#e5484d; --link:#6ab3f3;
+  /* Верхний запас [чат 128]. Меньше максимума брать нельзя: viewport-fit=cover
+     велит клиенту рисовать контент ПОД строкой статуса и шапкой Telegram, и кто
+     именно сообщит размер этой зоны — браузер через env() или клиент через свои
+     переменные — зависит от версии Telegram. До 128 учитывались только
+     телеграмовские, и там, где их нет, верх экрана уезжал под системную строку. */
+  --top-inset: max(env(safe-area-inset-top, 0px), var(--tg-safe-area-inset-top, 0px), var(--tg-content-safe-area-inset-top, 0px));
 }
 *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
 body{background:var(--bg);color:var(--txt);font:15px/1.5 -apple-system,"Segoe UI",Roboto,sans-serif;
-  padding:calc(14px + var(--tg-safe-area-inset-top,0px) + var(--tg-content-safe-area-inset-top,0px)) 14px 40px;overscroll-behavior-y:contain}
+  padding:calc(14px + var(--top-inset)) 14px 40px;overscroll-behavior-y:contain}
 
 /* Полоса объекта [указание Дмитрия 12.08, чат 126]: не уезжает при
    прокрутке. Отрицательные поля вытягивают её на всю ширину поверх
    бокового padding body, sticky держит у верхнего края. Слой ниже
    модальных окон (у них z-index от 9997) и выше содержимого. */
-.objbar{position:sticky;top:0;z-index:60;display:flex;align-items:center;gap:10px;
-  margin:calc(-14px - var(--tg-safe-area-inset-top,0px) - var(--tg-content-safe-area-inset-top,0px)) -14px 12px;
-  padding:9px 14px;background:rgba(28,28,30,.97);border-bottom:1px solid rgba(255,255,255,.09);cursor:pointer}
+.objbar{position:sticky;top:var(--top-inset);z-index:60;display:flex;align-items:center;gap:10px;
+  margin:-14px -14px 12px;
+  padding:10px 14px;background:rgba(28,28,30,.97);border-bottom:1px solid rgba(255,255,255,.09);cursor:pointer}
 .objbar .ob-t{font-size:14.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .objbar .ob-s{font-size:11.5px;color:var(--hint);margin-top:1px}
-.objbar .ob-b{margin-left:auto;flex:0 0 auto;font-size:13px;padding:7px 11px;border-radius:9px;
-  background:#2c2c2e;color:#fff;white-space:nowrap}
+.objbar .ob-b{margin-left:auto;flex:0 0 auto;font-size:13.5px;padding:11px 15px;border-radius:10px;
+  min-height:40px;display:flex;align-items:center;background:#3a3a3c;color:#fff;white-space:nowrap;
+  touch-action:manipulation}
 .hello{font-size:19px;font-weight:600}
 .sub{font-size:12px;color:var(--hint);margin-bottom:14px}
 
@@ -185,6 +192,29 @@ const API = "https://n8n.nc-lab.uz/webhook/remont";
    период и для отладки в обычном браузере (вне Telegram initData недоступен).   */
 const tg = window.Telegram?.WebApp;
 if (tg) { tg.ready(); tg.expand(); }
+
+/* Безопасная зона сверху [чат 128, по скрину Дмитрия 23:46].
+   Клиенты Bot API 8.0 отдают safeAreaInset / contentSafeAreaInset объектами, но
+   CSS-переменные при этом выставляют не все сборки. Пишем их сами и обновляем по
+   событиям: иначе верх экрана рисуется под строкой статуса, полоса объекта
+   становится нечитаемой, а кнопка «Сменить» попадает под шапку Telegram —
+   нажатие уходит клиенту, а не панели. */
+function safeTop(){
+  try{
+    const a = (tg && tg.safeAreaInset && tg.safeAreaInset.top) || 0;
+    const b = (tg && tg.contentSafeAreaInset && tg.contentSafeAreaInset.top) || 0;
+    const r = document.documentElement.style;
+    if (a) r.setProperty('--tg-safe-area-inset-top', a + 'px');
+    if (b) r.setProperty('--tg-content-safe-area-inset-top', b + 'px');
+  }catch(e){}
+}
+safeTop();
+try{
+  tg?.onEvent?.('safeAreaChanged', safeTop);
+  tg?.onEvent?.('contentSafeAreaChanged', safeTop);
+  tg?.onEvent?.('viewportChanged', safeTop);
+  tg?.onEvent?.('fullscreenChanged', safeTop);
+}catch(e){}
 
 const INIT = (tg && tg.initData) || "";                              // подписанные данные Telegram
 /* Ключ объекта [чат 091, D4]. До 091 KEY был константой из ?key= и при работе
@@ -11814,7 +11844,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "127.1";
+const BUILD = "128.1";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
