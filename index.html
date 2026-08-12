@@ -280,6 +280,20 @@ async function objsrvLoad(){
    локального списка сразу, ответ ветки лишь дополняет его. Своего try/catch
    здесь мало не бывает — общего обработчика отказов у панели нет, и
    непойманный 404 уронил бы отрисовку экрана (проверено чтением, 095). */
+let OBJS_RESCUE = false;
+
+/* [124] Тот же запрос, что objsrvKick, но для главного экрана: перерисовывает
+   не экран выбора, а текущий — и только когда список объектов реально вырос. */
+function objsrvKickHome(){
+  if(OBJSRV.state !== "idle") return;
+  if(!INIT){ OBJSRV.state = "nosign"; return; }
+  OBJSRV.state = "load";
+  const was = objsAll().length;
+  objsrvLoad()
+    .catch(function(e){ OBJSRV.state = "done"; OBJSRV.err = "нет связи с сервером"; })
+    .then(function(){ if(objsAll().length !== was) render(); });
+}
+
 function objsrvKick(){
   if(OBJSRV.state !== "idle") return;
   if(!INIT){ OBJSRV.state = "nosign"; return; }   /* ветка живёт только с подписью */
@@ -366,6 +380,12 @@ async function load(){
     if(D && D.need_setup){ renderSetup(D); return; }
     if(!D || !D.role) throw new Error(BAD);
     render();
+    /* [124] Серверный список объектов запрашивался ТОЛЬКО при открытии экрана
+       выбора, а сам экран открывался только если панель уже знала больше одного
+       объекта — замкнутый круг: заказчик с тремя объектами видел один и не мог
+       переключиться. Спрашиваем при старте; перерисовываем, только если список
+       вырос, чтобы не дёргать экран зря. */
+    if(INIT) objsrvKickHome();
     _sig = _snapshot(D);
     langInit();                   // язык: выбор человека → 09_Доступы → Telegram [чат 020]            // калибровка живого обновления
     /* Работник живёт данными контура бригады — тянем их при каждой полной
@@ -374,7 +394,23 @@ async function load(){
   }catch(e){
     /* Незнакомый Telegram — возможно, это работник с приглашением [чат 012]:
        вместо тупика показываем экран регистрации по коду. */
-    if(INIT && /не подтверждён/.test(String(e.message || ""))){ renderInvite(); return; }
+    /* [124] Прежде здесь был тупик: человек без ключа В ЭТОЙ панели видел экран
+       приглашения, даже когда на сервере у него есть объект с активным ключом —
+       так 12.08 бригадир Суботин не мог войти вовсе, хотя участие и ключ были
+       живы. Ветка /objects знает участия по подписи: спрашиваем её ДО того, как
+       объявить человека чужим, и открываем его объект, если он есть. Замок
+       OBJS_RESCUE держит одну попытку: load() зовётся из двух десятков мест. */
+    if(INIT && /не подтверждён/.test(String(e.message || ""))){
+      if(!OBJS_RESCUE){
+        OBJS_RESCUE = true;
+        try{
+          await objsrvLoad();
+          const mine = objsAll();
+          if(mine.length){ objsSwitch(mine[0].key); return; }
+        }catch(_e){}
+      }
+      renderInvite(); return;
+    }
     app.innerHTML = `<div class="err"><b>Не удалось загрузить.</b><br>${e.message}
       <br><br><span style="color:var(--hint);font-size:13px">Проверьте интернет и откройте ещё раз.</span></div>`;
   }
@@ -11192,7 +11228,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "120.1";
+const BUILD = "124.1";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
