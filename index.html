@@ -10555,6 +10555,10 @@ function showVRooms(d){
   const pickN = vRooms.reduce((s, r) => s
     + r.fields.length
     + (r.elems || []).filter(e => !e.unknown && !e.many).length, 0);
+  /* [чат 132, Д-129-7] Сколько полей совпало с записанным. Сервер отдаёт их
+     полем matched: прежде он выбрасывал такое помещение целиком, и панель
+     показывала «Не разобрал» на фразу, понятую до последней цифры. */
+  const matchedN = vRooms.reduce((s, r) => s + (r.matched || []).length, 0);
   const rows = vRooms.map((r, i) => {
     const head = `<div class="vt">${esc(r.name || "помещение")}${r.isNew ? ' <span style="color:#ff9f0a">· новое</span>' : ""}</div>`;
     const fl = r.fields.map((f, j) => `
@@ -10589,11 +10593,22 @@ function showVRooms(d){
       </div>`;
     }).join("");
     const elHead = (r.elems || []).length ? '<div class="vd" style="margin:6px 0 2px">Проёмы</div>' : "";
-    return `<div style="margin-bottom:10px">${head}${fl}${elHead}${el}</div>`;
+    /* [132] Совпавшее показывается без галочки: отмечать нечего, но человек
+       обязан видеть, что его слова услышаны и сверены. Молчание в ответ на
+       верно понятую фразу читается как отказ разбора (Д-129-7). */
+    const mt = (r.matched || []).map(m => `
+      <div class="vitem" style="opacity:.8">
+        <div class="vchk" style="opacity:.35">=</div>
+        <div style="flex:1;min-width:0">
+          <div class="vv">${esc(m.label)}: <b>${esc(String(m.now))}</b> <span style="color:#30d158">· уже записано так</span></div>
+        </div>
+      </div>`).join("");
+    const mtHead = (r.matched || []).length ? '<div class="vd" style="margin:6px 0 2px">Сверено — совпало</div>' : "";
+    return `<div style="margin-bottom:10px">${head}${fl}${mtHead}${mt}${elHead}${el}</div>`;
   }).join("");
   openVSheet(`
     <div class="vh">Обмеры помещений</div>
-    <div class="vs">${!pickN ? "Нового в сказанном нет: всё это уже записано так."
+    <div class="vs">${!pickN ? (matchedN ? "Сверил: сказанное совпало с записанным до последней цифры — менять нечего." : "Нового в сказанном нет: всё это уже записано так.")
       : (!selN ? "Сказанное расходится с записанным — заранее ничего не отмечено. Коснитесь строк, которые нужно заменить."
       : (conflicts ? "Отмеченное запишу. Значения, которые уже стояли, не отмечены — подтвердите замену вручную."
       : "Проверьте и подтвердите — запишу в профиль объекта."))}</div>
@@ -10761,14 +10776,32 @@ function showVRepair(d){
        возможно, делать не собирается. Решение о пропуске принимается в профиле
        (там причина и след в смете), здесь — только подсказка, что выбор есть. */
     const skp = r.kinds.filter(k => profCanSkip(k.code)).length;
-    const note = [tech ? `по технологии добавлено: ${tech}` : "", dup ? `уже в смете: ${dup} — не отмечено` : "", skp ? `этапов можно пропустить: ${skp} — решается в профиле` : ""].filter(Boolean).join(" · ");
-    return `<div style="margin-bottom:12px">${head}${note ? `<div class="vd" style="margin:2px 0 6px">${esc(note)}</div>` : ""}${kl}
+    /* [чат 132, Д-129-13] Отказ голосом. Достройка технологической цепочки
+       не знала слова «не надо» — 12.08 23:56 по залу сказано «Штукатурить не
+       надо. Потолок тоже», а в список ушли ML-19 и ML-26 с меткой «добавлено
+       по технологии». Теперь Голос отдаёт отказ полем refused, сервер его не
+       достраивает, а панель показывает отдельным блоком: без галочки, потому
+       что отмечать нечего, но видимо — иначе отказ снова исчезнет молча. */
+    const rf = (r.refused || []).map(k => `
+      <div class="vitem" style="opacity:.8">
+        <div class="vchk" style="opacity:.35">✕</div>
+        <div style="flex:1;min-width:0">
+          <div class="vv">${esc(k.name)}<span style="opacity:.6"> · ${esc(k.unit || "")}</span></div>
+          <div class="vd">${esc(k.code)} · <span style="color:#ff9f0a">сказали не делать</span>${k.already ? ' — <span style="color:#ff9f0a">но вид уже стоит в смете, снимите его в профиле</span>' : " · по технологии не достраиваю"}</div>
+        </div>
+      </div>`).join("");
+    const rfHead = (r.refused || []).length ? '<div class="vd" style="margin:8px 0 2px">Отказано голосом</div>' : "";
+    const ref = (r.refused || []).length;
+    const note = [tech ? `по технологии добавлено: ${tech}` : "", dup ? `уже в смете: ${dup} — не отмечено` : "", ref ? `отказано: ${ref}` : "", skp ? `этапов можно пропустить: ${skp} — решается в профиле` : ""].filter(Boolean).join(" · ");
+    return `<div style="margin-bottom:12px">${head}${note ? `<div class="vd" style="margin:2px 0 6px">${esc(note)}</div>` : ""}${kl}${rfHead}${rf}
       </div>`;
   }).join("");
   openVSheet(`
     <div class="vh">Работы по помещениям</div>
     <div class="vs">${!repSelN
-      ? (vRep.some(r => !r.isNew && (r.kinds || []).length)
+      ? (vRep.some(r => !r.isNew && (r.refused || []).length) && !vRep.some(r => !r.isNew && (r.kinds || []).length)
+          ? "Услышал отказ: эти виды делать не будем — по технологии их тоже не достраиваю."
+          : vRep.some(r => !r.isNew && (r.kinds || []).length)
           ? "Нового в сказанном нет: эти виды уже стоят в смете. Отметьте строку, если нужно записать заново."
           : "Помещений из сказанного в объекте нет — заведите их на экране «Объект», тогда объёмы посчитаются из обмеров.")
       : "Отмеченное перенесу в профиль ремонта: объём посчитается из обмеров, а смета соберётся кнопкой «Добавить в смету»."}</div>
@@ -12145,7 +12178,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "131.2";
+const BUILD = "132.1";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
