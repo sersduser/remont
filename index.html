@@ -45,6 +45,10 @@ body{background:var(--bg);color:var(--txt);font:15px/1.5 -apple-system,"Segoe UI
 .tile{background:var(--sec);border:none;border-radius:14px;padding:18px 10px;color:var(--txt);
   cursor:pointer;text-align:center;font:inherit;transition:transform .1s}
 .tile:active{transform:scale(.96)}
+/* [гипотеза 126] Вторая вероятная причина «потерянного первого клика»: WebView
+   ждёт продолжения жеста (двойной тап, панорамирование) и гасит первое касание.
+   manipulation снимает ожидание у самих кнопок, прокрутку страницы не трогая. */
+button,.tile{touch-action:manipulation}
 .tile .ic{font-size:27px;display:block;margin-bottom:6px}
 .tile .nm{font-size:13px;font-weight:600;line-height:1.25}
 .tile .h{font-size:11px;color:var(--hint);margin-top:3px}
@@ -11616,7 +11620,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "126.2";
+const BUILD = "126.3";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
@@ -11631,6 +11635,12 @@ function buildTag(){
 /* ── СТАРТ ────────────────────────────────────────────────── */
 tg?.ready();
 tg?.expand();
+/* [гипотеза 126 по наблюдению 124: «первый клик теряется»] Telegram перехватывает
+   вертикальный жест, чтобы свернуть Mini App свайпом вниз, — первое касание уходит
+   на распознавание жеста, а не на кнопку. Метод есть с Bot API 7.7; вызов
+   необязательный, в старых клиентах не произойдёт ничего. Диагноз не доказан:
+   в Chromium и jsdom дефект не воспроизводится, предмет — WebView на телефоне. */
+try{ tg?.disableVerticalSwipes?.(); }catch(e){}
 load();
 langInit();                                       // кнопка языка нужна и до данных [чат 020]
 buildTag();                                       // видимый номер версии [чат 021]
