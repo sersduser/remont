@@ -1012,6 +1012,12 @@ function contractBlock(){
     '<div class="lbl">Договор</div>' +
     '<div class="m">Договор — это снимок сметы, который обе стороны признали. После признания позиции замораживаются: ' +
       'цены больше не меняются ни разнесением, ни правкой.</div>' +
+    /* [наблюдение Дмитрия 12.08, скрин 749: «Нет договора»] Пустой список
+       договоров выглядел как пропажа: экран показывал форму предложения, но
+       не говорил, что предлагать ещё нечего. */
+    (((CONTRACTS || []).length === 0)
+      ? '<div class="m" style="margin-top:6px;opacity:.8">Договоров по этому объекту ещё не было — этот станет первым.</div>'
+      : '') +
     (last ? '<div class="m" style="color:var(--warn);margin-top:6px">Прошлое предложение отклонено' +
       (last.reject_reason ? ': ' + esc(last.reject_reason) : '') + '</div>' : '') +
     (nop.length ? '<div class="m" style="color:var(--warn);margin-top:6px">Работ без цены: ' + nop.length + ' — в договор они не войдут</div>' : '') +
@@ -1067,6 +1073,144 @@ function uiAsk(opts){
 }
 function ask(msg, yes){ return uiAsk({ msg: msg, yes: yes }); }
 function askText(msg, def){ return uiAsk({ msg: msg, input: true, def: def || '', yes: 'Отправить' }); }
+/* ── Объединение помещений: экран [M3 разбора 39, чат 126] ──────────────────
+   Своё окно, а не нативное: confirm/prompt в Telegram WebView не работают
+   вовсе (находка 125). Судьба работ спрашивается обязательно и умолчания не
+   имеет — так решено в 121 п. 1, и сервер отказывает без неё.
+   Сводка показывается ДО применения, как у разнесения: сколько работ уедет,
+   на какую сумму, каким станет пол и потолок приёмника. Периметр и стены не
+   складываются — после сноса перегородки они меньше суммы, нужен обмер
+   (разбор 39 § 2), и об этом сказано прямо. */
+let MRG = null;
+
+function mrgOpen(from){
+  const r = roomByCode(from);
+  if(!r){ toast('Помещение не найдено', 'err'); return; }
+  if(!roomList().filter(x => String(x.code) !== String(from)).length){
+    toast('Объединять не с чем: активное помещение одно', 'err'); return;
+  }
+  MRG = { from: String(from), to: '', works: '', busy: false };
+  const box = document.createElement('div');
+  box.id = 'mrgBox';
+  box.style.cssText = 'position:fixed;inset:0;z-index:10000;background:rgba(0,0,0,.62);' +
+    'display:flex;align-items:center;justify-content:center;padding:14px';
+  box.innerHTML = '<div id="mrgIn" style="max-width:430px;width:100%;background:#1c1c1e;' +
+    'border-radius:14px;padding:16px;color:#fff;max-height:86vh;overflow:auto"></div>';
+  box.onclick = (e) => { if(e.target === box) mrgClose(); };
+  document.body.appendChild(box);
+  mrgDraw();
+}
+
+function mrgClose(){
+  const b = document.getElementById('mrgBox');
+  if(b){ try{ b.remove(); }catch(e){} }
+  MRG = null;
+}
+
+function mrgPick(code){ if(MRG && !MRG.busy){ MRG.to = String(code); mrgDraw(); } }
+function mrgFate(v){ if(MRG && !MRG.busy){ MRG.works = String(v); mrgDraw(); } }
+
+function mrgDraw(){
+  const inn = document.getElementById('mrgIn');
+  if(!inn || !MRG) return;
+  const from = roomByCode(MRG.from);
+  const to   = MRG.to ? roomByCode(MRG.to) : null;
+  const ws   = roomWorksOf(MRG.from);
+  const sum  = Math.round(ws.reduce((s, w) => s + (Number(w.price_alloc_usd) || 0), 0) * 100) / 100;
+  const others = roomList().filter(x => String(x.code) !== String(MRG.from));
+  const frozen = (typeof contractFrozen === 'function') ? contractFrozen() : null;
+  const b0 = 'padding:9px 11px;border-radius:10px;background:transparent;color:#fff;font-size:14px;margin:0 6px 6px 0';
+  const on = 'border:2px solid #30d158';
+  const off = 'border:1px solid #3a3a3c';
+  const rooms = others.map(x => '<button onclick="mrgPick(\'' + attr(x.code) + '\')" style="' + b0 + ';' +
+      (String(MRG.to) === String(x.code) ? on : off) + '">' + esc(roomShort(x)) +
+      ' <span style="opacity:.6">пол ' + fmt(x.floor_m2) + '</span></button>').join('');
+  const fate =
+    '<button onclick="mrgFate(\'перенести\')" style="' + b0 + ';' + (MRG.works === 'перенести' ? on : off) + '">' +
+      'Перенести работы' + (ws.length ? (' (' + ws.length + ' · ' + fmt(sum) + ' USD)') : '') + '</button>' +
+    '<button onclick="mrgFate(\'снять\')" style="' + b0 + ';' + (MRG.works === 'снять' ? on : off) + '">' +
+      'Снять работы' + (ws.length ? (' (' + ws.length + ')') : '') + '</button>';
+  const ready = !!(MRG.to && MRG.works);
+  const after = to
+    ? ('<div class="m" style="margin-top:10px">«' + esc(roomShort(to)) + '» получит: пол ' +
+        fmt((Number(to.floor_m2) || 0) + (Number(from && from.floor_m2) || 0)) + ' м² · потолок ' +
+        fmt((Number(to.ceiling_m2) || 0) + (Number(from && from.ceiling_m2) || 0)) + ' м². ' +
+        'Периметр и стены останутся прежними — после сноса перегородки они меньше суммы, их нужно обмерить заново.</div>')
+    : '';
+  inn.innerHTML =
+    '<div style="font-size:16px;font-weight:600">Объединить «' + esc(roomShort(from)) + '»</div>' +
+    '<div class="m" style="margin-top:6px">Помещение перестанет быть самостоятельным: работы уедут или снимутся, ' +
+      'план профиля переедет, пол и потолок сложатся у приёмника. Прежние размеры сохранятся — объединение отменяется.</div>' +
+    (ws.length === 0 ? '<div class="m" style="margin-top:6px;opacity:.75">Живых работ в помещении нет — выбор их судьбы ни на что не повлияет, но сервер его требует.</div>' : '') +
+    (frozen ? '<div class="m" style="margin-top:8px;color:#ff9f0a">Договор № ' + esc(frozen.no) +
+        ' признан — состав работ заморожен, и сервер откажет. Дорога — дополнительное соглашение.</div>' : '') +
+    '<div class="sub" style="margin-top:12px">Куда объединяем</div><div style="margin-top:6px">' + rooms + '</div>' +
+    '<div class="sub" style="margin-top:10px">Что сделать с работами</div><div style="margin-top:6px">' + fate + '</div>' +
+    after +
+    '<div style="display:flex;gap:8px;margin-top:14px">' +
+      '<button onclick="mrgClose()" style="flex:1;padding:11px;border-radius:10px;border:1px solid #3a3a3c;background:transparent;color:#fff;font-size:15px">Отмена</button>' +
+      '<button onclick="mrgSend()"' + (ready ? '' : ' disabled') + ' style="flex:1;padding:11px;border-radius:10px;border:0;' +
+        'background:' + (ready ? '#0a84ff' : '#3a3a3c') + ';color:#fff;font-size:15px' + (ready ? '' : ';opacity:.6') + '">Объединить</button>' +
+    '</div>' +
+    (ready ? '' : '<div class="m" style="margin-top:8px;opacity:.7">Выберите помещение-приёмник и судьбу работ — тогда кнопка станет активной.</div>');
+  if(typeof uzApply === 'function') uzApply(inn);
+}
+
+async function mrgSend(){
+  if(!MRG || MRG.busy || !MRG.to || !MRG.works) return;
+  MRG.busy = true;
+  const inn = document.getElementById('mrgIn');
+  if(inn) inn.innerHTML = '<div style="font-size:16px;font-weight:600">Объединяю…</div>' +
+    '<div class="m" style="margin-top:8px">Работы, план профиля и площади переносятся одной операцией.</div>';
+  try{
+    const j = await roomsApi({ mode: 'merge', object: D.object_id, from: MRG.from, to: MRG.to, works: MRG.works });
+    if(!j || !j.ok){
+      const msg = (j && j.error) ? String(j.error) : 'Сервер не объединил помещения';
+      MRG.busy = false; mrgDraw();
+      toast(msg, 'err');
+      return;
+    }
+    mrgClose();
+    toast('Объединено · работ ' + (j.works != null ? j.works : 0) +
+          (j.works_sum_usd ? (' на ' + fmt(j.works_sum_usd) + ' USD') : '') +
+          (j.needs_measure ? ' · нужен обмер периметра и стен' : ''), 'ok');
+    await load();
+    render();
+  }catch(e){
+    MRG.busy = false; mrgDraw();
+    toast(e.message || 'Нет связи с сервером', 'err');
+  }
+}
+
+async function unmrgAsk(code){
+  const r = roomByCode(code);
+  if(!r) return;
+  const to = roomByCode(roomMergedTo(r));
+  const y = await ask('Разъединить «' + roomShort(r) + '»' + (to ? (' и «' + roomShort(to) + '»') : '') + '?\n\n' +
+    'Помещению вернутся прежние размеры, работы — туда, откуда переносились, вместе со своими статусами. ' +
+    'Площади приёмника уменьшатся на прежние; если его правили после объединения, сервер скажет об этом и площади не тронет.', 'Разъединить');
+  if(!y) return;
+  toast('Разъединяю…');
+  try{
+    const j = await roomsApi({ mode: 'unmerge', object: D.object_id, from: String(code) });
+    if(!j || !j.ok){ toast((j && j.error) ? String(j.error) : 'Сервер не разъединил помещения', 'err'); return; }
+    toast('Разъединено · работ вернулось ' + (j.works_back != null ? j.works_back : 0) +
+          (j.to_note ? (' · ' + j.to_note) : ''), 'ok');
+    await load();
+    render();
+  }catch(e){ toast(e.message || 'Нет связи с сервером', 'err'); }
+}
+
+/* Один вход в ветку помещений для режимов merge/unmerge: тело собирается
+   в одном месте, чтобы подпись и ключ не разъезжались по вызовам. */
+async function roomsApi(body){
+  const r = await fetch(API + "/rooms", { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(Object.assign({ initData: INIT, key: KEY }, body || {})) });
+  const raw = (await r.text()).trim();
+  if(!raw) return { ok: false, error: 'сервер ответил пусто' };
+  try{ return JSON.parse(raw); }catch(e){ return { ok: false, error: 'ответ сервера не разобран' }; }
+}
+
 /* Очистка плана — та же кнопка, но без inline-confirm в разметке. */
 function profClearAsk(){
   ask('Очистить план?').then(y => { if(y){ PROF.plan = {}; render(true); } });
@@ -2364,7 +2508,40 @@ function graphSvg(){
 }
 const objDocs = () => (D.drafts || []).filter(d => /план/i.test(String(d.kind || "")));
 const objPlan = () => { const l = objDocs(); return l.length ? l[l.length - 1] : null; };
-const roomList = () => (D.rooms || []);
+/* ── Объединение помещений [M3 разбора 39, чат 126] ─────────────────────────
+   Признак объединения приходит с сервера полем merged_into (код помещения-
+   приёмника): витрина 06_Помещения отдаёт колонку «Объединено_с» с этого же
+   чата. До неё объединение жило только в тексте названия — «Туалет (объединён
+   с VN 05.08)» — и ни один экран не мог о нём спросить.
+
+   roomList() отдаёт АКТИВНЫЕ помещения. Так объединённое перестаёт быть
+   самостоятельным везде разом: опрос его не спрашивает, подсказка обмеров не
+   требует, порядок заливки полов, схема проёмов и разметка плана его не
+   считают. Полный список — roomAll(). */
+const roomAll  = () => (D.rooms || []);
+const roomMergedTo = r => String((r && r.merged_into) || '').trim();
+const roomIsMerged = r => roomMergedTo(r) !== '';
+const roomList = () => roomAll().filter(r => !roomIsMerged(r));
+const roomsMerged = () => roomAll().filter(roomIsMerged);
+const roomByCode = c => roomAll().find(r => String(r.code) === String(c)) || null;
+const roomShort = r => String((r && (r.name || r.code)) || '').split(' (')[0];
+/* Право объединять — owner и foreman (решение 121 п. 2, как у профиля и хода
+   работ). Проверка на сервере, здесь только показ кнопки. */
+const canMerge = () => ['admin', 'owner', 'foreman'].includes(String((D && D.kind) || ''))
+                    || ['admin', 'owner', 'foreman'].includes(String((D && D.role) || ''));
+/* Работы помещения — тем же правилом, что profInEstimate: код работы начинается
+   с кода помещения либо совпадает название. Снятые и пропущенные не считаем —
+   в смету они не идут. */
+function roomWorksOf(code){
+  const room = roomByCode(code);
+  if(!room) return [];
+  return (D.works || []).filter(w => {
+    if(!w || !w.code) return false;
+    if(w.status === 'Снято' || w.status === 'Пропущен') return false;
+    return String(w.code).split('-')[0] === String(code)
+        || String(w.room || '').split(' (')[0] === roomShort(room);
+  });
+}
 /* Пробел проёмов [чат 029]. До 029 фильтр смотрел только на null/undefined:
    пустая ячейка, приехавшая строкой, считалась заполненной, а ноль отличить
    от «не задано» было нечем вовсе — отсюда вечная подсказка в помещениях,
@@ -7156,7 +7333,7 @@ profile(){
 
   if(!room){
     const all = profTotalAll();
-    const items = (D.rooms || []).map(r => {
+    const items = roomList().map(r => {
       const t = profTotal(r.code);
       /* Пустое поле листа — не «ноль проёмов»: Number(null) даёт 0, и подсказка
          «не заданы» молчала с чата 007. Пустоту проверяем до приведения к числу [чат 017]. */
@@ -7173,6 +7350,11 @@ profile(){
     /* Помещений нет вовсе [дефект 4 очереди 125]: список пуст, и прежняя
        подсказка звала выбрать помещение, которого не существует. Экран
        обязан назвать причину и дать дверь, а не молчать. */
+    const mergedNote = roomsMerged().length
+      ? ('<div class="stat"><span class="k">Объединённые помещения (' + roomsMerged().length + ') в списке не показаны: ' +
+         roomsMerged().map(r => esc(roomShort(r)) + ' → ' + esc(roomShort(roomByCode(roomMergedTo(r))) || roomMergedTo(r))).join(', ') +
+         '. Их работы уже переехали или сняты — правятся у помещения-приёмника.</span></div>')
+      : '';
     if(!(D.rooms || []).length){
       return '<div class="hello">Профиль ремонта</div>' +
         '<div class="sub">Сначала нужны помещения</div>' +
@@ -7188,10 +7370,22 @@ profile(){
       '<div class="stat"><div class="r"><button onclick="qzStart()" style="flex:1;padding:12px;border-radius:12px;border:0;background:#0a84ff;color:#fff;font-size:15px">🧭 Пройти вопросами</button></div>' +
       '<div class="r" style="margin-top:8px"><button onclick="startVoice(\'repair\')" style="flex:1;padding:12px;border-radius:12px;border:0;background:#1c1c1e;color:#fff;font-size:15px;border:1px solid #3a3a3c">🎤 Продиктовать работы</button></div>' +
         '<div class="r"><span class="k" style="font-size:13px;opacity:.75">Например: «в спальне потолок выровнять и покрасить, стены под обои» — помещение подставится из сказанного.</span></div></div>' +
-      (all.n ? ('<div class="stat"><div class="r" style="display:flex;gap:8px">' +
-        '<button onclick="profBuild()" style="flex:2;padding:13px;border-radius:12px;border:0;background:#30d158;color:#000;font-size:15px;font-weight:600">Собрать смету: ' + all.n + ' работ · ' + fmt(all.sum) + ' USD</button>' +
-        '<button onclick="profClearAsk()" style="flex:1;padding:13px;border-radius:12px;border:0;background:#3a3a3c;color:#fff;font-size:15px">Очистить</button>' +
-      '</div>' + (all.blank ? '<div class="r"><span class="k" style="font-size:13px;color:#ff9f0a">Без объёма: ' + all.blank + ' — заполните или снимите, иначе смету не собрать.</span></div>' : '') + '</div>') : '') +
+      /* Блок сборки виден ВСЕГДА [наблюдение Дмитрия 12.08, скрин 748: «Нет
+         "собрать смету"»]. До 126 он появлялся только при непустом плане:
+         человек, ещё ничего не выбравший, искал кнопку, не находил и не мог
+         узнать почему. Тот же класс, что мёртвые подтверждения 125 — молчание
+         интерфейса есть дефект, даже когда логика верна. */
+      '<div class="stat"><div class="r" style="display:flex;gap:8px">' +
+        (all.n
+          ? ('<button onclick="profBuild()" style="flex:2;padding:13px;border-radius:12px;border:0;background:#30d158;color:#000;font-size:15px;font-weight:600">Собрать смету: ' + all.n + ' работ · ' + fmt(all.sum) + ' USD</button>' +
+             '<button onclick="profClearAsk()" style="flex:1;padding:13px;border-radius:12px;border:0;background:#3a3a3c;color:#fff;font-size:15px">Очистить</button>')
+          : '<button id="profBuildOff" disabled style="flex:1;padding:13px;border-radius:12px;border:0;background:#3a3a3c;color:#fff;font-size:15px;opacity:.55">Собрать смету</button>') +
+      '</div>' +
+      (all.n
+        ? (all.blank ? '<div class="r"><span class="k" style="font-size:13px;color:#ff9f0a">Без объёма: ' + all.blank + ' — заполните или снимите, иначе смету не собрать.</span></div>' : '')
+        : '<div class="r"><span class="k" style="font-size:13px">Пока не выбрано ни одной работы. Откройте помещение из списка ниже и отметьте виды работ — или пройдите вопросами; кнопка сборки станет активной сама.</span></div>') +
+      '</div>' +
+      mergedNote +
       items;
   }
 
@@ -7683,6 +7877,14 @@ object(){
       elemBlock(r) +
       modBlock(r) +
       '<div class="m" style="margin-top:8px">Из чего попадаем в помещение:</div><div>' + adjChips(r.code) + "</div>" +
+      /* Объединение помещений [M3 разбора 39, чат 126]: кнопка стоит в карточке
+         самого помещения — объединяют то, на что смотрят. Показывается только
+         тому, кто вправе (owner/foreman), и только когда есть с чем объединять. */
+      ((canMerge() && roomList().length > 1)
+        ? ('<div style="margin-top:10px"><button onclick="mrgOpen(\'' + attr(r.code) + '\')" ' +
+           'style="padding:9px 12px;border-radius:10px;border:1px solid #3a3a3c;background:#1c1c1e;color:#fff;font-size:14px">' +
+           '🔗 Объединить с…</button></div>')
+        : "") +
       "</div>";
   }).join("");
   const planBox = plan
@@ -7744,7 +7946,26 @@ object(){
         " — он заливается последним." + (f.orphan.length ? (" Не связаны ни с чем: " + f.orphan.map(r => esc(String(r.name || r.code).split(" (")[0])).join(", ") + ".") : "") + "</div>" +
       "</div>";
     })() +
-    rows;
+    rows +
+    /* Объединённые помещения [M3 разбора 39, чат 126]: из общего списка они
+       ушли (roomList отдаёт активные), но прятать их совсем нельзя — человек
+       должен видеть, что стало с помещением, и иметь путь назад. */
+    (roomsMerged().length
+      ? ('<div class="sub" style="margin-top:16px">Объединённые помещения</div>' +
+         roomsMerged().map(r => {
+           const to = roomByCode(roomMergedTo(r));
+           return '<div class="work" style="opacity:.72">' +
+             '<div class="t">' + esc(roomShort(r)) + ' → ' + esc(to ? roomShort(to) : roomMergedTo(r)) + '</div>' +
+             '<div class="m">Помещение объединено и самостоятельным больше не считается: обмеров не требует, ' +
+               'в опросе и в схеме не участвует. Прежние размеры сохранены — вернутся при разъединении.</div>' +
+             (canMerge()
+               ? ('<div style="margin-top:8px"><button onclick="unmrgAsk(\'' + attr(r.code) + '\')" ' +
+                  'style="padding:9px 12px;border-radius:10px;border:1px solid #3a3a3c;background:#1c1c1e;color:#fff;font-size:14px">' +
+                  'Разъединить</button></div>')
+               : "") +
+           '</div>';
+         }).join(''))
+      : "");
 },
 checks(){
   const list = checkList();
@@ -11344,7 +11565,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "125.4";
+const BUILD = "126.1";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
