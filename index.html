@@ -216,6 +216,7 @@ function safeTop(){
     const b = (tg && tg.contentSafeAreaInset && tg.contentSafeAreaInset.top) || 0;
     const r = document.documentElement.style;
     if (a) r.setProperty('--tg-safe-area-inset-top', a + 'px');
+    else   r.removeProperty('--tg-safe-area-inset-top');
     /* [чат 129, по снимкам Дмитрия 00:03—00:34] Шапка клиента — ВТОРОЙ слой
        поверх системной зоны, и складывается с ней, а не спорит. Часть сборок
        Telegram про свою шапку молчит (contentSafeAreaInset.top = 0), хотя рисует
@@ -223,11 +224,43 @@ function safeTop(){
        этой шапки: лучше лишние 46 px запаса, чем кнопка «Сменить» под кнопкой
        клиента. На клиентах, которые инсет отдают, ничего не меняется. */
     const mob = ['android', 'android_x', 'ios'].indexOf(String((tg && tg.platform) || '')) >= 0;
-    const fb  = (!b && mob) ? 46 : b;
+    /* [чат 131, по числам с живого клиента 13.08 02:26: система 0 · шапка 0 ·
+       запас 46 · android · Bot API 9.6] Запас 46 px, введённый в 129.1, ложился
+       поверх уже учтённой зоны и съедал верх экрана — Дмитрий 01:42: «Теперь
+       много лишней высоты съедено вверху». Причина не в величине константы:
+       ложен сам признак «клиент молчит». Молчание клиента и отсутствие
+       перекрытия дают одни и те же нули, а означают противоположное, поэтому
+       уменьшение константы просто промахнулось бы в другую сторону.
+       Различить их можно измеримым: Bot API 8.0 — версия, с которой клиент
+       УМЕЕТ отдавать contentSafeAreaInset. Клиент 8.0+, сообщивший нули вне
+       полноэкранного режима, именно нули и имеет в виду: Telegram сам рисует
+       Mini App ниже своей шапки, компенсировать нечего. Запас остаётся там,
+       где перекрытие возможно: полноэкранный режим (шапка ложится поверх),
+       клиент старее 8.0 (о своей шапке сказать не умеет) и смещённый
+       visualViewport. */
+    const vnum  = parseFloat(String((tg && tg.version) || '0')) || 0;
+    const tells = vnum >= 8;
+    const full  = !!(tg && tg.isFullscreen === true);
+    const vvTop = Math.round((window.visualViewport && window.visualViewport.offsetTop) || 0);
+    /* Третье измерение — только в диагностику, в формулу не входит [131]. Если
+       окно WebView выше «полезной» высоты, объявленной Telegram, разница и есть
+       перекрытие. Признак не проверен ни на одном живом клиенте, поэтому решать
+       по нему сейчас нельзя — но следующий заход получит с экрана человека
+       готовое число вместо гипотезы. */
+    const vsh   = Math.round(Number((tg && tg.viewportStableHeight) || 0));
+    const ih    = Math.round(window.innerHeight || 0);
+    const over  = (vsh && ih - vsh > 8) ? (ih - vsh) : 0;
+    const need  = mob && (full || !tells || vvTop > 0);
+    const fb    = b ? b : (need ? 46 : 0);
     if (fb) r.setProperty('--tg-content-safe-area-inset-top', fb + 'px');
+    else    r.removeProperty('--tg-content-safe-area-inset-top');
     SAFE_DIAG = { env: getComputedStyle(document.documentElement).getPropertyValue('--top-inset').trim(),
                   safe: a, content: b, fallback: fb, platform: (tg && tg.platform) || '—',
-                  ver: (tg && tg.version) || '—' };
+                  ver: (tg && tg.version) || '—', full: full, tells: tells, vv: vvTop,
+                  ih: ih, vsh: vsh, over: over,
+                  why: b ? 'сказал клиент'
+                         : (need ? (full ? 'полный экран' : (!tells ? 'клиент старее 8.0' : 'смещён viewport'))
+                                 : 'перекрытия нет') };
   }catch(e){}
 }
 /* Числа зоны видны человеку по долгому нажатию на полосу объекта: лечить верх
@@ -237,6 +270,8 @@ function safeDiagShow(){
   const d = SAFE_DIAG || {};
   toast('Зона сверху: итог ' + (d.env || '—') + ' · система ' + (d.safe || 0) + ' · шапка клиента ' +
         (d.content || 0) + (d.fallback !== d.content ? (' → запас ' + d.fallback) : '') +
+        ' · ' + (d.why || '—') + (d.full ? ' · полный экран' : '') +
+        ' · окно ' + (d.ih || 0) + '/' + (d.vsh || 0) + (d.over ? (' → перекрытие ' + d.over) : '') +
         ' · ' + (d.platform || '—') + ' · Bot API ' + (d.ver || '—'), 'wait');
 }
 safeTop();
@@ -1966,13 +2001,31 @@ function profSkip(code, reason){
   const r = String(reason || '').trim();
   if(!r){ toast('Нужна причина пропуска'); return; }
   picked[code].skip = r;
+  picked[code].keep = 0;          /* [131] пропуск и «делаем» — взаимоисключающие решения */
   render();
 }
 function profUnskip(code){
   const picked = profPicked();
   if(!picked[code]) return;
   picked[code].skip = '';
+  picked[code].keep = 1;          /* [131] вернули в работу — это ответ, а не отсутствие ответа */
   render();
+}
+
+/* [чат 131, Д-130-2] Ответ «делаем» на вопрос о пропуске этапа. До 131 он жил
+   только в памяти прогона опроса (QZ.seenRing) и на сервер не уходил — в
+   отличие от соседней ветки «Пропустить», — поэтому при каждом новом заходе в
+   опрос вопрос возвращался, и человек отвечал на него по третьему разу.
+   Слова Дмитрия 13.08 01:28: «Опять этот вопрос. Уже многократно отвечал».
+   Решение хранится рядом с пропуском, в том же профиле помещения: render()
+   сохранит его локально и увезёт на сервер (profilePushSoon), а пропуск с
+   причиной его снимает — решения взаимоисключающие. */
+function profKeep(code){
+  const picked = profPicked();
+  if(!picked[code]) return false;
+  picked[code].keep = 1;
+  picked[code].skip = '';
+  return true;
 }
 function profSkipOwn(el){
   const code = el.getAttribute('data-code');
@@ -6778,9 +6831,58 @@ function toast(msg, kind){
    человек ушёл с его середины. Позиция хранится по ключу экрана в памяти
    вкладки — переживать перезагрузку ей незачем. */
 const SCROLL = {};
-function scrollSave(){ try{ SCROLL[stack[stack.length - 1]] = window.scrollY || 0; }catch(e){} }
-function go(k){ scrollSave(); stack.push(k); render(true); }
-function back(){ if(stack.length > 1){ scrollSave(); stack.pop(); render(true); } }
+function scrollSave(){ try{ SCROLL[stack[stack.length - 1]] = window.scrollY || 0; }catch(e){} navSave(); }
+function go(k){ scrollSave(); stack.push(k); render(true); navSave(); }
+function back(){ if(stack.length > 1){ scrollSave(); stack.pop(); render(true); navSave(); } }
+
+/* ── Место человека переживает перезагрузку [чат 131, Д-130-4] ────────────
+   Постановка Дмитрия 13.08 01:39 дословно: «Сделай так, чтобы при обновлении
+   страницы в приложении пользователь оставался на той же странице и с той же
+   позицией вертикальной развёртки, что и был». Mini App перезагружается не
+   только по кнопке: Telegram сам поднимает страницу заново после сворачивания,
+   смены сети и возврата из фона — и каждый раз панель открывалась дома с
+   нулевой прокруткой, а длинный список приходилось искать глазами снова.
+
+   Восстанавливаются только экраны, которые рисуются от загруженных данных.
+   Опрос и профиль набираются человеком в памяти прогона: открыть их «сразу»
+   значило бы показать пустой экран вместо того, что там было. Запись старше
+   шести часов не восстанавливается — вчерашнее место уже не место. */
+const NAV_LS = "REMONT_NAV", NAV_SKIP = { quiz:1, profile:1 }, NAV_TTL = 6 * 3600 * 1000;
+let NAV_T = 0, NAV_WANT = 0;
+function navSave(){
+  try{
+    if(typeof stack === "undefined" || !stack || !stack.length) return;
+    const s = stack.filter(k => !NAV_SKIP[k]);
+    localStorage.setItem(NAV_LS, JSON.stringify({ s: s, p: SCROLL, y: window.scrollY || 0, t: Date.now() }));
+  }catch(e){}
+}
+function navSaveSoon(){
+  if(NAV_T) return;
+  NAV_T = setTimeout(function(){ NAV_T = 0; navSave(); }, 700);
+}
+function navRestore(){
+  try{
+    const raw = localStorage.getItem(NAV_LS);
+    if(!raw) return false;
+    const o = JSON.parse(raw);
+    if(!o || !Array.isArray(o.s) || !o.s.length) return false;
+    if(Date.now() - (Number(o.t) || 0) > NAV_TTL) return false;
+    const s = o.s.filter(k => typeof k === "string" && SCREENS[k] && !NAV_SKIP[k]);
+    if(!s.length || s[0] !== "home" || s.length > 4) return false;
+    stack = s;
+    if(o.p && typeof o.p === "object"){
+      Object.keys(o.p).forEach(k => { const v = Number(o.p[k]); if(v > 0) SCROLL[k] = v; });
+    }
+    SCROLL[stack[stack.length - 1]] = Number(o.y) || 0;
+    NAV_WANT = 1;              /* первую отрисовку ведём как переход — иначе позиция не применится */
+    return true;
+  }catch(e){ return false; }
+}
+try{
+  window.addEventListener("scroll", navSaveSoon, { passive: true });
+  document.addEventListener("visibilitychange", navSave);
+  window.addEventListener("pagehide", navSave);
+}catch(e){}
 
 /* ── Выгрузка-витрина: кнопка «Обновить таблицу» ──────────────────
    [чат 073, разбор 28 §7.2 исполнение A]
@@ -7150,6 +7252,9 @@ function render(toTop){
      надёжнее, чем ловить семь мест правки поимённо. Порядок важен: сначала
      восстановить, потом сохранять, иначе пустой план затёр бы сохранённый. */
   if(!PLAN_RESTORED && KEY){ PLAN_RESTORED = 1; planLoad(); }
+  /* [131] Место, поднятое из localStorage, применяется первой же отрисовкой:
+     load() зовёт render() без признака перехода, и позиция иначе не встанет. */
+  if(NAV_WANT){ NAV_WANT = 0; toTop = true; }
   planSave();
   profilePushSoon();                              /* [119] и на сервер, с задержкой */
   const k = stack[stack.length - 1];
@@ -9019,7 +9124,8 @@ function qzSkipAsk(rc){
   Object.keys(picked).forEach(code => {
     const it = picked[code] || {};
     if(it.skip) return;                                  // решение уже принято
-    if(QZ.seenRing["skip:" + code + "@" + rc]) return;   // «делаем» — тоже решение
+    if(it.keep) return;                                  // [131] «делаем» — сохранённое решение
+    if(QZ.seenRing["skip:" + code + "@" + rc]) return;   // тот же ответ в текущем прогоне
     let reasons = [];
     try{ reasons = profSkipList(code); }catch(e){ reasons = []; }
     if(!reasons.length) return;
@@ -9245,6 +9351,19 @@ async function qzWrite(q, col, value, note){
   QZ_BUSY = false;
 }
 
+/* [чат 131, Д-130-2 п. 3] Журнал опроса писал один код вида: три записи
+   «Оставлен в работе: DM-10» в снимке 822 — это три РАЗНЫХ помещения, а
+   выглядело как тройной дубль одного действия. Называем и вид, и помещение. */
+function qzKindName(code){
+  const k = (((D.catalog || {}).kinds) || []).find(x => x.code === code);
+  const nm = k && k.name ? String(k.name) : "";
+  return nm ? (nm + " (" + String(code) + ")") : String(code || "");
+}
+function qzRoomTitle(rc){
+  const r = roomList().find(x => x.code === rc) || null;
+  try{ return r ? qzName(r) : String(rc || ""); }catch(e){ return String(rc || ""); }
+}
+
 /* Пропуск этапа: решение живёт в профиле сеанса, как и у кнопок
    профиля (058) — след в смете появляется при сборке. */
 function qzSkipDo(reason){
@@ -9253,15 +9372,20 @@ function qzSkipDo(reason){
   const rc = q.room;
   if(typeof PROF === "object" && PROF) PROF.room = rc;
   try{ profSkip(q.kindCode, reason); }catch(e){ toast(e.message, "err"); return; }
-  qzNote("Пропущен этап: " + String(q.kindCode) + " · " + String(reason));
+  qzNote("Пропущен этап: " + qzKindName(q.kindCode) + " · " + qzRoomTitle(rc) + " · причина: " + String(reason));
   qzSyncRoom();
   render();
 }
 function qzSkipKeep(){
   const q = qzCur();
   if(!q || q.input !== "skip") return;
+  const rc = q.room;
+  if(typeof PROF === "object" && PROF) PROF.room = rc;
+  let saved = false;
+  try{ saved = profKeep(q.kindCode); }catch(e){ saved = false; }
   QZ.seenRing[q.id] = 1;                   // «делаем» — тоже ответ, вопрос закрыт
-  qzNote("Оставлен в работе: " + String(q.kindCode));
+  qzNote("Оставлен в работе: " + qzKindName(q.kindCode) + " · " + qzRoomTitle(rc) +
+         (saved ? "" : " · только в этом прогоне"));
   qzSyncRoom();
   render();
 }
@@ -9543,8 +9667,15 @@ function qzScreen(){
      с 114.1, но в опросе человек проводит больше времени, чем на нём. */
   return '<div style="position:sticky;top:0;z-index:50;background:#000;padding:8px 0 6px;margin:-4px 0 2px;box-shadow:0 8px 12px -10px rgba(0,0,0,.95)">' +
       '<div class="hello" style="margin:0">Опрос · ' + esc(objNowTitle()) + '</div>' +
-      '<div class="sub" style="margin:2px 0 0">вопрос ' + idx + " из " + totalAll + (later ? (" · отложено " + later) : "") +
+      '<div class="sub" style="margin:2px 0 0">вопрос ' + idx + " из " + totalAll +
+        " · пройдено " + passed + " · осталось " + total +
+        (later ? (" · отложено " + later) : "") +
         (room ? (" · " + esc(qzName(room))) : "") + "</div>" +
+      /* [чат 131, Д-130-2 п. 2] Знаменатель — длина ЖИВОЙ очереди, а она
+         растёт от ответов: сказанное число окон и дверей заводит элементы, у
+         каждого свои вопросы. Скачок «38 → 35 → 38» человек читал как «моя
+         работа не сохраняется». Арифметика была честной, молчал экран. */
+      '<div class="m" style="margin:2px 0 0;opacity:.7">список пополняется по ходу: ответы про окна и двери приносят свои вопросы</div>' +
     "</div>" +
     '<div class="stat">' +
       (QZ.forced ? '<div class="m" style="color:#ff9f0a">Возврат к отвеченному — ответьте заново, чтобы заменить</div>' : "") +
@@ -11945,7 +12076,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "130.1";
+const BUILD = "131.1";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
@@ -11966,6 +12097,7 @@ tg?.expand();
    необязательный, в старых клиентах не произойдёт ничего. Диагноз не доказан:
    в Chromium и jsdom дефект не воспроизводится, предмет — WebView на телефоне. */
 try{ tg?.disableVerticalSwipes?.(); }catch(e){}
+try{ navRestore(); }catch(e){}                    /* [131] то же место, где человек был до перезагрузки */
 load();
 langInit();                                       // кнопка языка нужна и до данных [чат 020]
 buildTag();                                       // видимый номер версии [чат 021]
