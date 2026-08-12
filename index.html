@@ -42,6 +42,14 @@ body{background:var(--bg);color:var(--txt);font:15px/1.5 -apple-system,"Segoe UI
 
 .card{background:var(--sec);border-radius:12px;padding:14px;margin-bottom:10px}
 .card .lbl{font-size:11px;color:var(--hint);text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px}
+/* Строки «подпись — значение» внутри карточки [чат 125]. Раскладка была
+   только у .stat, поэтому на экране «Договор» подписи слипались со
+   значениями: «Сумма7,50 $». Значение не заворачиваем в nowrap — у
+   преемственности цен текст длинный и на телефоне обязан переноситься. */
+.card .r{display:flex;justify-content:space-between;align-items:baseline;padding:4px 0;gap:10px}
+.card .k{font-size:13px;color:var(--hint);flex:0 0 auto}
+.card .v{font-size:16px;font-weight:600;text-align:right;min-width:0}
+.card .v.ok{color:var(--ok)} .card .v.warn{color:var(--warn)} .card .v.bad{color:var(--bad)}
 .li{display:flex;justify-content:space-between;align-items:center;padding:11px 0;gap:10px;
   border-bottom:1px solid rgba(125,139,153,.16)}
 .li:last-child{border:none}
@@ -7144,6 +7152,18 @@ profile(){
         'пол ' + fmt(r.floor_m2) + ' · стены ' + fmt(r.wall_m2) + ' · потолок ' + fmt(r.ceiling_m2) + ' · периметр ' + fmt(r.perimeter_m) +
         (miss.length ? ' · не заданы: ' + miss.join(', ') : '') + '</div></div>';
     }).join('');
+    /* Помещений нет вовсе [дефект 4 очереди 125]: список пуст, и прежняя
+       подсказка звала выбрать помещение, которого не существует. Экран
+       обязан назвать причину и дать дверь, а не молчать. */
+    if(!(D.rooms || []).length){
+      return '<div class="hello">Профиль ремонта</div>' +
+        '<div class="sub">Сначала нужны помещения</div>' +
+        '<div class="stat"><span class="k">Профиль собирается по помещениям: виды работ применяются к помещению, ' +
+          'а объём считается из его размеров. Пока ни одного помещения не заведено, применять работы не к чему.</span></div>' +
+        '<div class="stat"><div class="r"><button onclick="startVoice(\'rooms\')" style="flex:1;padding:12px;border-radius:12px;border:0;background:#0a84ff;color:#fff;font-size:15px">🎤 Продиктовать помещения</button></div>' +
+          '<div class="r" style="margin-top:8px"><button onclick="go(\'object\')" style="flex:1;padding:12px;border-radius:12px;border:1px solid #3a3a3c;background:#1c1c1e;color:#fff;font-size:15px">🏠 Открыть экран «Объект»</button></div>' +
+          '<div class="r"><span class="k" style="font-size:13px;opacity:.75">Например: «зал восемнадцать метров, спальня двенадцать, кухня девять» — помещения заведутся с размерами.</span></div></div>';
+    }
     return '<div class="hello">Профиль ремонта</div>' +
       '<div class="sub">' + (all.n ? esc(profTotalAllText()) : 'Выберите помещение или продиктуйте работы') + '</div>' +
       '<div class="stat"><span class="k">К помещению применяются виды работ, объём считается из его размеров, цена — из прайса исполнителя. Пройдите помещения подряд — смета соберётся одним действием в конце.</span></div>' +
@@ -11306,7 +11326,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "125.2";
+const BUILD = "125.3";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
