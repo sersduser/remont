@@ -1034,19 +1034,20 @@ async function contractFileOpen(id){
   toast('Собираю документ…');
   const j = await contractApi({ mode: 'file', contract_id: id });
   if(!j || !j.ok || !j.html){ toast((j && j.error) || 'документ не пришёл', 'err'); return; }
-  contractFileShow(j);
+  contractFileShow(j, id);
 }
 
-function contractFileShow(doc){
+function contractFileShow(doc, id){
   const btn = 'padding:9px 12px;border-radius:10px;border:0;font-size:14px;color:#fff';
   const box = document.createElement('div');
   box.style.cssText = 'position:fixed;inset:0;z-index:9998;background:#000;display:flex;flex-direction:column';
   box.innerHTML =
-    '<div style="display:flex;gap:8px;padding:10px;background:#1c1c1e;align-items:center">' +
-      '<div style="flex:1;font-size:14px;color:#fff">Договор № ' + esc(doc.no || '') + '</div>' +
+    '<div style="display:flex;gap:6px;padding:10px;background:#1c1c1e;align-items:center;flex-wrap:wrap">' +
+      '<div style="flex:1 0 100%;font-size:14px;color:#fff;margin-bottom:2px">Договор № ' + esc(doc.no || '') + '</div>' +
+      '<button id="dfSend"  style="' + btn + ';background:#30d158">📨 В чат</button>' +
       '<button id="dfPrint" style="' + btn + ';background:#0a84ff">Печать</button>' +
       '<button id="dfSave"  style="' + btn + ';background:#3a3a3c">Скачать</button>' +
-      '<button id="dfClose" style="' + btn + ';background:#3a3a3c">Закрыть</button>' +
+      '<button id="dfClose" style="' + btn + ';background:#3a3a3c;margin-left:auto">Закрыть</button>' +
     '</div>' +
     '<iframe id="dfFrame" style="flex:1;width:100%;border:0;background:#fff"></iframe>';
   document.body.appendChild(box);
@@ -1054,11 +1055,42 @@ function contractFileShow(doc){
   const fr = box.querySelector('#dfFrame');
   fr.setAttribute('srcdoc', doc.html);
   box.querySelector('#dfClose').onclick = () => box.remove();
-  box.querySelector('#dfPrint').onclick = () => {
-    try{ fr.contentWindow.focus(); fr.contentWindow.print(); }
-    catch(e){ toast('этот клиент печатать не умеет — сохраните файл и напечатайте из браузера', 'err'); }
+
+  /* Печать и скачивание в мобильном Telegram не работают вовсе [наблюдение 124,
+     разбор кода 125]: WebView не даёт window.print(), а клик по <a download>
+     игнорирует молча — обе кнопки выглядят мёртвыми, и прежний тост «Файл
+     сохранён» это молчание ещё и прикрывал. Надёжный путь — третий: файл
+     уходит в чат бота, печатает и сохраняет его та программа, которой человек
+     откроет документ у себя. Поэтому «В чат» стоит первой, а две прежние
+     кнопки на телефоне честно передают ей работу. */
+  const mobileTG = (function(){
+    try{ const p = String((Telegram.WebApp.platform || '')).toLowerCase();
+         return p === 'android' || p === 'ios'; }catch(e){ return false; }
+  })();
+
+  const sendToChat = async () => {
+    const b = box.querySelector('#dfSend');
+    if(!b || b.dataset.busy === '1') return;          /* замок от двойного тапа [грабля 012] */
+    b.dataset.busy = '1'; b.disabled = true;
+    const was = b.textContent; b.textContent = 'Отправляю…';
+    const j = await contractApi({ mode: 'send', contract_id: doc.id || id });
+    b.dataset.busy = ''; b.disabled = false; b.textContent = was;
+    if(j && j.ok && j.sent) toast('Файл отправлен в чат с ботом — откройте Telegram');
+    else toast((j && j.error) || 'файл в чат не ушёл', 'err');
   };
+  box.querySelector('#dfSend').onclick = sendToChat;
+
+  box.querySelector('#dfPrint').onclick = () => {
+    const w = fr.contentWindow;
+    if(mobileTG || !w || typeof w.print !== 'function'){
+      toast('В Telegram печать недоступна — присылаю файл в чат'); sendToChat(); return;
+    }
+    try{ w.focus(); w.print(); }
+    catch(e){ toast('этот клиент печатать не умеет — присылаю файл в чат'); sendToChat(); }
+  };
+
   box.querySelector('#dfSave').onclick = () => {
+    if(mobileTG){ toast('В Telegram файл не сохраняется — присылаю в чат'); sendToChat(); return; }
     try{
       const blob = new Blob([doc.html], { type: 'text/html;charset=utf-8' });
       const url = URL.createObjectURL(blob);
@@ -1066,8 +1098,10 @@ function contractFileShow(doc){
       a.href = url; a.download = doc.filename || 'dogovor.html';
       document.body.appendChild(a); a.click();
       setTimeout(() => { a.remove(); URL.revokeObjectURL(url); }, 4000);
-      toast('Файл сохранён');
-    }catch(e){ toast('сохранить не вышло: ' + (e && e.message || ''), 'err'); }
+      /* Утверждать «сохранён» панель не вправе: удался ли клик по ссылке,
+         она не узнает никак — вместо утверждения даём следующий шаг. */
+      toast('Если файл не появился в загрузках — нажмите «В чат»');
+    }catch(e){ toast('сохранить не вышло — присылаю в чат', 'err'); sendToChat(); }
   };
 }
 
@@ -11228,7 +11262,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "124.1";
+const BUILD = "125.1";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
