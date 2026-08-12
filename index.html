@@ -4442,9 +4442,52 @@ function elemPlan(){
   return out;
 }
 
+/* ── Смежность прямо в окне «Схема проёмов» [чат 131, Д-130-5] ────────────
+   Слова Дмитрия 13.08 01:49: «Здесь должна была быть возможность изменить».
+   Окно честно объясняло, чего не хватает, и отправляло за этим на другой экран
+   или в голос — то есть знало ответ на свой же вопрос и не давало его дать.
+   Кнопки те же, что на карточке помещения (adjChips): связь двусторонняя,
+   обратную сторону панель ставит сама. После каждой правки окно пересобирается
+   — список проёмов должен меняться на глазах, иначе непонятно, что изменилось. */
+function elemAdjChips(code){
+  const near = adjOf(code);
+  return roomList().filter(r => r.code !== code).map(r => {
+    const on = near.indexOf(r.code) >= 0;
+    return '<button onclick="elemAdjToggle(\'' + code + '\',\'' + r.code + '\')" ' +
+      'style="margin:3px 4px 0 0;padding:6px 10px;border-radius:9px;border:1px solid ' +
+      (on ? '#0a84ff' : '#3a3a3c') + ';background:' + (on ? '#0a84ff' : 'transparent') +
+      ';color:#fff;font-size:13px">' + (on ? '✓ ' : '') +
+      esc(String(r.name || r.code).split(' (')[0]) + '</button>';
+  }).join('');
+}
+function elemAdjBlock(){
+  const rooms = roomList();
+  if(rooms.length < 2) return '';
+  const rows = rooms.map(r =>
+    '<div style="margin:8px 0 0"><div class="vd" style="opacity:.9">' +
+      esc(String(r.name || r.code).split(' (')[0]) + ' граничит с:</div>' +
+      '<div style="display:flex;flex-wrap:wrap">' + elemAdjChips(r.code) + '</div></div>').join('');
+  return '<details id="elemadj" style="margin:10px 0 2px;border:1px solid #3a3a3c;border-radius:11px;padding:9px 11px">' +
+    '<summary style="cursor:pointer;color:#6ab3f3;font-size:14px">Задать смежность прямо здесь</summary>' +
+    '<div class="vd" style="margin:6px 0 0;opacity:.75">Отметьте, какая комната с какой граничит. ' +
+    'Обратную сторону поставлю сам, список проёмов пересоберётся сразу.</div>' + rows + '</details>';
+}
+async function elemAdjToggle(a, b){
+  try{ await adjToggle(a, b); }catch(e){ return; }
+  try{ elemBuild(); const d = document.getElementById('elemadj'); if(d) d.open = true; }catch(e){}
+}
+
 function elemBuild(){
   const plan = elemPlan();
-  if(!plan.length){ toast("Нечего строить: нет ни смежности, ни проёмов", "err"); return; }
+  /* [131] Пустой план — не повод закрыть дверь: именно тогда человеку и нужен
+     редактор смежности, из которого план и берётся. */
+  if(!plan.length){
+    openVSheet('<div class="vh">Схема проёмов</div>' +
+      '<div class="vs">Строить пока нечего: ни смежности, ни чисел окон и дверей. ' +
+      'Задайте смежность здесь же — список появится сразу.</div>' + elemAdjBlock() +
+      '<div class="vrow"><button class="vbtn-cancel" onclick="closeVSheet()">Закрыть</button></div>');
+    return;
+  }
   const rn = (c) => { const r = (D.rooms || []).find(x => x.code === c); return r ? String(r.name || c).split(" (")[0] : c; };
   const rows = plan.slice(0, 14).map(p =>
     '<div class="vitem sel"><div class="vchk">✓</div><div style="flex:1;min-width:0">' +
@@ -4457,8 +4500,9 @@ function elemBuild(){
       (plan._noAdj
         ? '<br><br><b style="color:#ff9f0a">Смежность помещений не заведена</b> — какая комната с какой граничит, панель не знает, ' +
           'поэтому строит только окна. ' + (plan._skipped ? ('Двери (' + plan._skipped + ') пока пропущены: ') : '') +
-          'скажите голосом «из коридора дверь в зал и в кухню» или задайте смежность на экране «Объект» — и постройте заново.'
+          'задайте смежность прямо здесь — кнопками ниже, — или скажите голосом «из коридора дверь в зал и в кухню».'
         : '') + '</div>' +
+    elemAdjBlock() +
     '<div id="vlist">' + rows + '</div>' +
     (plan.length > 14 ? '<div class="vd">и ещё: ' + (plan.length - 14) + '</div>' : '') +
     '<div class="vrow">' +
@@ -10454,11 +10498,21 @@ function vrElems(r) {
     putNum('Ширина_м', 'w', x.w, false);
     putNum('Высота_м', 'h', x.h, false);
     putNum('Низ_м', 'sill', x.sill, true);
+    /* [чат 131, Д-130-6] Новый проём приходил СНЯТЫМ, и панель при этом писала
+       «нового проёма нет в схеме, заведу». Дмитрий 13.08 01:55 продиктовал схему
+       целиком, увидел двенадцать таких обещаний и ушёл смотреть результат —
+       01:57: «Почему ничего не изменилось? Я же только что ввёл и записал эти
+       данные». Проверено по журналу n8n: между 01:55 и 02:00 ни одного запроса
+       записи не было вовсе — записывать было нечего, все строки сняты.
+       Правило 032 («конфликт и совпадение не отмечаются») к новому проёму не
+       относится: он ничего не затирает, у него нет прежнего значения — ровно
+       тот же случай, что у пустого поля помещения, которое отмечается само. */
+    const fresh = !near.length && !!side;
     return {
       said: String(x.side || x.side_code || ''), side: side,
       id: cur ? cur.id : '', many: near.length > 1,
-      isNew: !near.length && !!side, unknown: !side,
-      changes: ch, _sel: false
+      isNew: fresh, unknown: !side,
+      changes: ch, _sel: fresh
     };
   }).filter(e => e.changes.length || e.unknown || e.many);
 }
@@ -10519,8 +10573,13 @@ function showVRooms(d){
          Слой переводит узлами, и слипшаяся строка «Проём → Кухня — судьба:»
          осталась бы наполовину русской (урок 021 про остаток кириллицы). */
       const what = e.changes.map(c => `${esc(c.key === "fate" ? "судьба:" : (c.key === "plan" ? "на плане:" : "сейчас:"))} <b>${esc(c.now)}</b>${c.was ? ` <span style="color:#ff9f0a">было: <b>${esc(c.was)}</b></span>` : ""}`).join(" · ");
-      const mark = e.isNew ? ' <span style="color:#ff9f0a">· нового проёма нет в схеме, заведу</span>' : "";
       const sel = e.isNew ? e._sel : e.changes.some(c => c._sel);
+      /* [131] Обещание в будущем времени человек читает как уже сделанное.
+         Метка говорит о состоянии строки: отмечена — заведу, снята — нет. */
+      const mark = e.isNew
+        ? ' <span id="mk' + i + '-' + j + '" style="color:' + (sel ? "#30d158" : "#ff9f0a") + '">' +
+          (sel ? "· нового проёма нет в схеме — заведу" : "· новый проём — не заведу, пока строка снята") + '</span>'
+        : "";
       return `
       <div class="vitem${sel ? " sel" : ""}" data-e="${i}-${j}" onclick="toggleVElem(${i},${j})">
         <div class="vchk">✓</div>
@@ -10555,6 +10614,14 @@ function toggleVElem(i, j){
   e.changes.forEach(c => { c._sel = on; });
   const el = document.querySelector(`.vitem[data-e="${i}-${j}"]`);
   if(el) el.classList.toggle("sel", on);
+  /* [131] Метка живёт вместе с отметкой: статичный текст «заведу» на снятой
+     строке — то же обещание, из-за которого Д-130-6 и случился. */
+  const mk = document.getElementById("mk" + i + "-" + j);
+  if(mk && e.isNew){
+    mk.style.color = on ? "#30d158" : "#ff9f0a";
+    mk.textContent = on ? "· нового проёма нет в схеме — заведу" : "· новый проём — не заведу, пока строка снята";
+    if(typeof uzApply === "function" && typeof LANG !== "undefined" && LANG === "uz") uzApply(mk.parentNode || mk);
+  }
 }
 
 function toggleVRoom(i, j){
@@ -11817,6 +11884,8 @@ const UZ_RULES = [
   [/^Не понял, куда ведёт проём: (.+)$/, "Ochiq qayerga olib borishini tushunmadim: $1"],
   [/^Проёмов → (.+) несколько — поправьте в карточке помещения$/, "→ $1 bir nechta ochiq bor — xona kartochkasida to'g'rilang"],
   [/^· нового проёма нет в схеме, заведу$/, "· sxemada bunday ochiq yo'q, qo'shaman"],
+  [/^· нового проёма нет в схеме — заведу$/, "· sxemada bunday ochiq yo'q — qo'shaman"],
+  [/^· новый проём — не заведу, пока строка снята$/, "· yangi ochiq — belgilanmaguncha qo'shilmaydi"],
   [/^Готово, (.+)! Вы в бригаде\. Открываю панель…$/, "Tayyor, $1! Siz brigadadasiz. Panel ochilmoqda…"],
   [/^ориентир по рынку (.+)$/, "bozor mo'ljali $1"],
   [/^источник: (.+)$/, "manba: $1"],
@@ -12076,7 +12145,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "131.1";
+const BUILD = "131.2";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
