@@ -938,6 +938,7 @@ function contractBlock(){
       '<div class="r"><span class="k">Преемственность цен</span><span class="v" style="font-size:13px">' + esc(succName(frozen.succession)) + '</span></div>' +
       '<div class="m" style="margin-top:8px;color:var(--hint)">Позиции договора больше не меняются — ни разнесением, ни правкой цены. ' +
         'Всё новое оформляется дополнительным соглашением.</div>' +
+      '<div class="row" style="margin-top:10px"><button onclick="contractFileOpen(\'' + attr(frozen.id) + '\')" ' + btnQ + '>📄 Документ договора</button></div>' +
     '</div>';
   }
 
@@ -949,6 +950,7 @@ function contractBlock(){
       '<div class="r"><span class="k">Позиций</span><span class="v">' + (open.items || []).length + '</span></div>' +
       '<div class="r"><span class="k">Преемственность цен</span><span class="v" style="font-size:13px">' + esc(succName(open.succession)) + '</span></div>' +
       '<div class="m" style="margin-top:6px">Предложил ' + esc(open.proposed_by || '—') + ' · ' + esc(open.proposed_at || '') + '</div>' +
+      '<div class="row" style="margin-top:8px"><button onclick="contractFileOpen(\'' + attr(open.id) + '\')" ' + btnQ + '>📄 Документ договора</button></div>' +
       (mine
         ? '<div class="m" style="margin-top:10px;color:var(--warn)">Ждём решения второй стороны.</div>' +
           '<div class="row" style="margin-top:8px"><button onclick="contractDecide(\'' + attr(open.id) + '\', false)" ' + btnQ + '>Отозвать</button></div>'
@@ -979,6 +981,58 @@ function contractBlock(){
     '</div>' +
     '<div class="row" style="margin-top:10px"><button onclick="contractPropose()" ' + btn + '>Предложить к признанию</button></div>' +
   '</div>';
+}
+
+
+/* ── Документ договора [чат 120, B4 разбора 35] ─────────────────────────────
+   Печатная форма собирается в базе (contract_render) и приходит режимом file
+   ветки POST /remont/contract — HTML целиком, вместе со стилями печати.
+   Панель не рисует документ сама: иначе бумажная форма и то, что хранится,
+   разъезжаются, а спорить стороны будут по бумаге.
+   Показываем в iframe (srcdoc), а не в новом окне: Telegram WebView открывать
+   окна не даёт. Печать — штатная печать устройства (в неё же печатают в PDF),
+   скачивание — Blob + download; если клиент не умеет ни того, ни другого,
+   документ всё равно виден глазами и это не тупик. */
+async function contractFileOpen(id){
+  if(!id){ toast('Договор не выбран', 'err'); return; }
+  toast('Собираю документ…');
+  const j = await contractApi({ mode: 'file', contract_id: id });
+  if(!j || !j.ok || !j.html){ toast((j && j.error) || 'документ не пришёл', 'err'); return; }
+  contractFileShow(j);
+}
+
+function contractFileShow(doc){
+  const btn = 'padding:9px 12px;border-radius:10px;border:0;font-size:14px;color:#fff';
+  const box = document.createElement('div');
+  box.style.cssText = 'position:fixed;inset:0;z-index:9998;background:#000;display:flex;flex-direction:column';
+  box.innerHTML =
+    '<div style="display:flex;gap:8px;padding:10px;background:#1c1c1e;align-items:center">' +
+      '<div style="flex:1;font-size:14px;color:#fff">Договор № ' + esc(doc.no || '') + '</div>' +
+      '<button id="dfPrint" style="' + btn + ';background:#0a84ff">Печать</button>' +
+      '<button id="dfSave"  style="' + btn + ';background:#3a3a3c">Скачать</button>' +
+      '<button id="dfClose" style="' + btn + ';background:#3a3a3c">Закрыть</button>' +
+    '</div>' +
+    '<iframe id="dfFrame" style="flex:1;width:100%;border:0;background:#fff"></iframe>';
+  document.body.appendChild(box);
+  if(typeof uzApply === 'function') uzApply(box);
+  const fr = box.querySelector('#dfFrame');
+  fr.setAttribute('srcdoc', doc.html);
+  box.querySelector('#dfClose').onclick = () => box.remove();
+  box.querySelector('#dfPrint').onclick = () => {
+    try{ fr.contentWindow.focus(); fr.contentWindow.print(); }
+    catch(e){ toast('этот клиент печатать не умеет — сохраните файл и напечатайте из браузера', 'err'); }
+  };
+  box.querySelector('#dfSave').onclick = () => {
+    try{
+      const blob = new Blob([doc.html], { type: 'text/html;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = doc.filename || 'dogovor.html';
+      document.body.appendChild(a); a.click();
+      setTimeout(() => { a.remove(); URL.revokeObjectURL(url); }, 4000);
+      toast('Файл сохранён');
+    }catch(e){ toast('сохранить не вышло: ' + (e && e.message || ''), 'err'); }
+  };
 }
 
 /* Блок «Мои бригады» на экране бригадира: выбор адреса приглашения и вход
@@ -11138,7 +11192,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "119.1";
+const BUILD = "120.1";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
