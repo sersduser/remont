@@ -19,7 +19,8 @@
      именно сообщит размер этой зоны — браузер через env() или клиент через свои
      переменные — зависит от версии Telegram. До 128 учитывались только
      телеграмовские, и там, где их нет, верх экрана уезжал под системную строку. */
-  --top-inset: max(env(safe-area-inset-top, 0px), var(--tg-safe-area-inset-top, 0px), var(--tg-content-safe-area-inset-top, 0px));
+  --top-inset: calc(max(env(safe-area-inset-top, 0px), var(--tg-safe-area-inset-top, 0px))
+                    + var(--tg-content-safe-area-inset-top, 0px));
 }
 *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
 body{background:var(--bg);color:var(--txt);font:15px/1.5 -apple-system,"Segoe UI",Roboto,sans-serif;
@@ -38,6 +39,7 @@ body{background:var(--bg);color:var(--txt);font:15px/1.5 -apple-system,"Segoe UI
   min-height:40px;display:flex;align-items:center;background:#3a3a3c;color:#fff;white-space:nowrap;
   touch-action:manipulation}
 .hello{font-size:19px;font-weight:600}
+@keyframes objload{0%{transform:translateX(-100%)}100%{transform:translateX(250%)}}
 .sub{font-size:12px;color:var(--hint);margin-bottom:14px}
 
 .stat{background:var(--sec);border-radius:12px;padding:13px 15px;margin-bottom:12px}
@@ -163,7 +165,16 @@ input[type=number]{text-align:center}
 .vitem .vv{font-size:13px;margin-top:3px}
 .vitem .vv b{color:var(--ok)}
 .vquote{background:var(--sec);border-radius:10px;padding:10px 12px;font-size:13px;color:var(--hint);
-  margin-bottom:12px;line-height:1.45;position:sticky;top:-4px;z-index:2;box-shadow:0 6px 12px -8px rgba(0,0,0,.9)}
+  margin-bottom:12px;line-height:1.45;position:sticky;top:-4px;z-index:2;box-shadow:0 6px 12px -8px rgba(0,0,0,.9);
+  max-height:5.9em;overflow:hidden;cursor:pointer}
+/* [чат 129] Длинная реплика раздувала липкую цитату на пол-окна, и она забирала
+   себе нажатия по строкам под собой. Держим её в четыре строки; полный текст —
+   по тапу. */
+.vquote.op{max-height:none}
+.vquote::after{content:'';position:absolute;left:0;right:0;bottom:0;height:22px;pointer-events:none;
+  background:linear-gradient(to bottom, rgba(0,0,0,0), var(--sec))}
+.vquote.op::after{display:none}
+.vquote .vq-more{display:block;margin-top:4px;font-size:11.5px;color:var(--acc);opacity:.9}
 .vquote b{color:var(--txt);font-weight:500}
 .vspin{width:34px;height:34px;border:3px solid rgba(125,139,153,.3);border-top-color:var(--btn);
   border-radius:50%;animation:spin .8s linear infinite;margin:8px auto}
@@ -205,8 +216,28 @@ function safeTop(){
     const b = (tg && tg.contentSafeAreaInset && tg.contentSafeAreaInset.top) || 0;
     const r = document.documentElement.style;
     if (a) r.setProperty('--tg-safe-area-inset-top', a + 'px');
-    if (b) r.setProperty('--tg-content-safe-area-inset-top', b + 'px');
+    /* [чат 129, по снимкам Дмитрия 00:03—00:34] Шапка клиента — ВТОРОЙ слой
+       поверх системной зоны, и складывается с ней, а не спорит. Часть сборок
+       Telegram про свою шапку молчит (contentSafeAreaInset.top = 0), хотя рисует
+       над содержимым кнопку «Назад», шеврон и «⋮». Тогда берём типовую высоту
+       этой шапки: лучше лишние 46 px запаса, чем кнопка «Сменить» под кнопкой
+       клиента. На клиентах, которые инсет отдают, ничего не меняется. */
+    const mob = ['android', 'android_x', 'ios'].indexOf(String((tg && tg.platform) || '')) >= 0;
+    const fb  = (!b && mob) ? 46 : b;
+    if (fb) r.setProperty('--tg-content-safe-area-inset-top', fb + 'px');
+    SAFE_DIAG = { env: getComputedStyle(document.documentElement).getPropertyValue('--top-inset').trim(),
+                  safe: a, content: b, fallback: fb, platform: (tg && tg.platform) || '—',
+                  ver: (tg && tg.version) || '—' };
   }catch(e){}
+}
+/* Числа зоны видны человеку по долгому нажатию на полосу объекта: лечить верх
+   экрана вслепую мы уже пробовали дважды. */
+let SAFE_DIAG = {};
+function safeDiagShow(){
+  const d = SAFE_DIAG || {};
+  toast('Зона сверху: итог ' + (d.env || '—') + ' · система ' + (d.safe || 0) + ' · шапка клиента ' +
+        (d.content || 0) + (d.fallback !== d.content ? (' → запас ' + d.fallback) : '') +
+        ' · ' + (d.platform || '—') + ' · Bot API ' + (d.ver || '—'), 'wait');
 }
 safeTop();
 try{
@@ -465,8 +496,15 @@ async function load(){
       }
       renderInvite(); return;
     }
+    /* [чат 129, слова Дмитрия «кнопка "назад" тоже перестала работать при этом»]
+       Экран ошибки был тупиком: стек к этому моменту уже сдвинут переключателем
+       объекта, а на самом экране не было ни одной кнопки. Даём выход всегда. */
     app.innerHTML = `<div class="err"><b>Не удалось загрузить.</b><br>${e.message}
-      <br><br><span style="color:var(--hint);font-size:13px">Проверьте интернет и откройте ещё раз.</span></div>`;
+      <br><br><span style="color:var(--hint);font-size:13px">Проверьте интернет и попробуйте ещё раз.</span></div>
+      <div class="row" style="margin-top:14px;gap:8px">
+        <button onclick="load()" style="flex:1;padding:12px;border-radius:11px;border:0;background:#0a84ff;color:#fff;font-size:15px">Ещё раз</button>
+        <button onclick="go('objsel')" style="flex:1;padding:12px;border-radius:11px;border:1px solid #3a3a3c;background:#1c1c1e;color:#fff;font-size:15px">К объектам</button>
+      </div>`;
   }
 }
 
@@ -907,7 +945,7 @@ function addendumBlock(){
         (a.proposed_at ? (' · ' + esc(String(a.proposed_at).slice(0, 10))) : '') + '</div></div>' +
         '<div class="v">' + usd(a.total_usd) + ' $</div></div>' +
       '<div class="row" style="gap:8px;margin:2px 0 10px;flex-wrap:wrap">' +
-        '<button onclick="contractFileOpen(\'' + attr(a.id) + '\')" ' + btnQ + '>📄 Документ</button>' +
+        '<button onclick="contractFileOpen(\'' + attr(a.id) + '\')" ' + btnQ + '>📄 Документ № ' + esc(a.no) + '</button>' +
         (st === 'предложен'
           ? (mine
               ? '<span class="k" style="align-self:center">ждём решения второй стороны</span>' +
@@ -1182,7 +1220,7 @@ function contractBlock(){
       '<div class="r"><span class="k">Преемственность цен</span><span class="v" style="font-size:13px">' + esc(succName(frozen.succession)) + '</span></div>' +
       '<div class="m" style="margin-top:8px;color:var(--hint)">Позиции договора больше не меняются — ни разнесением, ни правкой цены. ' +
         'Всё новое оформляется дополнительным соглашением.</div>' +
-      '<div class="row" style="margin-top:10px"><button onclick="contractFileOpen(\'' + attr(frozen.id) + '\')" ' + btnQ + '>📄 Документ договора</button></div>' +
+      '<div class="row" style="margin-top:10px"><button onclick="contractFileOpen(\'' + attr(frozen.id) + '\')" ' + btnQ + '>📄 Документ договора № ' + esc(frozen.no) + '</button></div>' +
     '</div>';
   }
 
@@ -1194,7 +1232,7 @@ function contractBlock(){
       '<div class="r"><span class="k">Позиций</span><span class="v">' + (open.items || []).length + '</span></div>' +
       '<div class="r"><span class="k">Преемственность цен</span><span class="v" style="font-size:13px">' + esc(succName(open.succession)) + '</span></div>' +
       '<div class="m" style="margin-top:6px">Предложил ' + esc(open.proposed_by || '—') + ' · ' + esc(open.proposed_at || '') + '</div>' +
-      '<div class="row" style="margin-top:8px"><button onclick="contractFileOpen(\'' + attr(open.id) + '\')" ' + btnQ + '>📄 Документ договора</button></div>' +
+      '<div class="row" style="margin-top:8px"><button onclick="contractFileOpen(\'' + attr(open.id) + '\')" ' + btnQ + '>📄 Документ договора № ' + esc(open.no) + '</button></div>' +
       (mine
         ? '<div class="m" style="margin-top:10px;color:var(--warn)">Ждём решения второй стороны.</div>' +
           '<div class="row" style="margin-top:8px"><button onclick="contractDecide(\'' + attr(open.id) + '\', false)" ' + btnQ + '>Отозвать</button></div>'
@@ -4331,11 +4369,23 @@ function elemPlan(){
     if(isDoor){ la.d--; lb.d--; }
     out.push({ a: a, b: b, fact: isDoor ? "дверь" : "проём" });
   });
+  /* [чат 129, по снимку Дмитрия 00:34 «на основе чего сформировалось такое
+     причудливое предложение?»] Правило «двери сверх числа соседей — внешние»
+     верно для объекта с заведённой смежностью и вырождается на пустом: если
+     смежность не введена вовсе, наружными становятся ВСЕ двери, и схема
+     предлагает четыре выхода в подъезд из одного коридора. Входная дверь на
+     квартиру одна — больше одной наружу не предлагаем, а без смежности не
+     предлагаем вовсе и говорим об этом словами. */
+  const hasAdj = pairs.length > 0;
+  let outDoor = 0;
   rooms.forEach(r => {
     const l = left[r.code] || { d: 0, w: 0 };
     for(let i = 0; i < l.w; i++) out.push({ a: r.code, b: "улица", fact: "окно" });
-    for(let i = 0; i < l.d; i++) out.push({ a: r.code, b: "подъезд", fact: "дверь" });
+    if(!hasAdj || outDoor) return;
+    if(l.d > 0){ out.push({ a: r.code, b: "подъезд", fact: "дверь" }); outDoor = 1; }
   });
+  out._noAdj = !hasAdj;
+  out._skipped = hasAdj ? 0 : rooms.reduce((s, r) => s + (Number((left[r.code] || {}).d) || 0), 0);
   return out;
 }
 
@@ -4350,7 +4400,12 @@ function elemBuild(){
   openVSheet(
     '<div class="vh">Схема проёмов</div>' +
     '<div class="vs">Соберу ' + plan.length + ' проёмов из смежности помещений и чисел окон и дверей. ' +
-      'План и факт совпадут — расхождения вы назовёте потом, голосом или руками.</div>' +
+      'План и факт совпадут — расхождения вы назовёте потом, голосом или руками.' +
+      (plan._noAdj
+        ? '<br><br><b style="color:#ff9f0a">Смежность помещений не заведена</b> — какая комната с какой граничит, панель не знает, ' +
+          'поэтому строит только окна. ' + (plan._skipped ? ('Двери (' + plan._skipped + ') пока пропущены: ') : '') +
+          'скажите голосом «из коридора дверь в зал и в кухню» или задайте смежность на экране «Объект» — и постройте заново.'
+        : '') + '</div>' +
     '<div id="vlist">' + rows + '</div>' +
     (plan.length > 14 ? '<div class="vd">и ещё: ' + (plan.length - 14) + '</div>' : '') +
     '<div class="vrow">' +
@@ -6892,7 +6947,18 @@ function objsSwitch(key){
   D = null; INVS = null; CREW_DATA = null;
   CONTRACTS = null; PLAN = null; ADDENDA = null; ADD_QTY = {};
   back();
-  app.innerHTML = '<div class="hello">Открываю объект…</div>';
+  /* [чат 129, слова Дмитрия «переключение занимает около 15 секунд… добавить
+     индикатор процесса, чтоб не возникало ощущения зависа продукта»] Смена
+     объекта сбрасывает все кэши и заново тянет самый тяжёлый ответ сервера.
+     Пока он идёт, экран обязан показывать движение и оставлять выход. */
+  app.innerHTML =
+    '<div class="hello">Открываю объект…</div>' +
+    '<div class="sub">' + esc(objsTitle(key)) + '</div>' +
+    '<div style="height:4px;border-radius:3px;overflow:hidden;background:#2c2c2e;margin:14px 0 10px">' +
+      '<div style="height:100%;width:40%;background:#0a84ff;animation:objload 1.1s ease-in-out infinite"></div></div>' +
+    '<div class="m" style="color:var(--hint)">Загружаю помещения, работы, договоры и бригаду — это самый долгий ответ сервера.</div>' +
+    '<div class="row" style="margin-top:14px"><button onclick="go(\'objsel\')" ' +
+      'style="padding:11px 15px;border-radius:11px;border:1px solid #3a3a3c;background:#1c1c1e;color:#fff;font-size:14px">К списку объектов</button></div>';
   load();
 }
 
@@ -9360,7 +9426,14 @@ function qzScreen(){
     return head + '<div class="sub">пройдено · дыр не осталось</div>' + qzSummaryHtml();
   }
 
-  const idx = Math.min(QZ.pos + 1, total);
+  /* [чат 129, по наблюдению Дмитрия «зациклился опросник»] Номер вопроса — это
+     пройденный путь, а не позиция в убывающей очереди. Пройденные берём из
+     истории предъявленных: вопрос, которого в живой очереди больше нет, закрыт. */
+  const liveIds = {}; qzList().forEach(x => { liveIds[x.id] = 1; });
+  const seenIds = {}; (QZ.hist || []).forEach(x => { if(!liveIds[x.id]) seenIds[x.id] = 1; });
+  const passed  = Object.keys(seenIds).length;
+  const idx     = passed + Math.min(QZ.pos + 1, Math.max(total, 1));
+  const totalAll = passed + total;
   const isLate = !!QZ.later[q.id];
   const room = q.room ? (roomList().find(r => r.code === q.room) || null) : null;
 
@@ -9442,7 +9515,7 @@ function qzScreen(){
      с 114.1, но в опросе человек проводит больше времени, чем на нём. */
   return '<div style="position:sticky;top:0;z-index:50;background:#000;padding:8px 0 6px;margin:-4px 0 2px;box-shadow:0 8px 12px -10px rgba(0,0,0,.95)">' +
       '<div class="hello" style="margin:0">Опрос · ' + esc(objNowTitle()) + '</div>' +
-      '<div class="sub" style="margin:2px 0 0">вопрос ' + idx + " из " + total + (later ? (" · отложено " + later) : "") +
+      '<div class="sub" style="margin:2px 0 0">вопрос ' + idx + " из " + totalAll + (later ? (" · отложено " + later) : "") +
         (room ? (" · " + esc(qzName(room))) : "") + "</div>" +
     "</div>" +
     '<div class="stat">' +
@@ -10057,7 +10130,7 @@ function showVResult(d){
   }
 
   const multi = items.length > 1;
-  const quote = d.recognized ? `<div class="vquote">Расслышал: <b>${esc(d.recognized)}</b></div>` : "";
+  const quote = d.recognized ? `<div class="vquote" onclick="this.classList.toggle('op')">Расслышал: <b>${esc(d.recognized)}</b><span class="vq-more">коснитесь, чтобы развернуть или свернуть</span></div>` : "";
   const rows = vItems.map((it, i) => {
     const claim = it.field === "Статус" && it.value === "Готово";
     return `
@@ -10241,7 +10314,7 @@ function vrSideLabel(side, said){
 function showVRooms(d){
   const list = Array.isArray(d.rooms) ? d.rooms : [];
   vRooms = list.map(r => ({ ...r, fields: (r.fields || []).map(f => ({ ...f, _sel: !f.conflict })), elems: vrElems(r) }));
-  const quote = d.recognized ? `<div class="vquote">Расслышал: <b>${esc(d.recognized)}</b></div>` : "";
+  const quote = d.recognized ? `<div class="vquote" onclick="this.classList.toggle('op')">Расслышал: <b>${esc(d.recognized)}</b><span class="vq-more">коснитесь, чтобы развернуть или свернуть</span></div>` : "";
   if(!list.length){
     tg?.HapticFeedback?.notificationOccurred("warning");
     openVSheet(`
@@ -10425,7 +10498,7 @@ let vRep = [];
 function showVRepair(d){
   const list = Array.isArray(d.rooms) ? d.rooms : [];
   vRep = list.map(r => ({ ...r, kinds: (r.kinds || []).map(k => ({ ...k, _sel: !k.already })) }));
-  const quote = d.recognized ? `<div class="vquote">Расслышал: <b>${esc(d.recognized)}</b></div>` : "";
+  const quote = d.recognized ? `<div class="vquote" onclick="this.classList.toggle('op')">Расслышал: <b>${esc(d.recognized)}</b><span class="vq-more">коснитесь, чтобы развернуть или свернуть</span></div>` : "";
   if(!list.length){
     tg?.HapticFeedback?.notificationOccurred("warning");
     openVSheet(`
@@ -11844,7 +11917,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "128.1";
+const BUILD = "129.1";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
