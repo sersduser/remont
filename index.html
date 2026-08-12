@@ -838,12 +838,12 @@ async function contractPropose(){
   const sum = contractSum();
   if(!(sum > 0)){ toast('В смете нет работ с ценой', 'err'); return; }
   const nop = contractNoPrice();
-  if(nop.length && !confirm('В смете ' + nop.length + ' работ без цены — в договор они не войдут:\n' +
+  if(nop.length && !await ask('В смете ' + nop.length + ' работ без цены — в договор они не войдут:\n' +
       nop.slice(0, 8).map(w => '· ' + w.name).join('\n') + (nop.length > 8 ? '\n…' : '') +
-      '\n\nПредложить договор без них?')) return;
-  if(!confirm('Предложить договор на ' + fmt(sum) + ' $ ?\n' +
+      '\n\nПредложить договор без них?')){ toast('Отменено'); return; }
+  if(!await ask('Предложить договор на ' + fmt(sum) + ' $ ?\n' +
       'Опция преемственности: ' + (CONTRACT_SUCC === 'inherit' ? 'наследование цен договора' : 'прайс бригадира на дату допа') +
-      '\n\nПосле признания второй стороной позиции замораживаются.')) return;
+      '\n\nПосле признания второй стороной позиции замораживаются.')){ toast('Отменено'); return; }
   CONTRACT_BUSY = true;
   toast('Отправляю…', 'wait');
   const j = await contractApi({ mode: 'propose', object_id: D.object_id, total: sum,
@@ -862,9 +862,9 @@ async function contractDecide(id, yes){
   if(CONTRACT_BUSY) return;
   let reason = null;
   if(!yes){
-    reason = prompt('Что не так с договором? Причина уйдёт второй стороне.');
-    if(reason === null) return;
-  } else if(!confirm('Признать договор? После этого позиции замораживаются и не меняются — правки пойдут допсоглашением.')) return;
+    reason = await askText('Что не так с договором? Причина уйдёт второй стороне.');
+    if(reason === null){ toast('Отменено'); return; }
+  } else if(!await ask('Признать договор? После этого позиции замораживаются и не меняются — правки пойдут допсоглашением.')){ toast('Отменено'); return; }
   CONTRACT_BUSY = true;
   toast(yes ? 'Признаю…' : 'Отправляю отказ…', 'wait');
   const j = await contractApi({ mode: yes ? 'accept' : 'reject', contract_id: id, reason: reason });
@@ -1019,6 +1019,50 @@ function contractBlock(){
   '</div>';
 }
 
+
+
+/* ── Подтверждения без нативных диалогов [чат 125] ──────────────────────────
+   window.confirm и window.prompt в Telegram WebView не работают: окно не
+   показывается, а вызов немедленно возвращает false/null. Любая кнопка,
+   спрашивавшая подтверждение, из-за этого выглядит мёртвой — именно так
+   вёл себя «Собрать смету» (наблюдение 124: два нажатия, ни одного вызова
+   на сервер). Telegram.WebApp.showConfirm есть не во всех версиях клиента
+   и режет сообщение до 256 символов, а наши подтверждения длиннее (список
+   работ без цены, перечень помещений). Поэтому спрашиваем своим окном:
+   оно ведёт себя одинаково везде и длину не ограничивает. */
+function uiAsk(opts){
+  return new Promise(res => {
+    const o = opts || {};
+    const box = document.createElement('div');
+    box.style.cssText = 'position:fixed;inset:0;z-index:10000;background:rgba(0,0,0,.62);' +
+      'display:flex;align-items:center;justify-content:center;padding:18px';
+    box.innerHTML =
+      '<div style="max-width:430px;width:100%;background:#1c1c1e;border-radius:14px;padding:16px;color:#fff;max-height:80vh;overflow:auto">' +
+        '<div style="font-size:14.5px;line-height:1.45;white-space:pre-wrap">' + esc(String(o.msg || '')) + '</div>' +
+        (o.input
+          ? '<input id="uaInput" value="' + attr(o.def || '') + '" style="width:100%;margin-top:12px;padding:10px;border-radius:10px;border:1px solid #3a3a3c;background:#0f0f10;color:#fff;font-size:15px">'
+          : '') +
+        '<div style="display:flex;gap:8px;margin-top:14px">' +
+          '<button id="uaNo" style="flex:1;padding:11px;border-radius:10px;border:1px solid #3a3a3c;background:transparent;color:#fff;font-size:15px">' + esc(o.no || 'Отмена') + '</button>' +
+          '<button id="uaYes" style="flex:1;padding:11px;border-radius:10px;border:0;background:#0a84ff;color:#fff;font-size:15px">' + esc(o.yes || 'Да') + '</button>' +
+        '</div>' +
+      '</div>';
+    document.body.appendChild(box);
+    if(typeof uzApply === 'function') uzApply(box);
+    const done = (v) => { try{ box.remove(); }catch(e){} res(v); };
+    box.querySelector('#uaNo').onclick  = () => done(o.input ? null : false);
+    box.querySelector('#uaYes').onclick = () => done(o.input ? String((box.querySelector('#uaInput') || {}).value || '') : true);
+    box.onclick = (e) => { if(e.target === box) done(o.input ? null : false); };
+    const f = box.querySelector('#uaInput');
+    if(f) setTimeout(() => { try{ f.focus(); }catch(e){} }, 60);
+  });
+}
+function ask(msg, yes){ return uiAsk({ msg: msg, yes: yes }); }
+function askText(msg, def){ return uiAsk({ msg: msg, input: true, def: def || '', yes: 'Отправить' }); }
+/* Очистка плана — та же кнопка, но без inline-confirm в разметке. */
+function profClearAsk(){
+  ask('Очистить план?').then(y => { if(y){ PROF.plan = {}; render(true); } });
+}
 
 /* ── Документ договора [чат 120, B4 разбора 35] ─────────────────────────────
    Печатная форма собирается в базе (contract_render) и приходит режимом file
@@ -1652,9 +1696,9 @@ async function profBuild(){
   });
 
   const t = profTotalAll();
-  if(!confirm('Добавить ' + rows.length + ' работ в смету на ' + fmt(t.sum) + ' USD?' +
+  if(!await ask('Добавить ' + rows.length + ' работ в смету на ' + fmt(t.sum) + ' USD?' +
     (t.skipped ? ('\nИз них пропущенных этапов: ' + t.skipped + ' — уйдут строками без цены, с причиной') : '') +
-    '\nПомещения: ' + names.join(', '))) return;
+    '\nПомещения: ' + names.join(', '))){ toast('Отменено'); return; }
 
   try{
     const r = await fetch(API + '/append', {
@@ -5247,7 +5291,7 @@ const CREW_SHEETS = [
 let CREW_BUSY = false, CREW_DONE = false;
 async function crewSheets(){
   if(CREW_BUSY) return;
-  if(!confirm("Подготовить листы бригады в общей базе (4 листа)?")) return;
+  if(!await ask("Подготовить листы бригады в общей базе (4 листа)?")) return;
   CREW_BUSY = true;
   toast("Готовлю листы…", "wait");
   const made = [], had = [], fail = [];
@@ -5696,7 +5740,7 @@ let CW_OFF_BUSY = false;
 async function cwOff(i){
   const w = (((CREW_DATA || {}).workers) || [])[i];
   if(!w || CW_OFF_BUSY) return;
-  if(!confirm("Отключить работника «" + w.name + "»? Наряды вперёд снимутся (начатый сегодняшний день останется), история цела.")) return;
+  if(!await ask("Отключить работника «" + w.name + "»? Наряды вперёд снимутся (начатый сегодняшний день останется), история цела.")) return;
   CW_OFF_BUSY = true;
   try{
     toast("Отключаю…", "wait");
@@ -5748,13 +5792,13 @@ async function ordCreate(){
   const load = load0 === "часы" ? ("часы " + (Number(hours) || 4)) : load0;
   const days = [];
   for(let d = from; d <= to && days.length < 31; d = dShift(d, 1)) days.push(d);
-  if(days.length > 14 && !confirm("Наряд на " + days.length + " дней подряд — создать?")) return;
+  if(days.length > 14 && !await ask("Наряд на " + days.length + " дней подряд — создать?")) return;
   /* Конфликт (разбор 09 §3.2): два «весь день» на одну дату — предупреждаем,
      но не запрещаем: бывает переброска в середине дня. */
   const busyDays = days.filter(d => ordActive().some(o =>
     String(o.worker || "").trim() === worker && String(o.date || "") === d &&
     String(o.load || "") === "весь день" && load === "весь день"));
-  if(busyDays.length && !confirm(worker + " уже занят весь день: " + busyDays.map(dLabel).join(", ") + ". Всё равно назначить?")) return;
+  if(busyDays.length && !await ask(worker + " уже занят весь день: " + busyDays.map(dLabel).join(", ") + ". Всё равно назначить?")) return;
   if(ORD_BUSY) return;
   ORD_BUSY = true;
   try{
@@ -5773,7 +5817,7 @@ async function ordCreate(){
 async function ordCancel(i){
   const o = (((CREW_DATA || {}).orders) || [])[i];
   if(!o || ORD_BUSY) return;
-  if(!confirm("Отменить наряд: " + (o.worker || "") + ", " + dLabel(String(o.date || "")) + "?")) return;
+  if(!await ask("Отменить наряд: " + (o.worker || "") + ", " + dLabel(String(o.date || "")) + "?")) return;
   ORD_BUSY = true;
   try{
     toast("Отменяю…", "wait");
@@ -5790,7 +5834,7 @@ let TM_BUSY = false, TM_FIX = null, TM_ALL = false;
 async function tmDecide(i, mode){
   const t = (((CREW_DATA || {}).time) || [])[i];
   if(!t || TM_BUSY) return;
-  if(mode === "reject" && !confirm("Отклонить отметку «" + (t.event || "") + " " + (t.time || "") + "» (" + (t.worker || "") + ")?")) return;
+  if(mode === "reject" && !await ask("Отклонить отметку «" + (t.event || "") + " " + (t.time || "") + "» (" + (t.worker || "") + ")?")) return;
   let newTime = "";
   if(mode === "fix"){
     newTime = String((document.getElementById("tm_" + i) || {}).value || "").trim();
@@ -5829,7 +5873,7 @@ let FT_BUSY = false, FT_FIX = null, FT_ALL = false;
 async function ftDecide(i, mode){
   const t = (((CREW_DATA || {}).ftime) || [])[i];
   if(!t || FT_BUSY) return;
-  if(mode === "reject" && !confirm("Отклонить отметку «" + (t.event || "") + " " + (t.time || "") + "» (" + (t.worker || "") + ")?")) return;
+  if(mode === "reject" && !await ask("Отклонить отметку «" + (t.event || "") + " " + (t.time || "") + "» (" + (t.worker || "") + ")?")) return;
   let newTime = "";
   if(mode === "fix"){
     newTime = String((document.getElementById("ft_" + i) || {}).value || "").trim();
@@ -6021,7 +6065,7 @@ let RP_BUSY = false;
 async function rpDecide(i, mode){
   const p = (((CREW_DATA || {}).reports) || [])[i];
   if(!p || RP_BUSY) return;
-  if(mode === "reject" && !confirm("Отклонить отчёт " + (p.worker || "") + "?")) return;
+  if(mode === "reject" && !await ask("Отклонить отчёт " + (p.worker || "") + "?")) return;
   let val = String(p.value || "").trim();
   if(mode === "accept"){
     val = String((document.getElementById("rp_" + i) || {}).value || "").trim().replace(",", ".");
@@ -6146,7 +6190,7 @@ async function handMarkGo(){
   const day = mo.date === today ? "сегодня" : dLabel(mo.date);
   const dup = (((CREW_DATA || {}).time) || []).some(x =>
     String(x.date || "") === mo.date && String(x.event || "") === HM.ev && String(x.status || "") !== "отклонено");
-  if(dup && !confirm("Отметка «" + HM.ev + "» " + day + " уже есть. Добавить ещё одну?")) return;
+  if(dup && !await ask("Отметка «" + HM.ev + "» " + day + " уже есть. Добавить ещё одну?")) return;
   HM_BUSY = true;
   try{
     toast("Записываю…", "wait");
@@ -7108,7 +7152,7 @@ profile(){
         '<div class="r"><span class="k" style="font-size:13px;opacity:.75">Например: «в спальне потолок выровнять и покрасить, стены под обои» — помещение подставится из сказанного.</span></div></div>' +
       (all.n ? ('<div class="stat"><div class="r" style="display:flex;gap:8px">' +
         '<button onclick="profBuild()" style="flex:2;padding:13px;border-radius:12px;border:0;background:#30d158;color:#000;font-size:15px;font-weight:600">Собрать смету: ' + all.n + ' работ · ' + fmt(all.sum) + ' USD</button>' +
-        '<button onclick="if(confirm(\'Очистить план?\')){ PROF.plan = {}; render(true); }" style="flex:1;padding:13px;border-radius:12px;border:0;background:#3a3a3c;color:#fff;font-size:15px">Очистить</button>' +
+        '<button onclick="profClearAsk()" style="flex:1;padding:13px;border-radius:12px;border:0;background:#3a3a3c;color:#fff;font-size:15px">Очистить</button>' +
       '</div>' + (all.blank ? '<div class="r"><span class="k" style="font-size:13px;color:#ff9f0a">Без объёма: ' + all.blank + ' — заполните или снимите, иначе смету не собрать.</span></div>' : '') + '</div>') : '') +
       items;
   }
@@ -11262,7 +11306,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "125.1";
+const BUILD = "125.2";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
