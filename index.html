@@ -752,6 +752,160 @@ async function contractsLoad(force){
 }
 
 /* ═══════════════════════════════════════════════════════════════════════
+   ДОПСОГЛАШЕНИЯ [чат 127, работа B5 разбора 35]
+
+   Допсоглашение — дочерний договор к признанному: те же две таблицы,
+   kind='допсоглашение', номер «1.1», своё признание второй стороной.
+   Цену за единицу считает СЕРВЕР по опции преемственности родителя:
+   'inherit' — из позиций договора по виду работ, 'pricelist' — из прайса
+   бригадира на дату. Панель цену не считает вовсе и даже вид работ не знает
+   (в /data его нет) — она называет коды работ и объёмы, остальное добирает
+   база. Иначе экран и договор разошлись бы там, где спорить будут по бумаге.
+   ═══════════════════════════════════════════════════════════════════════ */
+let ADDENDA = null;          // ответ addendum_list: {ok, допов, список:[…], сумма_признанных, me}
+let ADD_LOAD = false;        // замок от параллельных загрузок
+let ADD_BUSY = false;        // замок от двойного тапа [грабля 012]
+let ADD_QTY  = {};           // объёмы, введённые на экране составления: код работы → число
+
+async function addendaLoad(force){
+  const f = contractFrozen();
+  if(!f){ ADDENDA = null; return null; }
+  if(ADDENDA && !force) return ADDENDA;
+  const j = await contractApi({ mode: 'addendum_list', object_id: D.object_id, contract_id: f.id });
+  ADDENDA = (j && j.ok) ? j : { ok: false, error: (j && j.error) || 'допсоглашения недоступны' };
+  return ADDENDA;
+}
+
+/* Ленивая подгрузка при первом показе блока — как у договора и хода работ. */
+function addendaEnsure(){
+  if(ADDENDA !== null || ADD_LOAD) return;
+  ADD_LOAD = true;
+  addendaLoad(true).then(() => { ADD_LOAD = false; render(); })
+                   .catch(() => { ADD_LOAD = false; ADDENDA = { ok: false, error: 'допсоглашения недоступны' }; render(); });
+}
+
+const addList = () => (ADDENDA && ADDENDA.ok && Array.isArray(ADDENDA['список'])) ? ADDENDA['список'] : [];
+const addMine = a => !!(a && ADDENDA && a.proposed_by && ADDENDA.me && String(a.proposed_by) === String(ADDENDA.me));
+
+function addNewOpen(){ ADD_QTY = {}; go('addnew'); }
+
+/* Ввод объёма не перерисовывает экран: перерисовка сбросила бы фокус поля.
+   Счётчик обновляется точечно — по тому же принципу, что подсказка имени бригады. */
+function addQty(code, v){
+  const n = Number(String(v == null ? '' : v).replace(',', '.'));
+  if(n > 0) ADD_QTY[String(code)] = n; else delete ADD_QTY[String(code)];
+  const el = document.getElementById('addPicked');
+  if(el) el.textContent = addNewRows().length ? ('выбрано позиций: ' + addNewRows().length) : 'ничего не выбрано';
+}
+function addNewRows(){ return Object.keys(ADD_QTY).map(c => ({ work_code: c, qty: ADD_QTY[c] })); }
+
+/* Работы объекта, из которых собирается доп: живые строки сметы.
+   Снятые и пропущенные не показываем — их нет и в договоре. */
+function addWorks(){
+  return (D.works || []).filter(w => w.code && w.status !== 'Снято' && w.status !== 'Пропущен');
+}
+
+async function addSend(){
+  if(ADD_BUSY) return;
+  const f = contractFrozen();
+  if(!f){ toast('Договор ещё не признан — допсоглашение заключать не к чему', 'err'); return; }
+  const rows = addNewRows();
+  if(!rows.length){ toast('Впишите объём хотя бы у одной работы', 'err'); return; }
+  const inh = String(f.succession || 'inherit') === 'inherit';
+  if(!await ask('Предложить допсоглашение к договору № ' + f.no + '?\n\n' +
+      'Позиций: ' + rows.length + '\n' +
+      'Цена за единицу: ' + (inh
+        ? 'наследуется из договора по виду работ. Если вида в договоре нет — берётся прайс на сегодня, и позиция помечается «вне договора».'
+        : 'берётся из прайса бригадира на сегодня.') + '\n\n' +
+      'Сумму посчитает сервер — она будет видна до признания второй стороной.')){ toast('Отменено'); return; }
+  ADD_BUSY = true;
+  toast('Отправляю…', 'wait');
+  const j = await contractApi({ mode: 'addendum', object_id: D.object_id, contract_id: f.id, items: rows });
+  ADD_BUSY = false;
+  if(!j || !j.ok){ toast((j && j.error) || 'Не удалось предложить допсоглашение', 'err'); return; }
+  const out = Number(j['вне_договора'] || 0);
+  toast('Допсоглашение № ' + j.no + ' предложено: ' + j.items + ' поз. на ' + fmt(j.total_usd) + ' $' +
+        (out ? (' · вне договора: ' + out) : ''));
+  ADD_QTY = {};
+  await addendaLoad(true);
+  back();
+}
+
+/* Решение по допу — та же ветка, что у основного договора (accept/reject):
+   допсоглашение живёт строкой в тех же contracts, и сервер сам следит,
+   чтобы признавала вторая сторона. Обновляем список допов, а не договоров. */
+async function addDecide(id, yes){
+  if(ADD_BUSY) return;
+  let reason = null;
+  if(!yes){
+    reason = await askText('Что не так с допсоглашением? Причина уйдёт второй стороне.');
+    if(reason === null){ toast('Отменено'); return; }
+  } else if(!await ask('Признать допсоглашение? После признания его позиции замораживаются так же, как у договора.')){ toast('Отменено'); return; }
+  ADD_BUSY = true;
+  toast(yes ? 'Признаю…' : 'Отправляю отказ…', 'wait');
+  const j = await contractApi({ mode: yes ? 'accept' : 'reject', contract_id: id, reason: reason });
+  ADD_BUSY = false;
+  if(!j || !j.ok){ toast((j && j.error) || 'Не удалось', 'err'); return; }
+  toast(yes ? 'Допсоглашение признано' : 'Допсоглашение отклонено');
+  await addendaLoad(true);
+  render();
+}
+
+/* Блок «Допсоглашения» на экране «Договор». Показывается только когда договор
+   заморожен: до признания правки идут в смету, и называть их допом нельзя —
+   это разные вещи, и панель обязана говорить о них разными словами
+   [разбор 35 § 5 п. 4]. */
+function addendumBlock(){
+  const f = contractFrozen();
+  if(!f) return '';
+  const btnQ = 'style="padding:8px 12px;border-radius:10px;border:1px solid #3a3a3c;background:transparent;color:#fff;font-size:14px"';
+  const btnG = 'style="padding:9px 13px;border-radius:10px;border:0;background:var(--ok);color:#fff;font-size:14px"';
+  const btnR = 'style="padding:9px 13px;border-radius:10px;border:0;background:var(--bad);color:#fff;font-size:14px"';
+  const btnB = 'style="padding:10px 14px;border-radius:10px;border:0;background:#0a84ff;color:#fff;font-size:15px"';
+  const head = '<div class="card"><div class="lbl">Допсоглашения</div>';
+
+  if(ADDENDA === null){ addendaEnsure(); return head + '<div class="m">Загружаю…</div></div>'; }
+  if(!ADDENDA.ok) return head + '<div class="m">' + esc(String(ADDENDA.error || 'недоступно')) + '</div></div>';
+
+  const list = addList();
+  const inh  = String(f.succession || 'inherit') === 'inherit';
+  const rows = list.map(a => {
+    const st   = String(a.state || '');
+    const mine = addMine(a);
+    return '<div class="li"><div class="n">№ ' + esc(a.no) +
+        '<div class="d">' + esc(st) + ' · позиций ' + (a['позиций'] || 0) +
+        (a.proposed_at ? (' · ' + esc(String(a.proposed_at).slice(0, 10))) : '') + '</div></div>' +
+        '<div class="v">' + usd(a.total_usd) + ' $</div></div>' +
+      '<div class="row" style="gap:8px;margin:2px 0 10px;flex-wrap:wrap">' +
+        '<button onclick="contractFileOpen(\'' + attr(a.id) + '\')" ' + btnQ + '>📄 Документ</button>' +
+        (st === 'предложен'
+          ? (mine
+              ? '<span class="k" style="align-self:center">ждём решения второй стороны</span>' +
+                '<button onclick="addDecide(\'' + attr(a.id) + '\', false)" ' + btnQ + '>Отозвать</button>'
+              : '<button onclick="addDecide(\'' + attr(a.id) + '\', true)" ' + btnG + '>Признать</button>' +
+                '<button onclick="addDecide(\'' + attr(a.id) + '\', false)" ' + btnR + '>Оспорить</button>')
+          : '') +
+      '</div>';
+  }).join('');
+
+  return head +
+    '<div class="m">Договор заморожен: его позиции не меняются. Всё новое — дополнительный объём и работы, которых в договоре не было, — оформляется допсоглашением: свой номер, свой документ, своё признание второй стороной.</div>' +
+    '<div class="m" style="margin-top:6px;color:var(--hint)">Цена за единицу: ' +
+      (inh ? 'наследуется из договора по виду работ; чего в договоре не было — по прайсу на сегодня, с пометкой «вне договора».'
+           : 'по прайсу бригадира на дату дополнительной услуги.') + '</div>' +
+    (list.length
+      ? ('<div style="margin-top:10px">' + rows + '</div>' +
+         '<div class="r"><span class="k">Признано допами</span><span class="v ok">' + usd(ADDENDA['сумма_признанных']) + ' $</span></div>' +
+         '<div class="r"><span class="k">Договор с признанными допами</span><span class="v">' +
+            usd((Number(f.total) || 0) + (Number(ADDENDA['сумма_признанных']) || 0)) + ' $</span></div>')
+      : '<div class="m" style="margin-top:8px;opacity:.8">Допсоглашений по этому договору ещё не было.</div>') +
+    (canAlloc()
+      ? '<div class="row" style="margin-top:10px"><button onclick="addNewOpen()" ' + btnB + '>➕ Предложить допсоглашение</button></div>'
+      : '<div class="m" style="margin-top:8px;color:var(--hint)">Предложить допсоглашение может заказчик или бригадир.</div>') +
+  '</div>';
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
    ХОД РАБОТ [чат 118, путь D разбора 38] — тракт к ветке POST /remont/plan.
    Порядок работ принадлежит проекту, а не виду: этапы, привязки и зона
    ответственности живут в шаблоне на сервере, панель их только показывает
@@ -6702,7 +6856,11 @@ function objsSwitch(key){
   if(key === KEY){ back(); return; }
   objsSetActive(key);
   KEY = key;
+  /* [чат 127] Договор, ход работ и допсоглашения кэшируются по объекту, а
+     сбрасывались раньше только D — после переключения экран «Договор»
+     показывал договор ПРЕЖНЕГО объекта, пока его не перезагрузили руками. */
   D = null; INVS = null; CREW_DATA = null;
+  CONTRACTS = null; PLAN = null; ADDENDA = null; ADD_QTY = {};
   back();
   app.innerHTML = '<div class="hello">Открываю объект…</div>';
   load();
@@ -7010,6 +7168,41 @@ plan(){
 newobj(){ return nobjScreen(); },
 
 /* Заведение бригады [чат 110, разбор 34 A]: имя-лейбл с проверкой занятости. */
+addnew(){
+  const f = contractFrozen();
+  const head = '<div class="hello">Допсоглашение</div>';
+  if(!f) return head + '<div class="sub">договор ещё не признан — правки идут в смету</div>';
+  const inh  = String(f.succession || 'inherit') === 'inherit';
+  const list = addWorks();
+  if(!list.length) return head + '<div class="sub">в смете нет живых работ, из которых собрать допсоглашение</div>';
+  const rows = list.map(w => {
+    const v = ADD_QTY[w.code];
+    return '<div class="li" style="align-items:center">' +
+        '<div class="n">' + esc(w.name) +
+          '<div class="d">' + esc(String(w.room || '—').split(' (')[0]) + ' · в смете ' + esc(String(w.qty == null ? '—' : w.qty)) + ' ' + esc(w.unit || '') + '</div></div>' +
+        '<input type="number" inputmode="decimal" min="0" step="0.01" placeholder="+ объём" ' +
+          'value="' + (v == null ? '' : attr(String(v))) + '" ' +
+          'oninput="addQty(\'' + attr(w.code) + '\', this.value)" ' +
+          'style="width:104px;padding:9px;border-radius:10px;border:1px solid #3a3a3c;background:#000;color:#fff;font-size:15px;text-align:right">' +
+      '</div>';
+  }).join('');
+  return head +
+    '<div class="sub">к договору № ' + esc(f.no) + ' · ' + usd(f.total) + ' $</div>' +
+    '<div class="stat"><span class="k">Впишите дополнительный объём — только его, не общий. ' +
+      'Цену за единицу посчитает сервер: ' +
+      (inh ? 'по договору, а чего в нём не было — по прайсу на сегодня с пометкой «вне договора».'
+           : 'по прайсу бригадира на сегодня.') + '</span></div>' +
+    '<div class="card">' +
+      '<div class="lbl">Работы объекта</div>' +
+      rows +
+      '<div class="m" id="addPicked" style="margin-top:8px">' +
+        (addNewRows().length ? ('выбрано позиций: ' + addNewRows().length) : 'ничего не выбрано') + '</div>' +
+      '<div class="row" style="margin-top:10px">' +
+        '<button onclick="addSend()" style="flex:1;padding:12px;border-radius:11px;border:0;background:#0a84ff;color:#fff;font-size:15px">Предложить допсоглашение</button>' +
+      '</div>' +
+    '</div>';
+},
+
 crewnew(){ return crewNewScreen(); },
 
 /* Выбор объекта [чат 091, D4]: список известных панели ключей. */
@@ -8199,6 +8392,7 @@ deal(){
       ${allocUndoPlan().rows.length ? `<button onclick="allocUndoShow()" style="margin-top:8px;width:100%;padding:10px 14px;border-radius:10px;border:1px solid #3a3a3c;background:transparent;color:#fff;font-size:15px">↩︎ Отменить разнесение</button>` : ""}
     </div>` : ""}
     ${contractBlock()}
+    ${addendumBlock()}
     <div class="card">
       <div class="lbl">Входит в цену</div>
       <div style="font-size:13.5px;line-height:1.9">
@@ -11620,7 +11814,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "126.3";
+const BUILD = "127.1";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
