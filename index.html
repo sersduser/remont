@@ -2683,7 +2683,12 @@ function adjChips(code){
   return roomList().filter(r => r.code !== code).map(r => {
     const on = near.indexOf(r.code) >= 0;
     return '<button onclick="adjToggle(\'' + code + '\',\'' + r.code + '\')" style="margin:3px 4px 0 0;padding:6px 10px;border-radius:9px;border:1px solid ' +
-      (on ? "#0a84ff" : "#3a3a3c") + ';background:' + (on ? "#0a84ff" : "transparent") + ';color:#fff;font-size:13px">' +
+      (on ? "#0a84ff" : "#3a3a3c") + ';background:' + (on ? "#0a84ff" : "transparent") +
+      /* [138.4] Белый текст держится только на синем фоне отмеченной кнопки.
+         Неотмеченная лежит на фоне темы: в светлой она была белым по белому.
+         Тот же дефект, что у elemAdjChips, — но здесь фон собран из кусков,
+         и глобальная замена 138.2 его не увидела. */
+      ';color:' + (on ? "#fff" : "var(--txt)") + ';font-size:13px">' +
       (on ? "✓ " : "") + esc(String(r.name || r.code).split(" (")[0]) + "</button>";
   }).join("");
 }
@@ -12751,7 +12756,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "138.3";
+const BUILD = "138.4";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
