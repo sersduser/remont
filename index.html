@@ -6961,7 +6961,14 @@ function navSave(){
   try{
     if(typeof stack === "undefined" || !stack || !stack.length) return;
     const s = stack.filter(k => !NAV_SKIP[k]);
-    localStorage.setItem(NAV_LS, JSON.stringify({ s: s, p: SCROLL, y: window.scrollY || 0, t: Date.now() }));
+    /* [135] Позиция в записи одна, а экранов в стеке может быть больше, чем
+       уцелеет после фильтра. Отмечаем, чей это scrollY: если последний экран
+       не восстанавливается (опрос, профиль), его позицию нельзя отдавать тому,
+       кто останется вместо него, — иначе дом открывается с чужой прокруткой.
+       Найдено живым взглядом в Telegram Web: уход в профиль, прокрутка вниз,
+       обновление — и главный экран открывается в самом низу. */
+    const lastK = stack[stack.length - 1];
+    localStorage.setItem(NAV_LS, JSON.stringify({ s: s, p: SCROLL, y: window.scrollY || 0, f: NAV_SKIP[lastK] ? 1 : 0, t: Date.now() }));
   }catch(e){}
 }
 function navSaveSoon(){
@@ -6981,7 +6988,11 @@ function navRestore(){
     if(o.p && typeof o.p === "object"){
       Object.keys(o.p).forEach(k => { const v = Number(o.p[k]); if(v > 0) SCROLL[k] = v; });
     }
-    SCROLL[stack[stack.length - 1]] = Number(o.y) || 0;
+    /* [135] Своя позиция уцелевшего экрана уже лежит в o.p — её кладёт
+       scrollSave() при переходе вглубь. Затирать её значением из другого
+       экрана нельзя; записи старых сборок поля f не имеют и ведут себя
+       по-прежнему. */
+    if(!o.f) SCROLL[stack[stack.length - 1]] = Number(o.y) || 0;
     NAV_WANT = 1;              /* первую отрисовку ведём как переход — иначе позиция не применится */
     return true;
   }catch(e){ return false; }
@@ -12377,7 +12388,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "134.1";
+const BUILD = "135.1";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
