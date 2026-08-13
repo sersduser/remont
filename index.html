@@ -8317,7 +8317,7 @@ profile(){
           '<input type="number" step="0.01" inputmode="decimal" data-code="' + esc(k.code) + '" value="' + (vol === null ? '' : vol) + '"' +
           ' onchange="profSetVol(this)" style="width:100px;padding:6px;border-radius:8px;border:1px solid #3a3a3c;background:#000;color:#fff"> ' + esc(k.unit || '') +
           (sum ? ('  →  ' + fmt(sum) + ' USD') : '') +
-          (picked[k.code].manual ? ' · изменено вручную' : '') + '</div>') : '') +
+          (picked[k.code].manual ? ' · изменено вручную' : (picked[k.code].said ? ' · со слов' : '')) + '</div>') : '') +
         (on && !picked[k.code].skip ? profSkipUI(k.code) : '') +
         '</div>';
     }).join('');
@@ -11285,17 +11285,26 @@ function vLikeNote(){
    его ЗДЕСЬ важнее, чем позже: человек только что назвал работы вслух и
    спрашивает «почему объёмы не высчитываются» — а окно молчало про числа
    вовсе. Нет расчёта — говорим об этом жёлтым, а не молчим. */
-function vRepVol(roomCode, code){
+function vRepVol(roomCode, code, k){
   try{
     const kinds = ((D && D.catalog) || {}).kinds || [];
     if(!kinds.length) return '';                 /* справочник ещё едет */
     const kind = kinds.find(x => x.code === code);
     const room = ((D && D.rooms) || []).find(x => x.code === roomCode);
     if(!kind || !room) return '';
+    /* [139] Сказанное вслух количество. Правило Дмитрия 14.08: сказанное
+       число главнее расчёта только там, где расчёта нет (штучные виды);
+       где расчёт есть — показать оба и не подменять молча. */
+    const said = (k && Number(k.qty_said) > 0) ? Number(k.qty_said) : null;
     const v = profVol(kind, room);
     if(v === null || v === undefined || !(Number(v) > 0))
-      return ' · <span style="color:#ff9f0a">объём впишете руками</span>';
-    return ' · <b>' + (Math.round(Number(v) * 100) / 100) + '</b>';
+      return said !== null
+        ? ' · <b>' + said + '</b> <span style="opacity:.75">со слов</span>'
+        : ' · <span style="color:#ff9f0a">объём впишете руками</span>';
+    const calc = Math.round(Number(v) * 100) / 100;
+    if(said !== null && Math.abs(said - Number(v)) > 0.005)
+      return ' · <b>' + calc + '</b> · <span style="color:#ff9f0a">со слов ' + said + '</span>';
+    return ' · <b>' + calc + '</b>';
   }catch(e){ return ''; }
 }
 let VREP_D = null;
@@ -11337,7 +11346,7 @@ function showVRepair(d){
         <div class="vchk">✓</div>
         <div style="flex:1;min-width:0">
           <div class="vv">${esc(k.name)}<span style="opacity:.6"> · ${esc(k.unit || "")}</span></div>
-          <div class="vd">${esc(k.code)}${vRepVol(r.code, k.code)}${k.src === "tech" ? " · добавлено по технологии" : ""}${k.src === "like" ? " · как в «" + esc((r._like && r._like.name) || (r.like && r.like.name) || "образце") + "»" : ""}${k.offer ? ' · <span style="opacity:.75">предложено вместо части «' + esc((r._like && (r._like.partSaid || r._like.part)) || "") + '»</span>' : ""}${k.novol ? ' · <span style="color:#ff9f0a">объём в этом помещении не считается</span>' : ""}${k.already ? ' · <span style="color:#ff9f0a">уже в смете</span>' : ""}${profCanSkip(k.code) ? ' · <span style="opacity:.75">этап пропускаем</span>' : ""}</div>
+          <div class="vd">${esc(k.code)}${vRepVol(r.code, k.code, k)}${k.src === "tech" ? " · добавлено по технологии" : ""}${k.src === "like" ? " · как в «" + esc((r._like && r._like.name) || (r.like && r.like.name) || "образце") + "»" : ""}${k.offer ? ' · <span style="opacity:.75">предложено вместо части «' + esc((r._like && (r._like.partSaid || r._like.part)) || "") + '»</span>' : ""}${k.novol ? ' · <span style="color:#ff9f0a">объём в этом помещении не считается</span>' : ""}${k.already ? ' · <span style="color:#ff9f0a">уже в смете</span>' : ""}${profCanSkip(k.code) ? ' · <span style="opacity:.75">этап пропускаем</span>' : ""}</div>
         </div>
       </div>`).join("");
     const tech = r.kinds.filter(k => k.src === "tech").length;
@@ -11436,9 +11445,17 @@ async function applyVoiceRepair(){
       const kind = kinds.find(x => x.code === k.code);
       if(!kind) return;
       const vol = profVol(kind, room);
-      picked[k.code] = { vol: vol, manual: false };
+      /* [139] Число из речи заступает только там, где расчёта нет вовсе:
+         штучные виды (двери, выключатели, точки света) базы объёма не имеют,
+         и до этого хода они уезжали в профиль пустыми — человек называл
+         «четыре двери», а панель просила вписать объём руками. Где расчёт
+         есть, он и остаётся: подменять молча нельзя. */
+      const said = Number(k.qty_said) > 0 ? Number(k.qty_said) : null;
+      const calcOk = Number(vol) > 0;
+      const use = calcOk ? vol : (said !== null ? said : vol);
+      picked[k.code] = { vol: use, manual: false, said: !calcOk && said !== null };
       added++; n++;
-      if(!(Number(vol) > 0)) noVol++;
+      if(!(Number(use) > 0)) noVol++;
     });
     if(added){ rooms++; last = r.code; }
   }
@@ -12756,7 +12773,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "138.4";
+const BUILD = "139.1";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
