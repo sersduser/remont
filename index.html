@@ -10820,6 +10820,32 @@ let vRep = [];
    неприменим тот вид, чей объём в целевом помещении не считается (нет
    дверей, окон, площади). Такая строка приходит НЕотмеченной и говорит
    об этом словами — молчаливо пропадать она не имеет права (урок 132). */
+/* [чат 134] Поверхность вида — тем же правилом, что на сервере: База_объёма
+   ('стены', 'потолок', 'пол', 'стены+потолок', 'двери:установить'), затем
+   префикс названия («Стены: штукатурка»), затем раздел справочника («Полы»).
+   Правило живёт в двух местах не по небрежности: сервер фильтрует перенос из
+   сметы, панель — из профиля, и разойтись им нельзя. */
+function vPartWord(t){
+  t = String(t == null ? "" : t).toLowerCase().replace(/ё/g, "е").trim();
+  if(t.indexOf("потол") === 0) return "потолок";
+  if(t.indexOf("стен") === 0) return "стены";
+  if(t.indexOf("полот") === 0) return "";
+  if(t.indexOf("пол") === 0) return "пол";
+  if(t.indexOf("двер") === 0) return "двери";
+  if(t.indexOf("окн") === 0 || t.indexOf("окон") === 0) return "окна";
+  return "";
+}
+const V_SEC_PART = { "полы": "пол", "потолки": "потолок", "двери": "двери", "окна и остекление": "окна" };
+function vPartsOfKind(kind){
+  const res = {};
+  if(!kind) return res;
+  String(kind.base || "").split(/[+:,\/\s]+/).forEach(t => { const w = vPartWord(t); if(w) res[w] = true; });
+  const mp = String(kind.name || "").match(/^([А-Яа-яЁё]+)\s*:/);
+  if(mp){ const w = vPartWord(mp[1]); if(w) res[w] = true; }
+  const sp = V_SEC_PART[String(kind.section || "").toLowerCase().trim()];
+  if(sp) res[sp] = true;
+  return res;
+}
 function vLikeRoom(L){
   if(!L) return null;
   const rooms = roomList();
@@ -10836,7 +10862,9 @@ function vLikeFill(r){
   if(!r || !r.like || r.isNew) return r;
   const src = vLikeRoom(r.like);
   r._like = { said: String(r.like.said || ""), name: src ? String(src.name || "") : "",
-              code: src ? String(src.code) : "", why: String(r.like.why || ""), added: 0, off: 0 };
+              code: src ? String(src.code) : "", why: String(r.like.why || ""), added: 0, off: 0,
+              part: String(r.like.part || ""), partSaid: String(r.like.part_said || ""),
+              partUnknown: !!r.like.part_unknown, of: Number(r.like.of || 0) };
   if(!src){ r._like.why = "noroom"; return r; }
   if(String(src.code) === String(r.code)){ r._like.why = "same"; return r; }
   const kinds = (D.catalog || {}).kinds || [];
@@ -10851,6 +10879,7 @@ function vLikeFill(r){
     if(has[code]) return;
     const kind = kinds.find(x => x.code === code);
     if(!kind) return;
+    if(r._like.part && !vPartsOfKind(kind)[r._like.part]) return;   // названа часть — переносим только её [134]
     has[code] = true;
     const vol = profVol(kind, tgt);
     const novol = !(Number(vol) > 0);
@@ -10860,11 +10889,23 @@ function vLikeFill(r){
     r._like.added++;
     if(novol) r._like.off++;
   });
+  /* [чат 134] Серверные строки приезжают без признака «объём здесь не
+     считается»: раньше сервер переносил редко и только из сметы, теперь ему
+     виден профиль. Считаем признак для всех перенесённых одинаково — иначе
+     неприменимая работа встанет отмеченной и уйдёт в смету молча. */
+  r.kinds.forEach(k => {
+    if(k.src !== "like" || k.novol !== undefined) return;
+    const kd = kinds.find(x => x.code === k.code) || null;
+    k.novol = !(Number(kd ? profVol(kd, tgt) : 0) > 0);
+  });
+  const likeRows = r.kinds.filter(k => k.src === "like");
+  r._like.added = likeRows.length;
+  r._like.off = likeRows.filter(k => k.novol).length;
   const rank = { said: 0, like: 1, tech: 2 };
   r.kinds.sort((x, y) => (rank[x.src] == null ? 3 : rank[x.src]) - (rank[y.src] == null ? 3 : rank[y.src]));
   /* Слово об исходе принадлежит тому, кто видел ОБА источника: сервер знал
      только смету и мог сказать «пусто», хотя профиль образца полон. */
-  r._like.why = r.kinds.some(k => k.src === "like") ? "" : "empty";
+  r._like.why = likeRows.length ? "" : (r._like.part && r.like && r.like.why === "nopart" ? "nopart" : "empty");
   return r;
 }
 /* Строка-объяснение переноса: у отсылки четыре исхода, и у каждого свои слова
@@ -10878,7 +10919,14 @@ function vLikeNote(){
     if(L.why === "noroom") parts.push("Не понял, на какое помещение похоже: «" + esc(L.said) + "». Назовите его так, как оно записано на экране «Объект».");
     else if(L.why === "same") parts.push("Это то же самое помещение — переносить нечего.");
     else if(L.why === "empty") parts.push("В «" + esc(L.name || L.said) + "» работ пока не назначено — переносить нечего.");
-    else parts.push("Перенёс из «" + esc(L.name) + "» в «" + esc(to) + "»: " + L.added + (L.off ? (" · из них " + L.off + " без объёма в этом помещении — не отмечены") : ""));
+    /* [чат 134] Пятый исход: помещение-образец найдено и не пусто, но названной
+       части в нём нет. Шестой: слово о части не разобрано — тогда переносим всё
+       и говорим об этом, а не выбираем за человека. */
+    else if(L.why === "nopart") parts.push("В «" + esc(L.name || L.said) + "» по части «" + esc(L.partSaid || L.part) + "» работ не назначено" + (L.of ? (" (всего там " + L.of + ")") : "") + " — переносить нечего.");
+    else parts.push("Перенёс из «" + esc(L.name) + "» в «" + esc(to) + "»" + (L.part ? (" по части «" + esc(L.partSaid || L.part) + "»") : "") + ": " + L.added
+                   + (L.part && L.of ? (" из " + L.of) : "")
+                   + (L.off ? (" · из них " + L.off + " без объёма в этом помещении — не отмечены") : "")
+                   + (L.partUnknown ? (". Про часть «" + esc(L.partSaid) + "» не понял — перенёс набор целиком; скажите «стены», «потолок», «пол», «двери» или «окна»") : ""));
   });
   return parts.length ? '<div class="vs" style="margin-top:6px">' + parts.join("<br>") + "</div>" : "";
 }
@@ -12329,7 +12377,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "133.3";
+const BUILD = "134.1";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
