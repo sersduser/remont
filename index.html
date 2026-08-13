@@ -1526,6 +1526,7 @@ function contractFileShow(doc, id){
   box.innerHTML =
     '<div style="display:flex;gap:6px;padding:10px;background:#1c1c1e;align-items:center;flex-wrap:wrap">' +
       '<div style="flex:1 0 100%;font-size:14px;color:#fff;margin-bottom:2px">Договор № ' + esc(doc.no || '') + '</div>' +
+      '<button id="dfBack"  style="' + btn + ';background:#3a3a3c">← Назад</button>' +
       '<button id="dfSend"  style="' + btn + ';background:#30d158">📨 В чат</button>' +
       '<button id="dfShare" style="' + btn + ';background:#5e5ce6;display:none">↗ Поделиться</button>' +
       '<button id="dfPrint" style="' + btn + ';background:#0a84ff">Печать</button>' +
@@ -1556,7 +1557,32 @@ function contractFileShow(doc, id){
   fr.setAttribute('srcdoc', docHtml.indexOf('</head>') >= 0
     ? docHtml.replace('</head>', SCREEN_FIX + '</head>')
     : (SCREEN_FIX + docHtml));
-  box.querySelector('#dfClose').onclick = () => box.remove();
+  /* [чат 137, Д-137-3] Из окна документа человек выходит тремя способами, и
+     все они ведут в одну дверь: «← Назад», «Закрыть» и системная стрелка
+     Telegram. Пока окно открыто, стрелка принадлежит ему — навигация панели
+     отпускает её и забирает обратно при закрытии, иначе одно нажатие сняло бы
+     сразу два уровня. */
+  let dfBackFn = null;
+  const dfExit = () => {
+    try{
+      if(tg && tg.BackButton){
+        if(dfBackFn){ tg.BackButton.offClick(dfBackFn); dfBackFn = null; }
+        tg.BackButton.onClick(back);
+      }
+    }catch(e){}
+    box.remove();
+    try{ render(); }catch(e){}          /* вернёт стрелке правильное состояние */
+  };
+  box.querySelector('#dfClose').onclick = dfExit;
+  box.querySelector('#dfBack').onclick = dfExit;
+  try{
+    if(tg && tg.BackButton){
+      tg.BackButton.offClick(back);
+      dfBackFn = dfExit;
+      tg.BackButton.onClick(dfBackFn);
+      tg.BackButton.show();
+    }
+  }catch(e){}
 
   /* Печать и скачивание в мобильном Telegram не работают вовсе [наблюдение 124,
      разбор кода 125]: WebView не даёт window.print(), а клик по <a download>
@@ -12562,7 +12588,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "137.3";
+const BUILD = "137.4";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
