@@ -109,8 +109,8 @@ input[type=number]{text-align:center}
   padding:15px;font-size:14px;line-height:1.55}
 .toast{position:fixed;left:14px;right:14px;bottom:18px;background:var(--ok);color:#06240c;
   padding:12px;border-radius:11px;text-align:center;font-weight:600;font-size:14px;
-  opacity:0;transform:translateY(12px);transition:.22s;pointer-events:none;z-index:9}
-.toast.on{opacity:1;transform:none}
+  opacity:0;transform:translateY(12px);transition:.22s;pointer-events:none;z-index:10000}
+.toast.on{opacity:1;transform:none;pointer-events:auto;cursor:pointer}
 .toast.bad{background:var(--bad);color:#fff}
 .toast.wait{background:var(--sec);color:var(--hint)}
 .toast.err{background:var(--bad);color:#fff}
@@ -266,13 +266,15 @@ function safeTop(){
 /* Числа зоны видны человеку по долгому нажатию на полосу объекта: лечить верх
    экрана вслепую мы уже пробовали дважды. */
 let SAFE_DIAG = {};
+let DIAG_MS = 20000;      /* [137] диагностику читают и снимают — но не вечно */
 function safeDiagShow(){
   const d = SAFE_DIAG || {};
   toast('Зона сверху: итог ' + (d.env || '—') + ' · система ' + (d.safe || 0) + ' · шапка клиента ' +
         (d.content || 0) + (d.fallback !== d.content ? (' → запас ' + d.fallback) : '') +
         ' · ' + (d.why || '—') + (d.full ? ' · полный экран' : '') +
         ' · окно ' + (d.ih || 0) + '/' + (d.vsh || 0) + (d.over ? (' → перекрытие ' + d.over) : '') +
-        ' · ' + (d.platform || '—') + ' · Bot API ' + (d.ver || '—') + navDiag(), 'wait');
+        ' · ' + (d.platform || '—') + ' · Bot API ' + (d.ver || '—') + navDiag() +
+        ' · коснитесь надписи, чтобы убрать', 'wait', DIAG_MS);
 }
 safeTop();
 try{
@@ -1517,6 +1519,7 @@ function contractFileShow(doc, id){
       '<button id="dfPrint" style="' + btn + ';background:#0a84ff">Печать</button>' +
       '<button id="dfSave"  style="' + btn + ';background:#3a3a3c">Скачать</button>' +
       '<button id="dfClose" style="' + btn + ';background:#3a3a3c;margin-left:auto">Закрыть</button>' +
+      '<div id="dfNote" style="flex:1 0 100%;font-size:13px;color:#30d158;margin-top:4px;display:none"></div>' +
     '</div>' +
     '<iframe id="dfFrame" style="flex:1;width:100%;border:0;background:#fff"></iframe>';
   document.body.appendChild(box);
@@ -1555,21 +1558,41 @@ function contractFileShow(doc, id){
          return p === 'android' || p === 'ios'; }catch(e){ return false; }
   })();
 
+  /* [чат 137, Д-137-2] Ответ кнопки живёт рядом с кнопкой. Тост на z-index 9
+     под окном документа (9998) не видел никто: 14.08 Дмитрий нажал «Скачать»,
+     не увидел ничего и пошёл искать файл в чате бота руками. */
+  const dfNote = (text, good) => {
+    const n = box.querySelector('#dfNote');
+    if(!n) return;
+    n.textContent = text;
+    n.style.color = good === false ? '#ff453a' : '#30d158';
+    n.style.display = 'block';
+  };
   const sendToChat = async () => {
     const b = box.querySelector('#dfSend');
     if(!b || b.dataset.busy === '1') return;          /* замок от двойного тапа [грабля 012] */
     b.dataset.busy = '1'; b.disabled = true;
     const was = b.textContent; b.textContent = 'Отправляю…';
+    dfNote('Отправляю файл в чат с ботом…');
     const j = await contractApi({ mode: 'send', contract_id: doc.id || id });
-    b.dataset.busy = ''; b.disabled = false; b.textContent = was;
-    if(j && j.ok && j.sent) toast('Файл отправлен в чат с ботом — откройте Telegram');
-    else toast((j && j.error) || 'файл в чат не ушёл', 'err');
+    b.dataset.busy = ''; b.disabled = false;
+    if(j && j.ok && j.sent){
+      b.textContent = '✓ Отправлено';
+      setTimeout(() => { b.textContent = was; }, 4000);
+      dfNote('Готово: файл лежит в чате с ботом — закройте это окно и откройте чат.');
+      toast('Файл отправлен в чат с ботом — откройте Telegram');
+    } else {
+      b.textContent = was;
+      dfNote((j && j.error) || 'Файл в чат не ушёл — попробуйте ещё раз.', false);
+      toast((j && j.error) || 'файл в чат не ушёл', 'err');
+    }
   };
   box.querySelector('#dfSend').onclick = sendToChat;
 
   box.querySelector('#dfPrint').onclick = () => {
     const w = fr.contentWindow;
     if(mobileTG || !w || typeof w.print !== 'function'){
+      dfNote('В Telegram печать недоступна — присылаю файл в чат.');
       toast('В Telegram печать недоступна — присылаю файл в чат'); sendToChat(); return;
     }
     try{ w.focus(); w.print(); }
@@ -1577,7 +1600,10 @@ function contractFileShow(doc, id){
   };
 
   box.querySelector('#dfSave').onclick = () => {
-    if(mobileTG){ toast('В Telegram файл не сохраняется — присылаю в чат'); sendToChat(); return; }
+    if(mobileTG){
+      dfNote('В Telegram файл не сохраняется на телефон — присылаю его в чат с ботом.');
+      toast('В Telegram файл не сохраняется — присылаю в чат'); sendToChat(); return;
+    }
     try{
       const blob = new Blob([doc.html], { type: 'text/html;charset=utf-8' });
       const url = URL.createObjectURL(blob);
@@ -6924,12 +6950,27 @@ function handWorks(){
       '<div class="m">' + esc(String(w.status || "")) + (w.progress ? " · " + w.progress + " %" : "") + "</div></div>").join("");
 }
 
-function toast(msg, kind){
+/* [чат 137, Д-137-1] Тост типа wait не имел таймера вовсе. Задумано это было
+   для процессов («Сохраняю…»), которые гасит их собственный результат, но тем
+   же типом показываются предупреждения и диагностика — и они висели на экране
+   до следующего тоста, переживая переходы между экранами. Теперь у надписи три
+   пути исчезнуть: свой срок (третий аргумент), страховочный срок у wait и
+   касание человека. Молчаливого бессмертия не остаётся ни у одной. */
+let TOAST_WAIT_MS = 25000;                 /* страховка: процесс дольше — редкость */
+function toastHide(){
+  const t = document.getElementById("toast");
+  if(t) t.className = "toast";
+  clearTimeout(tt);
+}
+function toast(msg, kind, ms){
   const t = document.getElementById("toast");
   t.textContent = msg;
   t.className = "toast on" + (kind ? " " + kind : "");
+  t.onclick = toastHide;                   /* коснулись — убрали */
   clearTimeout(tt);
-  if(kind !== "wait") tt = setTimeout(() => t.className = "toast", kind === "err" ? 3500 : 2600);
+  const срок = (ms != null) ? Number(ms)
+             : (kind === "wait" ? TOAST_WAIT_MS : (kind === "err" ? 3500 : 2600));
+  if(срок > 0) tt = setTimeout(() => { t.className = "toast"; }, срок);
 }
 
 /* ── НАВИГАЦИЯ (стек, ровно один уровень вглубь) ───────────── */
@@ -12477,7 +12518,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "137.1";
+const BUILD = "137.2";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
