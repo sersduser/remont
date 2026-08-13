@@ -10722,6 +10722,13 @@ async function applyVoiceRooms(){
   }
   closeVSheet();
   await load();
+  /* [чат 133, Д-129-10] Журнал «Записано в этом опросе» вёл только сам опрос:
+     ответ числом, пара «ширина × высота», пропуск этапа, «оставить в работе»,
+     «отложено». Всё, что человек записывал через окна разбора голоса, шло
+     другим путём и следа не оставляло — слова Дмитрия 13.08 01:01: «Почему
+     этот листинг расходится с действительностью — из последнего ввода не всё
+     в него попало?». Теперь оба пути пишут в один журнал. */
+  if(QZ.on && done) qzNote("Записано голосом: " + done + " знач. · " + chosen.map(r => r.name || r.code).filter(Boolean).join(", "));
   qzVoiceDone();                       // [чат 059]
   render();
   if(fail === 0) toast(added ? `Записано: ${done}, новых помещений: ${added}` : `Записано: ${done}`);
@@ -10947,6 +10954,7 @@ async function applyVoiceRepair(){
   // одно помещение — открываем его сразу; несколько — общий экран со сводкой плана
   PROF.room = (rooms === 1) ? last : null;
   if(stack[stack.length - 1] !== "profile") go("profile"); else render(true);
+  if(QZ.on && n) qzNote("Отмечено в профиле: " + n + " видов · " + ready.map(r => r.name || r.code).filter(Boolean).join(", "));   /* [133, Д-129-10] */
   if(!n) { toast("Ничего не перенесено", "err"); return; }
   toast("Отмечено: " + n + (rooms > 1 ? (" в " + rooms + " помещ.") : "") + (noVol ? (" · без объёма: " + noVol) : ""));
 }
@@ -12256,7 +12264,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "133.1";
+const BUILD = "133.2";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
