@@ -183,7 +183,7 @@ input[type=number]{text-align:center}
 </head>
 <body>
 
-<div id="objbar" class="objbar" onclick="objBarTap()" onpointerdown="objBarHold(event,1)" onpointerup="objBarHold(event,0)" onpointercancel="objBarHold(event,0)" onpointerleave="objBarHold(event,0)" onpointermove="objBarMove(event)" style="display:none"></div>
+<div id="objbar" class="objbar" onclick="objBarGo()" onpointerdown="objBarHold(event,1)" onpointerup="objBarHold(event,0)" onpointercancel="objBarHold(event,0)" onpointerleave="objBarHold(event,0)" onpointermove="objBarMove(event)" style="display:none"></div>
 <div id="app"><div class="load">Загружаю…</div></div>
 <div class="toast" id="toast"></div>
 
@@ -483,6 +483,7 @@ const esc  = t => String(t ?? "").replace(/[&<>"']/g, c =>
 const attr = t => esc(t);
 
 /* ── ЗАГРУЗКА ─────────────────────────────────────────────── */
+let LOAD_MS = 30000;   /* [137] срок ответа сервера данных: дольше — это отказ, а не ожидание */
 async function load(){
   try{
     /* Погашение кода из ссылки [чат 089]. До этой правки accept звался только
@@ -499,7 +500,20 @@ async function load(){
       return;
     }
     const auth = authQS();
-    const r = await fetch(`${API}/data?${auth}`, { cache: "no-store" });
+    /* [чат 137, Д-137-4] У запроса данных есть срок. Без него отказ сервера
+       выглядит как зависшая панель: «Открываю объект…» крутится, пока человек
+       не перезагрузит страницу руками. Сообщение об истёкшем сроке ведёт в тот
+       же экран отказа, где уже есть «Ещё раз» и «К объектам». */
+    const ctl = new AbortController();
+    const tmo = setTimeout(() => { try{ ctl.abort(); }catch(_e){} }, LOAD_MS);
+    let r;
+    try{
+      r = await fetch(`${API}/data?${auth}`, { cache: "no-store", signal: ctl.signal });
+    }catch(err){
+      if(String((err && err.name) || "") === "AbortError")
+        throw new Error("Сервер не ответил за " + Math.round(LOAD_MS / 1000) + " с. Он бывает занят на тяжёлых объектах — попробуйте ещё раз.");
+      throw err;
+    }finally{ clearTimeout(tmo); }
     const BAD = "Доступ не подтверждён — откройте панель через бота в Telegram.";
     if(r.status === 401 || r.status === 403) throw new Error(BAD);
     if(!r.ok) throw new Error("Сервер не отвечает (HTTP " + r.status + ")");
@@ -1522,7 +1536,10 @@ async function contractFileOpen(id){
 function contractFileShow(doc, id){
   const btn = 'padding:9px 12px;border-radius:10px;border:0;font-size:14px;color:#fff';
   const box = document.createElement('div');
-  box.style.cssText = 'position:fixed;inset:0;z-index:9998;background:#000;display:flex;flex-direction:column';
+  /* [чат 137, Д-137-5] Верхний запас у окна документа такой же, как у всей
+     панели с 128-го: клиент рисует контент под своей шапкой, и первая кнопка
+     шапки окна уезжала под неё («зелёная кнопка заслонена»). */
+  box.style.cssText = 'position:fixed;inset:0;z-index:9998;background:#000;display:flex;flex-direction:column;padding-top:var(--top-inset)';
   box.innerHTML =
     '<div style="display:flex;gap:6px;padding:10px;background:#1c1c1e;align-items:center;flex-wrap:wrap">' +
       '<div style="flex:1 0 100%;font-size:14px;color:#fff;margin-bottom:2px">Договор № ' + esc(doc.no || '') + '</div>' +
@@ -7293,7 +7310,8 @@ function objSelScreen(){
   const rows = list.map(o => {
     const on = (o.key === KEY);
     const role = objSelRole(o.role);
-    return '<div onclick="objsSwitch(\'' + esc(o.key) + '\')" style="margin-top:8px;padding:12px;border-radius:12px;' +
+    return '<div onpointerdown="tapDown(event)" onpointerup="tapUp(event, function(){ objsSwitchTap(\'' + esc(o.key) + '\') })"' +
+      ' onclick="objsSwitchTap(\'' + esc(o.key) + '\')" style="margin-top:8px;padding:12px;border-radius:12px;' +
       'background:' + (on ? "#0a84ff" : "#2c2c2e") + ';color:#fff;cursor:pointer">' +
       '<div style="font-size:15px">' + esc(objsTitle(o.key)) + (on ? " · открыт" : "") + '</div>' +
       '<div style="font-size:12px;opacity:.65;margin-top:3px">' + (role ? esc(role) + ' · ' : '') +
@@ -7505,6 +7523,31 @@ function objBarDraw(){
    честно жал полосу и получал системное выделение текста, а третий заход по верху
    экрана снова пошёл бы вслепую. Порог смещения 10 px — чтобы прокрутка не считалась
    удержанием; после сработавшего удержания клик гасится, иначе откроется выбор объекта. */
+/* [чат 137, Д-137-4] Первый клик по Mini App теряется — дефект живёт с 124 и
+   в 135 воспроизведён прямо в Telegram Web: «Сменить» и выбор объекта
+   срабатывают со второго раза. Пока причина не доказана, действует запасная
+   мера плана: нажатие считается по `pointerup` с порогом смещения, а `click`
+   остаётся вторым путём. Двойного срабатывания нет — замок по времени. */
+let TAP = null, TAP_LAST = { k: '', t: 0 };
+function tapDown(ev){ TAP = { x: (ev && ev.clientX) || 0, y: (ev && ev.clientY) || 0, t: Date.now() }; }
+function tapUp(ev, fn){
+  const p = TAP; TAP = null;
+  if(!p) return;
+  const dx = Math.abs(((ev && ev.clientX) || 0) - p.x);
+  const dy = Math.abs(((ev && ev.clientY) || 0) - p.y);
+  if(dx > 12 || dy > 12) return;                 /* это прокрутка, а не нажатие */
+  if(Date.now() - p.t > 900) return;             /* это удержание, а не нажатие */
+  fn();
+}
+function tapOnce(key, fn){
+  const now = Date.now();
+  if(TAP_LAST.k === key && now - TAP_LAST.t < 700) return;   /* pointerup уже сработал */
+  TAP_LAST = { k: key, t: now };
+  fn();
+}
+function objsSwitchTap(key){ tapOnce('obj:' + key, () => objsSwitch(key)); }
+function objBarGo(){ tapOnce('objbar', objBarTap); }
+
 let OBJ_HOLD = { t: 0, x: 0, y: 0, fired: false };
 function objBarHold(ev, on){
   if(on){
@@ -7517,7 +7560,15 @@ function objBarHold(ev, on){
       try{ safeDiagShow(); }catch(e){}
     }, 600);
   } else {
+    const ждал = !!OBJ_HOLD.t;
     if(OBJ_HOLD.t){ clearTimeout(OBJ_HOLD.t); OBJ_HOLD.t = 0; }
+    /* Палец отпущен, удержание не сработало — это обычное нажатие. Не ждём
+       `click`, который в Mini App теряется: открываем выбор объекта сразу. */
+    if(ждал && !OBJ_HOLD.fired && ev && ev.type === 'pointerup'){
+      const dx = Math.abs(((ev && ev.clientX) || 0) - OBJ_HOLD.x);
+      const dy = Math.abs(((ev && ev.clientY) || 0) - OBJ_HOLD.y);
+      if(dx <= 12 && dy <= 12) objBarGo();
+    }
   }
 }
 function objBarMove(ev){
@@ -12588,7 +12639,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "137.4";
+const BUILD = "137.6";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
