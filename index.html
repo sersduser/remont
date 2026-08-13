@@ -988,7 +988,7 @@ async function addDecide(id, yes){
 function addendumBlock(){
   const f = contractFrozen();
   if(!f) return '';
-  const btnQ = 'style="padding:8px 12px;border-radius:10px;border:1px solid #3a3a3c;background:transparent;color:#fff;font-size:14px"';
+  const btnQ = 'style="padding:8px 12px;border-radius:10px;border:1px solid #3a3a3c;background:transparent;color:var(--txt);font-size:14px"';
   const btnG = 'style="padding:9px 13px;border-radius:10px;border:0;background:var(--ok);color:#fff;font-size:14px"';
   const btnR = 'style="padding:9px 13px;border-radius:10px;border:0;background:var(--bad);color:#fff;font-size:14px"';
   const btnB = 'style="padding:10px 14px;border-radius:10px;border:0;background:#0a84ff;color:#fff;font-size:15px"';
@@ -1266,7 +1266,7 @@ function contractBlock(){
   const btn  = 'style="padding:10px 14px;border-radius:10px;border:0;background:#0a84ff;color:#fff;font-size:15px"';
   const btnG = 'style="padding:10px 14px;border-radius:10px;border:0;background:var(--ok);color:#fff;font-size:15px"';
   const btnR = 'style="padding:10px 14px;border-radius:10px;border:0;background:var(--bad);color:#fff;font-size:15px"';
-  const btnQ = 'style="padding:8px 12px;border-radius:10px;border:1px solid #3a3a3c;background:transparent;color:#fff;font-size:14px"';
+  const btnQ = 'style="padding:8px 12px;border-radius:10px;border:1px solid #3a3a3c;background:transparent;color:var(--txt);font-size:14px"';
   if(CONTRACTS === null){ contractsEnsure(); return '<div class="card"><div class="lbl">Договор</div><div class="m">Загружаю…</div></div>'; }
 
   const frozen = contractFrozen(), open = contractOpen();
@@ -1325,9 +1325,9 @@ function contractBlock(){
     '<div class="sub" style="margin-top:10px">Преемственность цен на дополнительные услуги</div>' +
     '<div class="row" style="gap:8px;margin-top:6px">' +
       '<button onclick="contractSucc(\'inherit\')" style="flex:1;padding:9px;border-radius:10px;font-size:13.5px;border:' +
-        (CONTRACT_SUCC === 'inherit' ? '2px solid #30d158' : '1px solid #3a3a3c') + ';background:transparent;color:#fff">Наследовать цены договора</button>' +
+        (CONTRACT_SUCC === 'inherit' ? '2px solid #30d158' : '1px solid #3a3a3c') + ';background:transparent;color:var(--txt)">Наследовать цены договора</button>' +
       '<button onclick="contractSucc(\'pricelist\')" style="flex:1;padding:9px;border-radius:10px;font-size:13.5px;border:' +
-        (CONTRACT_SUCC === 'pricelist' ? '2px solid #30d158' : '1px solid #3a3a3c') + ';background:transparent;color:#fff">Прайс на дату допа</button>' +
+        (CONTRACT_SUCC === 'pricelist' ? '2px solid #30d158' : '1px solid #3a3a3c') + ';background:transparent;color:var(--txt)">Прайс на дату допа</button>' +
     '</div>' +
     '<div class="row" style="margin-top:10px"><button onclick="contractPropose()" ' + btn + '>Предложить к признанию</button></div>' +
   '</div>';
@@ -1357,7 +1357,7 @@ function uiAsk(opts){
           ? '<input id="uaInput" value="' + attr(o.def || '') + '" style="width:100%;margin-top:12px;padding:10px;border-radius:10px;border:1px solid #3a3a3c;background:#0f0f10;color:#fff;font-size:15px">'
           : '') +
         '<div style="display:flex;gap:8px;margin-top:14px">' +
-          '<button id="uaNo" style="flex:1;padding:11px;border-radius:10px;border:1px solid #3a3a3c;background:transparent;color:#fff;font-size:15px">' + esc(o.no || 'Отмена') + '</button>' +
+          '<button id="uaNo" style="flex:1;padding:11px;border-radius:10px;border:1px solid #3a3a3c;background:transparent;color:var(--txt);font-size:15px">' + esc(o.no || 'Отмена') + '</button>' +
           '<button id="uaYes" style="flex:1;padding:11px;border-radius:10px;border:0;background:#0a84ff;color:#fff;font-size:15px">' + esc(o.yes || 'Да') + '</button>' +
         '</div>' +
       '</div>';
@@ -1419,7 +1419,7 @@ function mrgDraw(){
   const sum  = Math.round(ws.reduce((s, w) => s + (Number(w.price_alloc_usd) || 0), 0) * 100) / 100;
   const others = roomList().filter(x => String(x.code) !== String(MRG.from));
   const frozen = (typeof contractFrozen === 'function') ? contractFrozen() : null;
-  const b0 = 'padding:9px 11px;border-radius:10px;background:transparent;color:#fff;font-size:14px;margin:0 6px 6px 0';
+  const b0 = 'padding:9px 11px;border-radius:10px;background:transparent;color:var(--txt);font-size:14px;margin:0 6px 6px 0';
   const on = 'border:2px solid #30d158';
   const off = 'border:1px solid #3a3a3c';
   const rooms = others.map(x => '<button onclick="mrgPick(\'' + attr(x.code) + '\')" style="' + b0 + ';' +
@@ -1448,7 +1448,7 @@ function mrgDraw(){
     '<div class="sub" style="margin-top:10px">Что сделать с работами</div><div style="margin-top:6px">' + fate + '</div>' +
     after +
     '<div style="display:flex;gap:8px;margin-top:14px">' +
-      '<button onclick="mrgClose()" style="flex:1;padding:11px;border-radius:10px;border:1px solid #3a3a3c;background:transparent;color:#fff;font-size:15px">Отмена</button>' +
+      '<button onclick="mrgClose()" style="flex:1;padding:11px;border-radius:10px;border:1px solid #3a3a3c;background:transparent;color:var(--txt);font-size:15px">Отмена</button>' +
       '<button onclick="mrgSend()"' + (ready ? '' : ' disabled') + ' style="flex:1;padding:11px;border-radius:10px;border:0;' +
         'background:' + (ready ? '#0a84ff' : '#3a3a3c') + ';color:#fff;font-size:15px' + (ready ? '' : ';opacity:.6') + '">Объединить</button>' +
     '</div>' +
@@ -4633,7 +4633,10 @@ function elemAdjChips(code){
     return '<button onclick="elemAdjToggle(\'' + code + '\',\'' + r.code + '\')" ' +
       'style="margin:3px 4px 0 0;padding:6px 10px;border-radius:9px;border:1px solid ' +
       (on ? '#0a84ff' : '#3a3a3c') + ';background:' + (on ? '#0a84ff' : 'transparent') +
-      ';color:#fff;font-size:13px">' + (on ? '✓ ' : '') +
+      /* [138] Белый текст держится только на синем фоне отмеченной кнопки.
+         Неотмеченная лежит на фоне темы: в светлой она была белым по белому,
+         и ряд смежности читался как ряд пустых рамок. */
+      ';color:' + (on ? '#fff' : 'var(--txt)') + ';font-size:13px">' + (on ? '✓ ' : '') +
       esc(String(r.name || r.code).split(' (')[0]) + '</button>';
   }).join('');
 }
@@ -8995,7 +8998,7 @@ deal(){
       <div class="m" style="margin-top:10px">${allocUndoPlan().rows.length
         ? ("Базовая сумма сметы: " + fmt(allocBaseSum()) + " $ — к ней вернёт отмена.")
         : "Базовых цен пока нет — они появятся при сборке сметы или при первом разнесении."}</div>
-      ${allocUndoPlan().rows.length ? `<button onclick="allocUndoShow()" style="margin-top:8px;width:100%;padding:10px 14px;border-radius:10px;border:1px solid #3a3a3c;background:transparent;color:#fff;font-size:15px">↩︎ Отменить разнесение</button>` : ""}
+      ${allocUndoPlan().rows.length ? `<button onclick="allocUndoShow()" style="margin-top:8px;width:100%;padding:10px 14px;border-radius:10px;border:1px solid #3a3a3c;background:transparent;color:var(--txt);font-size:15px">↩︎ Отменить разнесение</button>` : ""}
     </div>` : ""}
     ${contractBlock()}
     ${addendumBlock()}
@@ -10431,8 +10434,35 @@ async function modNew(){
   MOD_BUSY = false;
 }
 
-function openVSheet(html){ vsheet.innerHTML = html; vmask.classList.add("on"); }
-function closeVSheet(){ vmask.classList.remove("on"); }
+/* [138, Д-138-1] Решение 137.4 — «из любого слоя поверх экрана есть выход,
+   и системная стрелка принадлежит верхнему слою» — было исполнено только
+   для окна документа. Окно схемы проёмов стрелку не забирало: она уводила
+   навигацию ПОД окном, экран за окном менялся на домашний, а само окно
+   оставалось висеть. Человек видит открытое окно поверх чужого экрана и
+   не понимает, к чему оно теперь относится. Правило распространено на все
+   окна vsheet: пока окно открыто, стрелка закрывает его и только его. */
+let vsBackFn = null;
+function openVSheet(html){
+  vsheet.innerHTML = html; vmask.classList.add("on");
+  try{
+    if(tg && tg.BackButton && !vsBackFn){
+      tg.BackButton.offClick(back);
+      vsBackFn = function(){ closeVSheet(); };
+      tg.BackButton.onClick(vsBackFn);
+      tg.BackButton.show();
+    }
+  }catch(e){}
+}
+function closeVSheet(){
+  vmask.classList.remove("on");
+  try{
+    if(tg && tg.BackButton && vsBackFn){
+      tg.BackButton.offClick(vsBackFn); vsBackFn = null;
+      tg.BackButton.onClick(back);
+      if(stack.length > 1) tg.BackButton.show(); else tg.BackButton.hide();
+    }
+  }catch(e){}
+}
 
 async function startVoice(mode, q){
   vMode = String(mode || "");
@@ -12671,7 +12701,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "138.1";
+const BUILD = "138.2";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
