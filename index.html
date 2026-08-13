@@ -1864,6 +1864,70 @@ async function openProfile(){
 }
 
 function profRoom(){ return (D.rooms || []).find(r => r.code === PROF.room) || null; }
+/* ── [чат 133, Д-129-5] Дозаполнение объёмов там, где о них сказано ────────
+   Слова Дмитрия 13.08 00:01: «Вот здесь сразу должна быть возможность добавить
+   недостающую информацию для формирования сметы, а не идти в другую локацию».
+   Свод профиля честно писал «Без объёма: 17 — заполните или снимите, иначе
+   смету не собрать», но поля ввода не давал: заполнять надо было, уходя в
+   карточку каждого помещения и возвращаясь. Теперь строки без объёма живут
+   прямо в своде — с полем ввода и кнопкой «снять», по всем помещениям сразу.
+   Правка панельная: план и без того хранится в PROF.plan, а render() сам
+   сохраняет его локально и увозит на сервер (119). */
+function profBlankList(){
+  const out = [];
+  Object.keys((typeof PROF === "object" && PROF && PROF.plan) || {}).forEach(function(rc){
+    const picked = PROF.plan[rc] || {};
+    Object.keys(picked).forEach(function(code){
+      const it = picked[code] || {};
+      if(it.skip) return;                      /* пропущенный этап объёма не требует */
+      if(Number(it.vol) > 0) return;
+      out.push({ rc: rc, code: code });
+    });
+  });
+  return out;
+}
+function profSetVolAt(el){
+  const rc = el.getAttribute('data-room'), code = el.getAttribute('data-code');
+  const v = String(el.value == null ? '' : el.value).trim().replace(',', '.');
+  const picked = ((typeof PROF === "object" && PROF && PROF.plan) || {})[rc];
+  if(!picked || !picked[code]) return;
+  if(v !== '' && !(Number(v) > 0)){ toast('Не похоже на объём', 'err'); return; }
+  picked[code].vol = v === '' ? null : Number(v);
+  picked[code].manual = true;
+  render();                                    /* render сам сохранит план и увезёт его на сервер */
+}
+function profDropAt(btn){
+  const rc = btn.getAttribute('data-room'), code = btn.getAttribute('data-code');
+  const picked = ((typeof PROF === "object" && PROF && PROF.plan) || {})[rc];
+  if(!picked || !picked[code]) return;
+  delete picked[code];
+  toast('Снято: ' + code);
+  render();
+}
+function profBlankHtml(){
+  const kinds = (D.catalog || {}).kinds || [];
+  const list = profBlankList();
+  if(!list.length) return '';
+  const rows = list.map(function(x){
+    const k = kinds.find(function(y){ return y.code === x.code; }) || {};
+    const rm = (D.rooms || []).find(function(y){ return y.code === x.rc; }) || {};
+    const auto = profVol(k, rm);
+    const rate = (typeof profPriceRoom === 'function') ? profPriceRoom(x.code, x.rc) : 0;
+    return '<div class="work">' +
+      '<div class="t">' + esc(k.name || x.code) + '</div>' +
+      '<div class="m">' + esc(x.code) + ' · ' + esc(String(rm.name || x.rc)) + ' · ' + esc(k.unit || '') +
+        (rate ? (' · ' + fmt(rate) + ' USD за единицу') : ' · цена не задана') +
+        (auto === null ? ' · объём вводится вручную' : ' · из обмеров не посчитался') + '</div>' +
+      '<div class="m" style="margin-top:6px">объём: ' +
+        '<input type="number" step="0.01" inputmode="decimal" data-room="' + esc(x.rc) + '" data-code="' + esc(x.code) + '"' +
+        ' onchange="profSetVolAt(this)" style="width:100px;padding:6px;border-radius:8px;border:1px solid #3a3a3c;background:#000;color:#fff"> ' + esc(k.unit || '') +
+        ' <button data-room="' + esc(x.rc) + '" data-code="' + esc(x.code) + '" onclick="profDropAt(this)"' +
+        ' style="margin-left:8px;padding:6px 12px;border-radius:8px;border:0;background:#3a3a3c;color:#fff">снять</button>' +
+      '</div></div>';
+  }).join('');
+  return '<div class="stat" id="profBlank"><div class="r"><span class="k" style="font-size:13px;color:#ff9f0a">' +
+    'Заполните объём здесь же — или снимите работу из плана</span></div>' + rows + '</div>';
+}
 function profPicked(code){                      // выбор одного помещения (по умолчанию — текущего)
   const rc = code || PROF.room;
   if(!rc) return {};
@@ -7906,6 +7970,7 @@ profile(){
         ? (all.blank ? '<div class="r"><span class="k" style="font-size:13px;color:#ff9f0a">Без объёма: ' + all.blank + ' — заполните или снимите, иначе смету не собрать.</span></div>' : '')
         : '<div class="r"><span class="k" style="font-size:13px">Пока не выбрано ни одной работы. Откройте помещение из списка ниже и отметьте виды работ — или пройдите вопросами; кнопка сборки станет активной сама.</span></div>') +
       '</div>' +
+      (all.n && all.blank ? profBlankHtml() : '') +   /* [133, Д-129-5] дозаполнение прямо здесь */
       mergedNote +
       items;
   }
@@ -12264,7 +12329,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "133.2";
+const BUILD = "133.3";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
