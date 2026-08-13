@@ -267,6 +267,16 @@ function safeTop(){
    экрана вслепую мы уже пробовали дважды. */
 let SAFE_DIAG = {};
 let DIAG_MS = 20000;      /* [137] диагностику читают и снимают — но не вечно */
+/* [137] Умеет ли этот клиент отдавать файл системному меню телефона. Ответ
+   нужен человеку на снимке: по нему видно, почему кнопка «Поделиться» есть
+   или её нет, — вместо догадок о том, что «в Telegram это не работает». */
+function shareCan(){
+  try{
+    if(!navigator.canShare) return 'нет';
+    const f = new File(['<html></html>'], 'проба.html', { type: 'text/html' });
+    return navigator.canShare({ files: [f] }) ? 'файлы' : (navigator.share ? 'только текст' : 'нет');
+  }catch(e){ return 'нет'; }
+}
 function safeDiagShow(){
   const d = SAFE_DIAG || {};
   toast('Зона сверху: итог ' + (d.env || '—') + ' · система ' + (d.safe || 0) + ' · шапка клиента ' +
@@ -274,6 +284,7 @@ function safeDiagShow(){
         ' · ' + (d.why || '—') + (d.full ? ' · полный экран' : '') +
         ' · окно ' + (d.ih || 0) + '/' + (d.vsh || 0) + (d.over ? (' → перекрытие ' + d.over) : '') +
         ' · ' + (d.platform || '—') + ' · Bot API ' + (d.ver || '—') + navDiag() +
+        ' · поделиться: ' + shareCan() +
         ' · коснитесь надписи, чтобы убрать', 'wait', DIAG_MS);
 }
 safeTop();
@@ -1516,6 +1527,7 @@ function contractFileShow(doc, id){
     '<div style="display:flex;gap:6px;padding:10px;background:#1c1c1e;align-items:center;flex-wrap:wrap">' +
       '<div style="flex:1 0 100%;font-size:14px;color:#fff;margin-bottom:2px">Договор № ' + esc(doc.no || '') + '</div>' +
       '<button id="dfSend"  style="' + btn + ';background:#30d158">📨 В чат</button>' +
+      '<button id="dfShare" style="' + btn + ';background:#5e5ce6;display:none">↗ Поделиться</button>' +
       '<button id="dfPrint" style="' + btn + ';background:#0a84ff">Печать</button>' +
       '<button id="dfSave"  style="' + btn + ';background:#3a3a3c">Скачать</button>' +
       '<button id="dfClose" style="' + btn + ';background:#3a3a3c;margin-left:auto">Закрыть</button>' +
@@ -1588,6 +1600,38 @@ function contractFileShow(doc, id){
     }
   };
   box.querySelector('#dfSend').onclick = sendToChat;
+
+  /* [чат 137] Системное меню телефона — то самое «отправить», о котором просил
+     Дмитрий: через него же идёт и печать (службы печати Android/iOS живут
+     именно там). Web Share API отдаёт файл этому меню. Кнопку показываем ТОЛЬКО
+     если клиент подтвердил, что примет такой файл: `canShare({files})` — иначе
+     получилась бы третья мёртвая кнопка рядом с «Печатью» и «Скачать». */
+  try{
+    const shareFile = new File([String(doc.html || '')],
+                               String(doc.filename || 'dogovor.html'),
+                               { type: 'text/html' });
+    if(navigator.canShare && navigator.canShare({ files: [shareFile] })){
+      const sb = box.querySelector('#dfShare');
+      sb.style.display = '';
+      sb.onclick = async () => {
+        try{
+          await navigator.share({ files: [shareFile], title: 'Договор № ' + (doc.no || '') });
+          dfNote('Отдал файл меню телефона — дальше выбирайте: отправить, сохранить или напечатать.');
+        }catch(e){
+          /* Человек закрыл меню — это не отказ системы, а его решение. */
+          if(String((e && e.name) || '') === 'AbortError') dfNote('Отправка отменена — файл никуда не ушёл.');
+          else {
+            /* Отказ системы не должен обрывать дело: файл всё равно доставляем
+               прежним путём — но человек обязан видеть ОБА факта, а не только
+               последний. Поэтому причина возвращается в заметку после отправки. */
+            dfNote('Меню телефона файл не приняло — присылаю в чат с ботом.', false);
+            await sendToChat();
+            dfNote('Меню телефона файл не приняло — поэтому он ушёл в чат с ботом.');
+          }
+        }
+      };
+    }
+  }catch(e){}
 
   box.querySelector('#dfPrint').onclick = () => {
     const w = fr.contentWindow;
@@ -12518,7 +12562,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "137.2";
+const BUILD = "137.3";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
