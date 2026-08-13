@@ -10736,9 +10736,84 @@ async function applyVoiceRooms(){
    человек кнопкой «Добавить в смету» — переспрос вместо тихой записи (решение 006). */
 let vRep = [];
 
+/* ── [чат 133, Д-130-3] Отсылка «так же, как и в ванной» ───────────────────
+   Слова Дмитрия 13.08 01:23: «Надо учесть такой вариант, предложить
+   аналогичные строки на утверждение». Голос теперь отсылку понимает и
+   называет помещение-образец (поле like), но развернуть её в набор видов
+   сервер умеет только по СМЕТЕ: профиль ремонта живёт в object_profiles и
+   Голосу не виден, а на новом объекте сметы нет вовсе — там весь набор
+   лежит именно в профиле. Поэтому вторую половину разворота делает панель:
+   профиль у неё уже загружен (profilePull), обмеры тоже — и «снятие того,
+   что к этому помещению не применимо» она считает, а не угадывает:
+   неприменим тот вид, чей объём в целевом помещении не считается (нет
+   дверей, окон, площади). Такая строка приходит НЕотмеченной и говорит
+   об этом словами — молчаливо пропадать она не имеет права (урок 132). */
+function vLikeRoom(L){
+  if(!L) return null;
+  const rooms = roomList();
+  const byCode = rooms.find(r => String(r.code) === String(L.code || "").trim());
+  if(byCode) return byCode;
+  const said = vrNorm(L.said || "");
+  if(!said) return null;
+  const byName = rooms.find(r => { const nm = vrNorm(r.name); return nm && (nm === said || nm.indexOf(said) === 0 || said.indexOf(nm) === 0); });
+  if(byName) return byName;
+  const g = vrGroup(said);
+  return g >= 0 ? (rooms.find(r => vrGroup(r.name) === g) || null) : null;
+}
+function vLikeFill(r){
+  if(!r || !r.like || r.isNew) return r;
+  const src = vLikeRoom(r.like);
+  r._like = { said: String(r.like.said || ""), name: src ? String(src.name || "") : "",
+              code: src ? String(src.code) : "", why: String(r.like.why || ""), added: 0, off: 0 };
+  if(!src){ r._like.why = "noroom"; return r; }
+  if(String(src.code) === String(r.code)){ r._like.why = "same"; return r; }
+  const kinds = (D.catalog || {}).kinds || [];
+  const tgt = (D.rooms || []).find(x => x.code === r.code) || null;
+  const has = {};
+  (r.kinds || []).forEach(k => { has[k.code] = true; });
+  (r.refused || []).forEach(k => { has[k.code] = true; });   /* отказанное вслух не переносим [132] */
+  const tgtPlan = ((typeof PROF === "object" && PROF && PROF.plan) || {})[r.code] || {};
+  const tgtEst  = profInEstimate(r.code);
+  const pool = Object.assign({}, ((typeof PROF === "object" && PROF && PROF.plan) || {})[src.code] || {}, profInEstimate(src.code));
+  Object.keys(pool).forEach(code => {
+    if(has[code]) return;
+    const kind = kinds.find(x => x.code === code);
+    if(!kind) return;
+    has[code] = true;
+    const vol = profVol(kind, tgt);
+    const novol = !(Number(vol) > 0);
+    r.kinds.push({ code: code, name: kind.name || code, section: kind.section || "", unit: kind.unit || "",
+                   base: kind.base || "", pause: kind.pause || 0, src: "like",
+                   already: !!(tgtPlan[code] || tgtEst[code]), novol: novol });
+    r._like.added++;
+    if(novol) r._like.off++;
+  });
+  const rank = { said: 0, like: 1, tech: 2 };
+  r.kinds.sort((x, y) => (rank[x.src] == null ? 3 : rank[x.src]) - (rank[y.src] == null ? 3 : rank[y.src]));
+  /* Слово об исходе принадлежит тому, кто видел ОБА источника: сервер знал
+     только смету и мог сказать «пусто», хотя профиль образца полон. */
+  r._like.why = r.kinds.some(k => k.src === "like") ? "" : "empty";
+  return r;
+}
+/* Строка-объяснение переноса: у отсылки четыре исхода, и у каждого свои слова
+   (правило четырёх исходов, К4-132) — перенесли · образец пуст · образец не
+   узнан · «как здесь же». Пятый молчаливый исход был бы возвратом дефекта. */
+function vLikeNote(){
+  const parts = [];
+  vRep.forEach(r => {
+    const L = r._like; if(!L) return;
+    const to = r.name || "помещение";
+    if(L.why === "noroom") parts.push("Не понял, на какое помещение похоже: «" + esc(L.said) + "». Назовите его так, как оно записано на экране «Объект».");
+    else if(L.why === "same") parts.push("Это то же самое помещение — переносить нечего.");
+    else if(L.why === "empty") parts.push("В «" + esc(L.name || L.said) + "» работ пока не назначено — переносить нечего.");
+    else parts.push("Перенёс из «" + esc(L.name) + "» в «" + esc(to) + "»: " + L.added + (L.off ? (" · из них " + L.off + " без объёма в этом помещении — не отмечены") : ""));
+  });
+  return parts.length ? '<div class="vs" style="margin-top:6px">' + parts.join("<br>") + "</div>" : "";
+}
 function showVRepair(d){
   const list = Array.isArray(d.rooms) ? d.rooms : [];
-  vRep = list.map(r => ({ ...r, kinds: (r.kinds || []).map(k => ({ ...k, _sel: !k.already })) }));
+  vRep = list.map(r => vLikeFill({ ...r, kinds: (r.kinds || []).map(k => ({ ...k })) }))
+             .map(r => ({ ...r, kinds: (r.kinds || []).map(k => ({ ...k, _sel: !k.already && !k.novol })) }));
   const quote = d.recognized ? `<div class="vquote" onclick="this.classList.toggle('op')">Расслышал: <b>${esc(d.recognized)}</b><span class="vq-more">коснитесь, чтобы развернуть или свернуть</span></div>` : "";
   if(!list.length){
     tg?.HapticFeedback?.notificationOccurred("warning");
@@ -10766,10 +10841,12 @@ function showVRepair(d){
         <div class="vchk">✓</div>
         <div style="flex:1;min-width:0">
           <div class="vv">${esc(k.name)}<span style="opacity:.6"> · ${esc(k.unit || "")}</span></div>
-          <div class="vd">${esc(k.code)}${k.src === "tech" ? " · добавлено по технологии" : ""}${k.already ? ' · <span style="color:#ff9f0a">уже в смете</span>' : ""}${profCanSkip(k.code) ? ' · <span style="opacity:.75">этап пропускаем</span>' : ""}</div>
+          <div class="vd">${esc(k.code)}${k.src === "tech" ? " · добавлено по технологии" : ""}${k.src === "like" ? " · как в «" + esc((r._like && r._like.name) || (r.like && r.like.name) || "образце") + "»" : ""}${k.novol ? ' · <span style="color:#ff9f0a">объём в этом помещении не считается</span>' : ""}${k.already ? ' · <span style="color:#ff9f0a">уже в смете</span>' : ""}${profCanSkip(k.code) ? ' · <span style="opacity:.75">этап пропускаем</span>' : ""}</div>
         </div>
       </div>`).join("");
     const tech = r.kinds.filter(k => k.src === "tech").length;
+    const lik  = r.kinds.filter(k => k.src === "like").length;
+    const nov  = r.kinds.filter(k => k.novol).length;
     const dup  = r.kinds.filter(k => k.already).length;
     /* Пропускаемые этапы называем прямо в окне: человек только что произнёс
        результат («стены под обои»), а сервер достроил цепочку — и часть её он,
@@ -10792,7 +10869,7 @@ function showVRepair(d){
       </div>`).join("");
     const rfHead = (r.refused || []).length ? '<div class="vd" style="margin:8px 0 2px">Отказано голосом</div>' : "";
     const ref = (r.refused || []).length;
-    const note = [tech ? `по технологии добавлено: ${tech}` : "", dup ? `уже в смете: ${dup} — не отмечено` : "", ref ? `отказано: ${ref}` : "", skp ? `этапов можно пропустить: ${skp} — решается в профиле` : ""].filter(Boolean).join(" · ");
+    const note = [lik ? `перенесено из «${(r._like && r._like.name) || ""}»: ${lik}` : "", nov ? `без объёма здесь: ${nov} — не отмечено` : "", tech ? `по технологии добавлено: ${tech}` : "", dup ? `уже в смете: ${dup} — не отмечено` : "", ref ? `отказано: ${ref}` : "", skp ? `этапов можно пропустить: ${skp} — решается в профиле` : ""].filter(Boolean).join(" · ");
     return `<div style="margin-bottom:12px">${head}${note ? `<div class="vd" style="margin:2px 0 6px">${esc(note)}</div>` : ""}${kl}${rfHead}${rf}
       </div>`;
   }).join("");
@@ -10806,6 +10883,7 @@ function showVRepair(d){
           : "Помещений из сказанного в объекте нет — заведите их на экране «Объект», тогда объёмы посчитаются из обмеров.")
       : "Отмеченное перенесу в профиль ремонта: объём посчитается из обмеров, а смета соберётся кнопкой «Добавить в смету»."}</div>
     ${quote}
+    ${vLikeNote()}
     ${repSelN ? '<div class="vfilter"><button onclick="vSelOnly(this)">Только отмеченные</button></div>' : ""}
     <div id="vlist">${rows}</div>
     <div class="vrow">
@@ -12178,7 +12256,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "132.1";
+const BUILD = "133.1";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
