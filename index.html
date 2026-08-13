@@ -7354,7 +7354,22 @@ function objsSwitch(key){
      показывал договор ПРЕЖНЕГО объекта, пока его не перезагрузили руками. */
   D = null; INVS = null; CREW_DATA = null;
   CONTRACTS = null; PLAN = null; ADDENDA = null; ADD_QTY = {};
-  back();
+  /* [138, Д-137-4] Здесь стоял back(), и он ронял всё переключение.
+     Кэши только что обнулены, а back() перерисовывает экран под стеком —
+     home() по пустому D бросал исключение, оно всплывало наружу, и ни
+     «Открываю объект…», ни load() не выполнялись вовсе. Человек видел
+     прежний экран «Выбор объекта» и делал вывод, что объект не
+     переключается, — хотя KEY уже был новый.
+     Экран со стека снимаем, но НЕ рисуем: рисовать по пустым данным
+     нечего, и следующей строкой мы ставим свой экран ожидания.
+     Второй путь того же дефекта: когда «Выбор объекта» — единственный
+     экран в стеке (панель поднялась прямо на нём после перезагрузки),
+     снимать нечего, и первый же render() после загрузки возвращал
+     человека ровно туда, откуда он уходил. Уводя с выбора, панель
+     обязана оказаться дома. */
+  if(stack.length > 1){ scrollSave(); stack.pop(); }
+  if(!stack.length || stack[stack.length - 1] === "objsel"){ stack.length = 0; stack.push("home"); }
+  navSave();
   /* [чат 129, слова Дмитрия «переключение занимает около 15 секунд… добавить
      индикатор процесса, чтоб не возникало ощущения зависа продукта»] Смена
      объекта сбрасывает все кэши и заново тянет самый тяжёлый ответ сервера.
@@ -7599,7 +7614,21 @@ function render(toTop){
   profilePushSoon();                              /* [119] и на сервер, с задержкой */
   const k = stack[stack.length - 1];
   const keep = scrollNow();                       // где человек стоял до перерисовки
-  app.innerHTML = (SCREENS[k] || SCREENS.home)();
+  /* [138] Страховка против мёртвого экрана. Если функция экрана бросит
+     (пустые данные, неполный ответ сервера), присваивание не случится и
+     на экране останется РАЗМЕТКА ПРЕДЫДУЩЕГО экрана — человек нажимает,
+     ничего не меняется, и виноватой выглядит кнопка. Ровно так выглядел
+     Д-137-4. Экран обязан оставаться живым и давать выход. */
+  try{
+    app.innerHTML = (SCREENS[k] || SCREENS.home)();
+  }catch(err){
+    app.innerHTML = '<div class="hello">Готовлю данные…</div>' +
+      '<div class="sub">' + esc(String((err && err.message) || err)) + '</div>' +
+      '<div class="row" style="margin-top:14px;gap:8px">' +
+        '<button onclick="load()" style="flex:1;padding:12px;border-radius:11px;border:0;background:#0a84ff;color:#fff;font-size:15px">Загрузить</button>' +
+        '<button onclick="go(\'objsel\')" style="flex:1;padding:12px;border-radius:11px;border:1px solid #3a3a3c;background:#1c1c1e;color:#fff;font-size:15px">К объектам</button>' +
+      '</div>';
+  }
   uzApply(app);                                   // языковой слой E1 [чат 020]
   objBarDraw();                                   // полоса объекта [чат 126]
   if(k === "object" && objPlan()) setTimeout(objShowPlan, 0);   // картинка плана грузится отдельным запросом [чат 016]
@@ -7839,6 +7868,9 @@ invites(){
 
 
 home(){
+  /* [138] Экран, который читает D, обязан переживать его отсутствие:
+     объект в момент переключения существует, а данных ещё нет. */
+  if (!D) return '<div class="load">Загружаю объект…</div>';
   if (D.kind === "hand") return handHome();   // контур работника [чат 013]
   const worker = D.role === "worker";
   const p = progress();
@@ -12639,7 +12671,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "137.6";
+const BUILD = "138.1";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
