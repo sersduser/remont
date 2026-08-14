@@ -526,7 +526,7 @@ async function fetchT(url, opts, ms, чего){
     return await fetch(url, Object.assign({}, opts || {}, { signal: ctl.signal }));
   }catch(err){
     if(String((err && err.name) || "") === "AbortError"){
-      const e = new Error("Сервер не ответил за " + Math.round(wait / 1000) + " с"
+      const e = new Error("Сервер не ответил за " + (wait >= 1000 ? Math.round(wait / 1000) + " с" : wait + " мс")
         + (чего ? " (" + чего + ")" : "")
         + ". Он бывает занят на тяжёлых объектах — попробуйте ещё раз.");
       e.timeout = true;
@@ -7914,7 +7914,56 @@ function navDiag(){
 const SCROLL = {};
 function scrollSave(){ try{ SCROLL[stack[stack.length - 1]] = scrollNow(); }catch(e){} navSave(); }
 function go(k){ scrollSave(); stack.push(k); render(true); navSave(); }
-function back(){ if(stack.length > 1){ scrollSave(); stack.pop(); render(true); navSave(); } }
+/* [142, пункт 11 смены · Д-138-7] Верхнее окно панели, если оно открыто.
+   Своими окнами панель называет то, что рисуется поверх экрана прямым
+   узлом в body: position:fixed, во весь экран, с высоким слоем. Экран
+   приложения (#app) и лист vsheet сюда не попадают — у листа свой
+   перехват с 138.2, и он снимает стрелку раньше. */
+function topOverlay(){
+  let верх = null, слой = -1;
+  const дети = Array.prototype.slice.call(document.body.children);
+  for(let i = 0; i < дети.length; i++){
+    const el = дети[i];
+    if(!el || el.id === "app" || el.id === "vmask" || el.id === "toast") continue;
+    if(el.id === "langbtn" || el.id === "buildtag") continue;   /* постоянные метки угла — не окна */
+    if(el.tagName === "SCRIPT" || el.tagName === "STYLE" || el.tagName === "LINK") continue;
+    let st; try{ st = getComputedStyle(el); }catch(e){ continue; }
+    if(st.position !== "fixed" || st.display === "none" || st.visibility === "hidden") continue;
+    const z = parseInt(st.zIndex, 10) || 0;
+    if(z < 9000) continue;
+    const r = el.getBoundingClientRect();
+    if(r.width < 120 || r.height < 80) continue;     /* тост и метки угла — не окна */
+    if(z >= слой){ слой = z; верх = el; }            /* при равенстве — последний в body */
+  }
+  return верх;
+}
+/* Закрываем окно ТЕМ ЖЕ ходом, каким его закрыл бы человек: ищем кнопку
+   отказа и жмём её. Так разрешается промис у окон, заменивших нативные
+   confirm/prompt (запрещены с 125), и отрабатывают их собственные уборки.
+   Кнопки отказа нет — значит это окно хода работы (запись цен, заполнение
+   прайса): его нельзя ни закрыть, ни увести из-под себя экран, поэтому
+   стрелка не делает НИЧЕГО. Молчание тут честнее навигации вслепую. */
+function closeTopOverlay(el){
+  if(!el) return false;
+  if(el.id === "mrgBox" && typeof mrgClose === "function"){ mrgClose(); return true; }
+  const кнопки = Array.prototype.slice.call(el.querySelectorAll("button, .btn, [role=button]"));
+  const отказ = кнопки.filter(function(b){
+    const t = (b.textContent || "").trim();
+    return /^(отмена|закрыть|не сейчас|назад|отменить|✕|×|⨯)$/i.test(t) || /^←\s*назад$/i.test(t);
+  })[0];
+  if(отказ){ отказ.click(); return true; }
+  return false;
+}
+function back(){
+  /* Лист vsheet свою стрелку забирает сам (138.2); страхуемся на случай,
+     когда перехват не встал — например, окно открыто до готовности tg. */
+  try{
+    if(typeof vmask !== "undefined" && vmask && vmask.classList.contains("on")){ closeVSheet(); return; }
+  }catch(e){}
+  const верх = topOverlay();
+  if(верх){ closeTopOverlay(верх); return; }        /* окно есть — навигация ждёт */
+  if(stack.length > 1){ scrollSave(); stack.pop(); render(true); navSave(); }
+}
 
 /* ── Место человека переживает перезагрузку [чат 131, Д-130-4] ────────────
    Постановка Дмитрия 13.08 01:39 дословно: «Сделай так, чтобы при обновлении
@@ -13606,7 +13655,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "142.1";
+const BUILD = "142.2";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
