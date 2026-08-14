@@ -3591,6 +3591,13 @@ function graphSvg(){
       '" stroke-width="2"' + (g.dash ? ' stroke-dasharray="' + g.dash + '"' : "") + ' />' +
       (g.gone ? '<line x1="' + (mx - 5) + '" y1="' + (my - 5) + '" x2="' + (mx + 5) + '" y2="' + (my + 5) +
         '" stroke="' + g.color + '" stroke-width="2" />' : "") +
+      /* Хитбокс во всю длину линии [141]: до этого попадал только тык в
+         середину — кружок ниже. Прозрачный (alpha .01) и толстый: палец
+         промахивается мимо двухпиксельной линии, а мимо четырнадцати нет.
+         Идёт ПОСЛЕ видимой линии и ДО плашек — плашка остаётся главнее. */
+      '<line x1="' + a.x + '" y1="' + a.y + '" x2="' + b.x + '" y2="' + b.y +
+        '" stroke="rgba(0,0,0,.01)" stroke-width="14" stroke-linecap="round" style="cursor:pointer"' +
+        ' onclick="elemEdit(\'' + esc(e.id) + '\')"><title>' + esc(String(e.name || e.id)) + '</title></line>' +
       '<circle cx="' + mx + '" cy="' + my + '" r="9" fill="rgba(0,0,0,.01)" style="cursor:pointer" onclick="elemEdit(\'' + esc(e.id) + '\')"><title>' +
       esc(String(e.name || e.id)) + '</title></circle>');
   });
@@ -4669,7 +4676,7 @@ function planQueue(m){
 /* Слой поверх картинки: линии проёмов между размеченными помещениями,
    точки у проёмов со своей меткой, плашки помещений. Цвета и штрих те же,
    что у графа (graphLine) — один язык на обоих видах. */
-function planLayer(m){
+function planLayer(m, live){
   const R = m.rooms || {}, E = m.elems || {};
   const els = elemAll();
   const lines = els.filter(e => R[e.a] && R[e.b]).map(e => {
@@ -4686,14 +4693,41 @@ function planLayer(m){
   }).join("");
   const svg = '<svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true"' +
     ' style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none">' + lines + dots + '</svg>';
+  /* Слой попадания [141]. Отдельным svg поверх рисованного: у того
+     pointer-events:none, и включать их поэлементно там нельзя — родитель
+     гасит детей. Толщина хитбокса задана non-scaling-stroke, то есть
+     в пикселях экрана, а не в долях картинки: план бывает любой формы. */
+  const hitLines = live ? els.filter(e => R[e.a] && R[e.b]).map(e => {
+    const a = R[e.a], b = R[e.b];
+    return '<line x1="' + (a[0] * 100) + '" y1="' + (a[1] * 100) + '" x2="' + (b[0] * 100) + '" y2="' + (b[1] * 100) +
+      '" stroke="rgba(0,0,0,.01)" stroke-width="16" stroke-linecap="round" vector-effect="non-scaling-stroke"' +
+      ' style="cursor:pointer" onclick="elemEdit(\'' + attr(e.id) + '\')"><title>' + esc(String(e.name || e.id)) + '</title></line>';
+  }).join("") : "";
+  const hitSvg = hitLines
+    ? '<svg viewBox="0 0 100 100" preserveAspectRatio="none"' +
+      ' style="position:absolute;inset:0;width:100%;height:100%">' + hitLines + '</svg>'
+    : "";
+  /* Точка проёма нарисована радиусом 1,4 доли — это ~5 пикселей, пальцем
+     не попасть. Зона делается разметкой, а не кружком: 30 пикселей
+     независимо от того, как растянута картинка. */
+  const hitDots = live ? Object.keys(E).map(id => {
+    const p = E[id], e = els.filter(x => String(x.id) === String(id))[0];
+    return '<div onclick="elemEdit(\'' + attr(id) + '\')" title="' + attr(String((e && e.name) || id)) + '"' +
+      ' style="position:absolute;left:' + (p[0] * 100) + '%;top:' + (p[1] * 100) + '%;width:30px;height:30px;' +
+      'transform:translate(-50%,-50%);border-radius:50%;cursor:pointer"></div>';
+  }).join("") : "";
   const tags = Object.keys(R).map(code => {
     const r = roomList().filter(x => x.code === code)[0];
     const p = R[code], nm = r ? planShort(r.name || code) : code;
-    return '<div style="position:absolute;left:' + (p[0] * 100) + '%;top:' + (p[1] * 100) + '%;' +
+    return '<div' + (live ? ' onclick="objGoRoom(\'' + attr(code) + '\')"' : '') +
+      ' style="position:absolute;left:' + (p[0] * 100) + '%;top:' + (p[1] * 100) + '%;' +
       'transform:translate(-50%,-50%);background:rgba(28,28,30,.86);color:#fff;font-size:11px;' +
-      'padding:3px 7px;border-radius:8px;white-space:nowrap;pointer-events:none">' + esc(nm) + '</div>';
+      'padding:3px 7px;border-radius:8px;white-space:nowrap;' +
+      (live ? 'cursor:pointer' : 'pointer-events:none') + '">' + esc(nm) + '</div>';
   }).join("");
-  return svg + tags;
+  /* Порядок слоёв: рисованный → попадание по линиям → точки → плашки.
+     Плашка перекрывает линию намеренно: она крупнее и означает помещение. */
+  return svg + hitSvg + hitDots + tags;
 }
 
 function planMarkStart(){
@@ -4853,13 +4887,16 @@ async function objShowPlan(){
     box.innerHTML = '<div style="position:relative">' +
         '<img src="' + u + '" alt="План БТИ" style="width:100%;border-radius:12px;display:block">' +
         planCFills(ppC) +
-        ((marked || polyN) ? planLayer(planCAdj(mk, ppC)) : "") +
+        ((marked || polyN) ? planLayer(planCAdj(mk, ppC), true) : "") +
       "</div>" +
       '<div class="m" style="margin-top:6px">Загружен ' + esc(p.at || "") + " · " + esc(p.who || "") + "</div>" +
       (stale ? '<div class="m" style="color:#ff9f0a">Метки остались от прежнего снимка плана — проверьте их.</div>' : "") +
       '<div class="m" style="margin-top:4px">' + (marked
         ? ("Отмечено помещений: " + marked + " из " + total)
         : "Помещения на плане не отмечены. Разметка — это тычки пальцем: где какая комната и где какая дверь.") + "</div>" +
+      /* Поведение, о котором не сказано, для человека не существует [141]:
+         на схеме-графе такая подпись есть с 033, у плана её не было. */
+      ((marked || polyN) ? '<div class="m" style="opacity:.7">Тык по линии открывает проём, по плашке — помещение.</div>' : "") +
       '<button onclick="planMarkStart()" style="width:100%;margin-top:8px;padding:11px;border-radius:11px;' +
         'border:0;background:#2c2c2e;color:#fff;font-size:15px">' +
         (marked ? "Дополнить разметку" : "Разметить план") + "</button>" +
