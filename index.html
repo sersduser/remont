@@ -2849,6 +2849,42 @@ function profVol(kind, room){
   return Math.round(sum * 100) / 100;
 }
 
+/* [145, Д-141-4] Почему объём не посчитался. Прежде панель говорила одно и
+   то же — «объём в этом помещении не считается» — и для штучного вида, у
+   которого расчёта нет ПО ПОСТРОЕНИЮ, и для метражного, которому не хватает
+   обмеров помещения. Первое неверно по сути (объём у штуки есть, он просто
+   число), второе не называет, что делать. Возвращаем разбор:
+     { вид:'ручной' }                     — базы объёма нет, число вписывается;
+     { вид:'обмеры', чего:['стены',…] }   — база есть, обмеров помещения нет;
+     null                                  — объём считается.                */
+function profVolWhy(kind, room){
+  try{
+    if(!kind || !room) return null;
+    const base = String(kind.base || '').trim();
+    if(!base || base === 'вручную') return { вид: 'ручной' };
+    if(Number(profVol(kind, room)) > 0) return null;
+    const чего = [];
+    for(const p of base.split('+')){
+      const nm = p.trim(); if(!nm) continue;
+      let v = null;
+      try{
+        const q = elemBase(nm);
+        if(q) v = elemOf(room.code).length ? elemVol(room.code, q.src, q.role, q.side, kind.unit)
+                : (q.src === 'двери' ? room.doors : (q.src === 'окна' ? room.windows : null));
+        else if(nm === 'пол')      v = room.floor_m2;
+        else if(nm === 'потолок')  v = room.ceiling_m2;
+        else if(nm === 'стены')    v = room.wall_m2;
+        else if(nm === 'периметр') v = room.perimeter_m;
+        else if(nm === 'окна')     v = room.windows;
+        else if(nm === 'двери')    v = room.doors;
+        else if(nm === 'помещение' || nm === 'объект') v = 1;
+      }catch(e){ v = null; }
+      if(v === null || v === undefined || v === '') чего.push(nm);
+    }
+    return чего.length ? { вид: 'обмеры', чего: чего } : { вид: 'ручной' };
+  }catch(e){ return null; }
+}
+
 /* ── Ставка вида: типовая и вилка мин–макс [чат 018] ──────────────────────
    Решение Дмитрия: справочник несёт разброс (минимум — типовая — максимум),
    без региональной привязки. Причина — пробел 5 ревизии 010: одно число
@@ -12160,6 +12196,25 @@ function vLikeRoom(L){
   const g = vrGroup(said);
   return g >= 0 ? (rooms.find(r => vrGroup(r.name) === g) || null) : null;
 }
+/* [145, Д-141-4] Число вида в помещении-образце. Источника два: профиль
+   ремонта (там объём лежит полем `vol`) и смета объекта (строка работы с
+   количеством `qty`). Берём только у видов БЕЗ расчёта — у метражных число
+   образца к другому помещению отношения не имеет. */
+function likeQty(pool, code, kind){
+  try{
+    const base = String((kind && kind.base) || '').trim();
+    if(base && base !== 'вручную') return null;        /* расчётный вид — не переносим число */
+    const p = pool ? pool[code] : null;
+    if(p && typeof p === 'object' && Number(p.vol) > 0) return Number(p.vol);
+    /* из сметы образца: та же связка «вид ↔ работа», что у profInEstimate */
+    const w = ((D && D.works) || []).find(x => {
+      const m = String(x.note || '').match(/вид\s+([A-Za-z]+-\d+)/i);
+      return m && m[1].toUpperCase() === String(code).toUpperCase() && Number(x.qty) > 0;
+    });
+    return w ? Number(w.qty) : null;
+  }catch(e){ return null; }
+}
+
 function vLikeFill(r){
   if(!r || !r.like || r.isNew) return r;
   const src = vLikeRoom(r.like);
@@ -12184,9 +12239,17 @@ function vLikeFill(r){
     if(r._like.part && !vPartsOfKind(kind)[r._like.part]) return;   // названа часть — переносим только её [134]
     has[code] = true;
     const vol = profVol(kind, tgt);
-    const novol = !(Number(vol) > 0);
+    /* [145, Д-141-4] У штучного вида расчёта нет по построению — его «объём»
+       есть просто число, и в помещении-образце оно уже известно. Перенести
+       «как в ванной» и не перенести число значит отдать человеку список,
+       который он обязан заполнить руками заново. Это та же граница, что
+       пункт 1 смены закрыл для речи: где расчёта НЕТ, главнее известное
+       число; где расчёт есть — он и остаётся, молчаливой подмены нет. */
+    const изОбразца = likeQty(pool, code, kind);
+    const novol = !(Number(vol) > 0) && !(Number(изОбразца) > 0);
     r.kinds.push({ code: code, name: kind.name || code, section: kind.section || "", unit: kind.unit || "",
                    base: kind.base || "", pause: kind.pause || 0, src: "like",
+                   qty_like: (!(Number(vol) > 0) && Number(изОбразца) > 0) ? Number(изОбразца) : undefined,
                    already: !!(tgtPlan[code] || tgtEst[code]), novol: novol });
     r._like.added++;
     if(novol) r._like.off++;
@@ -12214,7 +12277,11 @@ function vLikeFill(r){
   r.kinds.forEach(k => {
     if(k.src !== "like" || k.novol !== undefined) return;
     const kd = kinds.find(x => x.code === k.code) || null;
-    k.novol = !(Number(kd ? profVol(kd, tgt) : 0) > 0);
+    const рас = Number(kd ? profVol(kd, tgt) : 0);
+    /* [145] серверные строки переноса тоже получают число образца */
+    const изОбр = kd ? likeQty(pool, k.code, kd) : null;
+    if(!(рас > 0) && Number(изОбр) > 0) k.qty_like = Number(изОбр);
+    k.novol = !(рас > 0) && !(Number(изОбр) > 0);
   });
   const likeRows = r.kinds.filter(k => k.src === "like" && !k.offer);
   const offerRows = r.kinds.filter(k => k.offer);
@@ -12260,6 +12327,23 @@ function vLikeNote(){
    его ЗДЕСЬ важнее, чем позже: человек только что назвал работы вслух и
    спрашивает «почему объёмы не высчитываются» — а окно молчало про числа
    вовсе. Нет расчёта — говорим об этом жёлтым, а не молчим. */
+/* [145, Д-141-4] Пометка неприменимой строки называет причину, а не факт.
+   «Объём в этом помещении не считается» одинаково стояло у штучного вида и
+   у метражного без обмеров — первому неверно, второму бесполезно.
+   Показывается ТОЛЬКО когда место объёма пусто (справочник ещё едет): иначе
+   причина уже сказана там, и две фразы об одном читаются как шум — поймано
+   живым взглядом на первой же сборке 145.2. */
+function novolNote(roomCode, k){
+  try{
+    const kinds = ((D && D.catalog) || {}).kinds || [];
+    const kind = kinds.find(x => x.code === (k && k.code));
+    const room = ((D && D.rooms) || []).find(x => x.code === roomCode);
+    const why = (kind && room) ? profVolWhy(kind, room) : null;
+    if(why && why.вид === 'обмеры') return 'сначала обмеры: не заданы ' + why.чего.join(', ');
+    return 'объём впишете руками — расчёта у этого вида нет';
+  }catch(e){ return 'объём в этом помещении не считается'; }
+}
+
 function vRepVol(roomCode, code, k){
   try{
     const kinds = ((D && D.catalog) || {}).kinds || [];
@@ -12271,11 +12355,17 @@ function vRepVol(roomCode, code, k){
        число главнее расчёта только там, где расчёта нет (штучные виды);
        где расчёт есть — показать оба и не подменять молча. */
     const said = (k && Number(k.qty_said) > 0) ? Number(k.qty_said) : null;
+    const like = (k && Number(k.qty_like) > 0) ? Number(k.qty_like) : null;
     const v = profVol(kind, room);
-    if(v === null || v === undefined || !(Number(v) > 0))
-      return said !== null
-        ? ' · <b>' + said + '</b> <span style="opacity:.75">со слов</span>'
-        : ' · <span style="color:#ff9f0a">объём впишете руками</span>';
+    if(v === null || v === undefined || !(Number(v) > 0)){
+      if(said !== null) return ' · <b>' + said + '</b> <span style="opacity:.75">со слов</span>';
+      /* [145, Д-141-4] число приехало из помещения-образца — говорим откуда */
+      if(like !== null) return ' · <b>' + like + '</b> <span style="opacity:.75">из образца</span>';
+      const why = profVolWhy(kind, room);
+      if(why && why.вид === 'обмеры')
+        return ' · <span style="color:var(--warn)">нет обмеров: ' + esc(why.чего.join(', ')) + '</span>';
+      return ' · <span style="color:var(--warn)">объём впишете руками</span>';
+    }
     const calc = Math.round(Number(v) * 100) / 100;
     if(said !== null && Math.abs(said - Number(v)) > 0.005)
       return ' · <b>' + calc + '</b> · <span style="color:#ff9f0a">со слов ' + said + '</span>';
@@ -12321,7 +12411,7 @@ function showVRepair(d){
         <div class="vchk">✓</div>
         <div style="flex:1;min-width:0">
           <div class="vv">${esc(k.name)}<span style="opacity:.6"> · ${esc(k.unit || "")}</span></div>
-          <div class="vd">${esc(k.code)}${vRepVol(r.code, k.code, k)}${k.src === "tech" ? " · добавлено по технологии" : ""}${k.src === "like" ? " · как в «" + esc((r._like && r._like.name) || (r.like && r.like.name) || "образце") + "»" : ""}${k.offer ? ' · <span style="opacity:.75">предложено вместо части «' + esc((r._like && (r._like.partSaid || r._like.part)) || "") + '»</span>' : ""}${k.novol ? ' · <span style="color:#ff9f0a">объём в этом помещении не считается</span>' : ""}${k.already ? ' · <span style="color:#ff9f0a">уже в смете</span>' : ""}${profCanSkip(k.code) ? ' · <span style="opacity:.75">можно пропустить — решится в профиле</span>' : ""}</div>
+          <div class="vd">${esc(k.code)}${vRepVol(r.code, k.code, k)}${k.src === "tech" ? " · добавлено по технологии" : ""}${k.src === "like" ? " · как в «" + esc((r._like && r._like.name) || (r.like && r.like.name) || "образце") + "»" : ""}${k.offer ? ' · <span style="opacity:.75">предложено вместо части «' + esc((r._like && (r._like.partSaid || r._like.part)) || "") + '»</span>' : ""}${k.novol && !vRepVol(r.code, k.code, k) ? ' · <span style="color:var(--warn)">' + esc(novolNote(r.code, k)) + '</span>' : ""}${k.already ? ' · <span style="color:#ff9f0a">уже в смете</span>' : ""}${profCanSkip(k.code) ? ' · <span style="opacity:.75">можно пропустить — решится в профиле</span>' : ""}</div>
         </div>
       </div>`).join("");
     const tech = r.kinds.filter(k => k.src === "tech").length;
@@ -12363,6 +12453,16 @@ function showVRepair(d){
           ? "Названной части в образце нет — предлагаю его набор целиком. Отметьте, что перенести; без отметки ничего не запишется."
           : vRep.some(r => !r.isNew && (r.kinds || []).length)
           ? "Нового в сказанном нет: эти виды уже стоят в смете. Отметьте строку, если нужно записать заново."
+          /* [145, Д-141-3] Прежде здесь безусловно стояло «помещений из
+             сказанного в объекте нет» — и оно оказывалось В ОДНОМ ОКНЕ со
+             строкой «В "Ванна" работ пока не назначено», которая помещение
+             называет по имени. Две взаимоисключающие фразы разом: человек
+             читает первую и идёт заводить помещения, которые уже есть.
+             Теперь верхняя строка молчит там, где причина названа ниже
+             (пусто в образце, нет названной части, то же помещение, имя не
+             узнано) — vLikeNote() объясняет каждый случай отдельно. */
+          : vRep.some(r => !r.isNew && r._like && ["empty","nopart","nopart_all","same","noroom"].indexOf(r._like.why) >= 0)
+          ? "Переносить нечего — почему, сказано ниже."
           : "Помещений из сказанного в объекте нет — заведите их на экране «Объект», тогда объёмы посчитаются из обмеров.")
       : "Отмеченное перенесу в профиль ремонта: объём посчитается из обмеров, а смета соберётся кнопкой «Добавить в смету»."}</div>
     ${quote}
@@ -12371,7 +12471,12 @@ function showVRepair(d){
     <div id="vlist">${rows}</div>
     <div class="vrow">
       <button class="vbtn-cancel" onclick="closeVSheet()">Отмена</button>
-      <button class="vbtn-ok" onclick="applyVoiceRepair()">Отметить в профиле</button>
+      ${vRep.some(r => !r.isNew && (r.kinds || []).length)
+        ? '<button class="vbtn-ok" onclick="applyVoiceRepair()">Отметить в профиле</button>'
+        /* [145, Д-141-3] Отмечать нечего — кнопка не притворяется рабочей.
+           Она стояла активной и при пустом окне: человек нажимал, получал
+           «ничего не отмечено» и не понимал, что не так с ним. */
+        : '<button class="vbtn-ok" disabled style="opacity:.45" onclick="toast(\'Отмечать нечего — в окне нет ни одной строки\', \'wait\')">Отмечать нечего</button>'}
     </div>`);
 }
 
@@ -12444,9 +12549,15 @@ async function applyVoiceRepair(){
          «четыре двери», а панель просила вписать объём руками. Где расчёт
          есть, он и остаётся: подменять молча нельзя. */
       const said = Number(k.qty_said) > 0 ? Number(k.qty_said) : null;
+      /* [145, Д-141-4] Порядок источников: расчёт → сказанное вслух → число
+         помещения-образца. Образец идёт последним намеренно: он слабее и
+         речи, и обмеров, но сильнее пустоты, из-за которой человек заполнял
+         перенесённый список руками. */
+      const like = Number(k.qty_like) > 0 ? Number(k.qty_like) : null;
       const calcOk = Number(vol) > 0;
-      const use = calcOk ? vol : (said !== null ? said : vol);
-      picked[k.code] = { vol: use, manual: false, said: !calcOk && said !== null };
+      const use = calcOk ? vol : (said !== null ? said : (like !== null ? like : vol));
+      picked[k.code] = { vol: use, manual: false, said: !calcOk && said !== null,
+                         like: !calcOk && said === null && like !== null };
       added++; n++;
       if(!(Number(use) > 0)) noVol++;
     });
@@ -13767,7 +13878,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "145.1";
+const BUILD = "145.2";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
