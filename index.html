@@ -12210,7 +12210,7 @@ function showVRepair(d){
         <div class="vchk">✓</div>
         <div style="flex:1;min-width:0">
           <div class="vv">${esc(k.name)}<span style="opacity:.6"> · ${esc(k.unit || "")}</span></div>
-          <div class="vd">${esc(k.code)}${vRepVol(r.code, k.code, k)}${k.src === "tech" ? " · добавлено по технологии" : ""}${k.src === "like" ? " · как в «" + esc((r._like && r._like.name) || (r.like && r.like.name) || "образце") + "»" : ""}${k.offer ? ' · <span style="opacity:.75">предложено вместо части «' + esc((r._like && (r._like.partSaid || r._like.part)) || "") + '»</span>' : ""}${k.novol ? ' · <span style="color:#ff9f0a">объём в этом помещении не считается</span>' : ""}${k.already ? ' · <span style="color:#ff9f0a">уже в смете</span>' : ""}${profCanSkip(k.code) ? ' · <span style="opacity:.75">этап пропускаем</span>' : ""}</div>
+          <div class="vd">${esc(k.code)}${vRepVol(r.code, k.code, k)}${k.src === "tech" ? " · добавлено по технологии" : ""}${k.src === "like" ? " · как в «" + esc((r._like && r._like.name) || (r.like && r.like.name) || "образце") + "»" : ""}${k.offer ? ' · <span style="opacity:.75">предложено вместо части «' + esc((r._like && (r._like.partSaid || r._like.part)) || "") + '»</span>' : ""}${k.novol ? ' · <span style="color:#ff9f0a">объём в этом помещении не считается</span>' : ""}${k.already ? ' · <span style="color:#ff9f0a">уже в смете</span>' : ""}${profCanSkip(k.code) ? ' · <span style="opacity:.75">можно пропустить — решится в профиле</span>' : ""}</div>
         </div>
       </div>`).join("");
     const tech = r.kinds.filter(k => k.src === "tech").length;
@@ -13163,6 +13163,7 @@ const UZ = {
 "в т.ч. технологические паузы":"shu jumladan texnologik pauzalar",
 "добавлено по технологии":"texnologiya bo'yicha qo'shildi",
 "этап пропускаем":"bosqichni o'tkazib yuborish mumkin",
+"можно пропустить — решится в профиле":"o'tkazib yuborish mumkin — profilda hal qilinadi",
 "Вернуть в работу":"Ishga qaytarish",
 "Своя причина:":"O'z sababingiz:",
 "почему этап не нужен":"nega bu bosqich kerak emas",
@@ -13655,7 +13656,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "142.2";
+const BUILD = "142.3";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
