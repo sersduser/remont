@@ -1042,6 +1042,11 @@ function addExtraHtml(){
       'Если цены у вида нет вовсе, сервер откажет — тогда сначала задайте её в общей базе.</span></div>' +
     выбранные +
     '<div class="r" style="margin-top:8px">' +
+      '<button onclick="addVoiceStart()" style="width:100%;padding:12px;border-radius:11px;border:0;background:#0a84ff;color:#fff;font-size:15px">🎤 Продиктовать позиции</button>' +
+    '</div>' +
+    '<div class="m" style="margin-top:6px">Скажите, что добавить и сколько: «в ванной положить плитку на пол, двенадцать метров». ' +
+      'Объём возьмётся из ваших слов — расчётный сюда не подставляется, иначе допсоглашение удвоило бы смету.</div>' +
+    '<div class="r" style="margin-top:8px">' +
       '<input id="addFind" placeholder="Поиск по справочнику: код или название" ' +
         'value="' + attr(ADD_FIND) + '" oninput="addFind(this.value)" ' +
         'style="width:100%;padding:11px;border-radius:11px;border:1px solid #3a3a3c;background:#000;color:#fff;font-size:15px">' +
@@ -1050,8 +1055,55 @@ function addExtraHtml(){
   '</div>';
 }
 
+/* ── Голос на экране допсоглашения [чат 140, пункт 4 плана смены] ────────
+   Просьба Дмитрия из 137: диктовать позиции допа так же, как работы сметы.
+   Разбор берём готовый — тот же режим 'repair', та же нода Голоса; меняется
+   только адресат результата: не смета объекта, а лист допсоглашения.
+
+   Объём здесь берётся ТОЛЬКО из сказанного числа [140]. В смете расчётный
+   объём — это весь объём работы по помещению; в допсоглашении та же цифра
+   означала бы «добавить ещё столько же», то есть удвоение. Поэтому расчёт
+   сюда не подставляется вовсе: сказал число — оно и встанет, не сказал —
+   позиция появится с пустым полем и человек впишет объём сам. */
+let ADD_VOICE = false;
+
+function addVoiceStart(){
+  if(typeof startVoice !== 'function'){ toast('Голосовой ввод недоступен в этом клиенте', 'err'); return; }
+  ADD_VOICE = true;
+  startVoice('repair');
+}
+
+/* Разложить разобранное по листу допа. Возвращает сводку словами. */
+function addVoiceApply(){
+  const kinds = ((D.catalog || {}).kinds || []);
+  const в_смете = {};
+  addWorks().forEach(w => { в_смете[String(w.code)] = true; });
+  let взято = 0, без_объёма = 0, вне = 0;
+  (typeof vRep !== 'undefined' && Array.isArray(vRep) ? vRep : [])
+    .filter(r => !r.isNew)
+    .forEach(r => {
+      (r.kinds || []).filter(k => k._sel).forEach(k => {
+        const код = String(k.code || '');
+        if(!код) return;
+        const сказано = Number(k.qty_said) > 0 ? Number(k.qty_said) : null;
+        if(в_смете[код]){
+          if(сказано !== null) ADD_QTY[код] = сказано; else без_объёма++;
+          взято++;
+          return;
+        }
+        const спр = kinds.find(x => String(x.code) === код) || {};
+        if(ADD_EXTRA.some(x => String(x.code) === код)){ взято++; return; }
+        ADD_EXTRA.push({ code: код, name: спр.name || спр['Вид_работы'] || k.name || код,
+                         unit: спр.unit || k.unit || '', room: String(r.code || ''), qty: сказано });
+        взято++; вне++;
+        if(сказано === null) без_объёма++;
+      });
+    });
+  return { взято, без_объёма, вне };
+}
+
 function addNewOpen(){
-  ADD_QTY = {}; ADD_EXTRA = []; ADD_FIND = '';
+  ADD_QTY = {}; ADD_EXTRA = []; ADD_FIND = ''; ADD_VOICE = false;
   go('addnew');
   if(!D.catalog){
     toast('Загружаю справочник…');
@@ -11996,6 +12048,24 @@ function toggleVRep(i, j){
 async function applyVoiceRepair(){
   const ready = vRep.filter(r => !r.isNew && r.kinds.some(k => k._sel));
   if(!ready.length){ toast("Ничего не отмечено — коснитесь строки, чтобы отметить", "wait"); return; }
+  /* [140] Разбор, начатый с экрана допсоглашения, туда и возвращается: смета
+     остаётся нетронутой. Иначе продиктованное дважды попало бы и в смету, и
+     в доп, а спорить стороны будут по бумаге. */
+  if(ADD_VOICE){
+    ADD_VOICE = false;
+    try{ if(!D.catalog) await loadCatalog(); }catch(e){}
+    const св = addVoiceApply();
+    closeVSheet();
+    /* Экран допа мог быть уже закрыт (голос слушают и с других экранов) —
+       возвращаем человека туда, где лежит собранное. */
+    if(stack[stack.length - 1] !== 'addnew') go('addnew'); else render();
+    toast(св.взято
+      ? ('В допсоглашение взято позиций: ' + св.взято +
+         (св.вне ? (' · вне сметы: ' + св.вне) : '') +
+         (св.без_объёма ? (' · без объёма: ' + св.без_объёма + ' — впишите числа') : ''))
+      : 'Из сказанного ничего не отмечено', св.взято ? '' : 'err');
+    return;
+  }
   try{ if(!D.catalog) await loadCatalog(); }catch(e){ toast(e.message, "err"); return; }
   const kinds = (D.catalog || {}).kinds || [];
   let n = 0, noVol = 0, rooms = 0, last = null;
@@ -13336,7 +13406,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "140.4";
+const BUILD = "140.5";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
