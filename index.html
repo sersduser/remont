@@ -2800,6 +2800,61 @@ function profToggle(code){
    След остаётся строкой сметы со статусом «Пропущен», объёмом 0 и без цены:
    профиль — не документ, а строка сметы — документ. В расчёты (баланс, срок,
    приёмка) такая строка не входит, как и «Снято». */
+/* ── Пропуск этапа и выбранное покрытие [141, снимок 907] ──────────────
+   Причина пропуска хранится в справочнике одной строкой на вид и ничего
+   не знает о помещении. Между тем «шпатлевать поверх» верно под обои и
+   покраску и неверно под кафель. Поверхность и покрытие панель знает из
+   профиля помещения — значит может сказать это человеку, не трогая самой
+   причины: она уходит в смету дословно. */
+const SKIP_ПОВЕРХНОСТЬ = [
+  { есть: /потол/i, имя: "потол", словом: "на потолке" },
+  { есть: /стен/i,  имя: "стен",  словом: "на стенах" },
+  { есть: /пол|стяжк/i, имя: "пол", словом: "на полу" }
+];
+/* Хвост подсказки против покрытия: что при каком финише не делается. */
+const SKIP_СПОР = [
+  { слово: /шпатл/i,   против: ["кафель", "натяжной потолок"], чем: "шпатлёвки под ним нет" },
+  { слово: /обо[ий]/i, против: ["кафель", "покраска"],          чем: "обои здесь не клеятся" }
+];
+
+function skipSurface(name){
+  const n = String(name || "");
+  const s = SKIP_ПОВЕРХНОСТЬ.find(x => x.есть.test(n));
+  return s || null;
+}
+
+/* Чем человек решил закрыть поверхность в этом помещении. Смотрим только
+   на выбранное и не пропущенное: пропущенный вид решением не является. */
+function profFinish(rc, поверхность){
+  const picked = (typeof PROF === "object" && PROF && PROF.plan && PROF.plan[rc]) || {};
+  const kinds = ((D.catalog || {}).kinds) || [];
+  const коды = Object.keys(picked).filter(c => !(picked[c] || {}).skip);
+  const виды = коды.map(c => kinds.find(x => x.code === c) || {});
+  const тут = виды.filter(k => { const s = skipSurface(k.name); return s && s.имя === поверхность; });
+  const по = re => k => re.test(String(k.name || ""));
+  if(тут.some(k => String(k.section || "") === "Кафель")) return "кафель";
+  if(тут.some(по(/натяжн/i))) return "натяжной потолок";
+  if(тут.some(по(/обо[ий]/i))) return "обои";
+  if(тут.some(по(/покрас/i))) return "покраска";
+  return "";
+}
+
+/* Пометка к причине пропуска: что выбрано и какая часть подсказки не про
+   это помещение. Пустая строка — сказать нечего, и молчание тут honest:
+   покрытие ещё не выбрано, спорить не с чем. */
+function skipNote(code, reasons, rc){
+  const kinds = ((D.catalog || {}).kinds) || [];
+  const k = kinds.find(x => x.code === code) || {};
+  const пов = skipSurface(k.name);
+  if(!пов) return "";
+  const финиш = profFinish(rc || (PROF && PROF.room), пов.имя);
+  if(!финиш) return "";
+  const текст = [].concat(reasons || []).join(" · ");
+  const спор = SKIP_СПОР.find(x => x.слово.test(текст) && x.против.indexOf(финиш) >= 0);
+  return "В этом помещении " + пов.словом + " — " + финиш +
+    (спор ? ": " + спор.чем + ", и часть подсказки выше не про этот случай." : ".");
+}
+
 function profSkipList(code){
   const k = ((D.catalog || {}).kinds || []).find(x => x.code === code);
   return String((k || {}).skip_when || '').split(';').map(s => s.trim()).filter(Boolean);
@@ -2855,7 +2910,9 @@ function profSkipUI(code){
   }
   const reasons = profSkipList(code);
   if(!reasons.length) return '';
+  const пометка = skipNote(code, reasons, PROF && PROF.room);
   return '<div class="m" style="margin-top:6px;opacity:.8">Можно пропустить, если: ' + esc(reasons.join(' · ')) + '</div>' +
+    (пометка ? '<div class="m" style="margin-top:4px;color:#64d2ff">' + esc(пометка) + '</div>' : '') +
     '<div class="m" style="margin-top:4px;display:flex;flex-wrap:wrap;gap:6px">' +
       reasons.map(r => '<button onclick="profSkip(\'' + c + '\', ' + JSON.stringify(r).replace(/"/g, '&quot;') + ')" ' +
         'style="padding:6px 10px;border-radius:8px;border:1px solid #3a3a3c;background:#1c1c1e;color:#ff9f0a;font-size:13px">Пропустить: ' + esc(r) + '</button>').join('') +
@@ -10195,7 +10252,10 @@ function qzSkipAsk(rc){
       id: "skip:" + code + "@" + rc, room: rc, mode: null, input: "skip",
       kindCode: code, choices: reasons,
       text: "«" + String(k.name || code) + "» можно пропустить, если " + reasons.join(" или ") + ". Пропускаем или делаем?",
-      hint: "Пропуск оставит след в смете: строка с причиной и нулевой ценой"
+      hint: (function(){
+        const n = skipNote(code, reasons, rc);
+        return (n ? n + " " : "") + "Пропуск оставит след в смете: строка с причиной и нулевой ценой";
+      })()
     });
   });
   return out;
@@ -13443,7 +13503,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "141.1";
+const BUILD = "141.2";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
