@@ -936,7 +936,129 @@ function addendaEnsure(){
 const addList = () => (ADDENDA && ADDENDA.ok && Array.isArray(ADDENDA['список'])) ? ADDENDA['список'] : [];
 const addMine = a => !!(a && ADDENDA && a.proposed_by && ADDENDA.me && String(a.proposed_by) === String(ADDENDA.me));
 
-function addNewOpen(){ ADD_QTY = {}; go('addnew'); }
+/* ═══════════════════════════════════════════════════════════════════════
+   ДОПСОГЛАШЕНИЕ: ВИД, КОТОРОГО НЕТ В СМЕТЕ [чат 140, пункт 3 плана смены]
+
+   Повод — вопрос Дмитрия со снимка 868: «а если работы вообще нет в смете
+   объекта?». Модель это предусматривает с 127: сервер, не найдя вид в
+   договоре, берёт цену из прайса на сегодня и помечает позицию «вне
+   договора». Панель же давала выбирать только из живых работ объекта — то
+   есть закрывала руками то, что база умеет.
+
+   Здесь добавлен выбор вида из общего справочника с поиском, помещением и
+   объёмом. Помещение уходит на сервер отдельным полем; если ветка его не
+   примет, панель повторит запрос без помещения и скажет об этом словами, а
+   не потеряет допсоглашение молча.
+   ═══════════════════════════════════════════════════════════════════════ */
+let ADD_EXTRA = [];        // позиции вне сметы: {code, name, unit, room, qty}
+let ADD_FIND  = '';        // строка поиска по справочнику
+
+function addKindsAll(){ return ((D.catalog || {}).kinds || []).filter(k => k && k.code); }
+
+/* Что уже есть в смете, второй раз предлагать незачем: для таких работ
+   объём вписывается в списке выше, и две двери к одному и тому же путают. */
+function addKindsFound(q){
+  const в_смете = {};
+  addWorks().forEach(w => { в_смете[String(w.code)] = true; });
+  const s = String(q || '').trim().toLowerCase();
+  const все = addKindsAll().filter(k => !в_смете[String(k.code)]);
+  if(!s) return все.slice(0, 12);
+  return все.filter(k =>
+    String(k.code).toLowerCase().indexOf(s) >= 0 ||
+    String(k.name || k['Вид_работы'] || '').toLowerCase().indexOf(s) >= 0
+  ).slice(0, 12);
+}
+
+/* Поиск не перерисовывает экран: render() сбросил бы фокус поля и человек
+   терял бы букву на каждом нажатии [та же причина, что у addQty]. */
+function addFind(v){
+  ADD_FIND = String(v == null ? '' : v);
+  const el = document.getElementById('addFound');
+  if(el) el.innerHTML = addFoundHtml();
+}
+
+function addFoundHtml(){
+  const список = addKindsFound(ADD_FIND);
+  if(!addKindsAll().length) return '<div class="m">Справочник ещё не загрузился.</div>';
+  if(!список.length) return '<div class="m">Ничего не нашлось. Попробуйте код вида или часть названия.</div>';
+  return список.map(k =>
+    '<div class="li" style="align-items:center">' +
+      '<div class="n">' + esc(k.name || k['Вид_работы'] || k.code) +
+        '<div class="d">' + esc(k.code) + (k.unit ? (' · ' + esc(k.unit)) : '') + '</div></div>' +
+      '<button onclick="addExtraAdd(\'' + attr(k.code) + '\')" ' +
+        'style="padding:8px 12px;border-radius:10px;border:0;background:#0a84ff;color:#fff;font-size:14px">Взять</button>' +
+    '</div>').join('');
+}
+
+function addExtraAdd(code){
+  const k = addKindsAll().find(x => String(x.code) === String(code));
+  if(!k){ toast('Вид не найден в справочнике', 'err'); return; }
+  if(ADD_EXTRA.some(x => x.code === k.code)){ toast('Этот вид уже добавлен'); return; }
+  const комнаты = (D.rooms || []);
+  ADD_EXTRA.push({ code: k.code, name: k.name || k['Вид_работы'] || k.code, unit: k.unit || '',
+                   room: комнаты.length ? String(комнаты[0].code) : '', qty: null });
+  render();
+}
+function addExtraDel(i){ ADD_EXTRA.splice(i, 1); render(); }
+function addExtraQty(i, v){
+  const n = Number(String(v == null ? '' : v).replace(',', '.'));
+  if(ADD_EXTRA[i]) ADD_EXTRA[i].qty = n > 0 ? n : null;
+  const el = document.getElementById('addPicked');
+  if(el) el.textContent = addNewRows().length ? ('выбрано позиций: ' + addNewRows().length) : 'ничего не выбрано';
+}
+function addExtraRoom(i, v){ if(ADD_EXTRA[i]) ADD_EXTRA[i].room = String(v || ''); }
+
+/* Готовые позиции вне сметы. Объём обязателен — без него позиции нет. */
+function addExtraRows(){
+  return ADD_EXTRA.filter(x => Number(x.qty) > 0)
+                  .map(x => ({ work_code: x.code, qty: Number(x.qty), room_code: x.room || undefined }));
+}
+
+function addExtraHtml(){
+  const комнаты = (D.rooms || []);
+  const выбранные = ADD_EXTRA.map((x, i) =>
+    '<div class="work">' +
+      '<div class="t">' + esc(x.name) + ' <span style="color:#ff9f0a;font-size:12px">вне сметы</span></div>' +
+      '<div class="m">' + esc(x.code) + (x.unit ? (' · ' + esc(x.unit)) : '') + '</div>' +
+      '<div class="m" style="margin-top:6px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">' +
+        (комнаты.length
+          ? ('<select onchange="addExtraRoom(' + i + ', this.value)" ' +
+             'style="padding:8px;border-radius:10px;border:1px solid #3a3a3c;background:#000;color:#fff;font-size:14px">' +
+             комнаты.map(r => '<option value="' + attr(r.code) + '"' + (String(r.code) === String(x.room) ? ' selected' : '') + '>' +
+                esc(r.name || r.code) + '</option>').join('') + '</select>')
+          : '<span class="k">помещения не заведены</span>') +
+        '<input type="number" inputmode="decimal" min="0" step="0.01" placeholder="объём" ' +
+          'value="' + (x.qty == null ? '' : attr(String(x.qty))) + '" ' +
+          'oninput="addExtraQty(' + i + ', this.value)" ' +
+          'style="width:104px;padding:9px;border-radius:10px;border:1px solid #3a3a3c;background:#000;color:#fff;font-size:15px;text-align:right">' +
+        '<button onclick="addExtraDel(' + i + ')" ' +
+          'style="padding:8px 12px;border-radius:10px;border:1px solid #3a3a3c;background:transparent;color:var(--txt);font-size:14px">Убрать</button>' +
+      '</div>' +
+    '</div>').join('');
+
+  return '<div class="card" style="margin-top:12px">' +
+    '<div class="lbl">Вид, которого нет в смете</div>' +
+    '<div class="stat"><span class="k">Цену такой позиции сервер возьмёт из прайса на сегодня и пометит её «вне договора». ' +
+      'Если цены у вида нет вовсе, сервер откажет — тогда сначала задайте её в общей базе.</span></div>' +
+    выбранные +
+    '<div class="r" style="margin-top:8px">' +
+      '<input id="addFind" placeholder="Поиск по справочнику: код или название" ' +
+        'value="' + attr(ADD_FIND) + '" oninput="addFind(this.value)" ' +
+        'style="width:100%;padding:11px;border-radius:11px;border:1px solid #3a3a3c;background:#000;color:#fff;font-size:15px">' +
+    '</div>' +
+    '<div id="addFound" style="margin-top:6px">' + addFoundHtml() + '</div>' +
+  '</div>';
+}
+
+function addNewOpen(){
+  ADD_QTY = {}; ADD_EXTRA = []; ADD_FIND = '';
+  go('addnew');
+  if(!D.catalog){
+    toast('Загружаю справочник…');
+    loadCatalog().then(() => render())
+                 .catch(() => toast('Справочник не загрузился — виды вне сметы будут недоступны', 'err'));
+  }
+}
 
 /* Ввод объёма не перерисовывает экран: перерисовка сбросила бы фокус поля.
    Счётчик обновляется точечно — по тому же принципу, что подсказка имени бригады. */
@@ -946,7 +1068,10 @@ function addQty(code, v){
   const el = document.getElementById('addPicked');
   if(el) el.textContent = addNewRows().length ? ('выбрано позиций: ' + addNewRows().length) : 'ничего не выбрано';
 }
-function addNewRows(){ return Object.keys(ADD_QTY).map(c => ({ work_code: c, qty: ADD_QTY[c] })); }
+function addNewRows(){
+  return Object.keys(ADD_QTY).map(c => ({ work_code: c, qty: ADD_QTY[c] }))
+    .concat(typeof addExtraRows === 'function' ? addExtraRows() : []);
+}
 
 /* Работы объекта, из которых собирается доп: живые строки сметы.
    Снятые и пропущенные не показываем — их нет и в договоре. */
@@ -961,21 +1086,34 @@ async function addSend(){
   const rows = addNewRows();
   if(!rows.length){ toast('Впишите объём хотя бы у одной работы', 'err'); return; }
   const inh = String(f.succession || 'inherit') === 'inherit';
+  const вне = (typeof addExtraRows === 'function' ? addExtraRows() : []).length;
   if(!await ask('Предложить допсоглашение к договору № ' + f.no + '?\n\n' +
-      'Позиций: ' + rows.length + '\n' +
+      'Позиций: ' + rows.length + (вне ? (', из них вне сметы: ' + вне) : '') + '\n' +
       'Цена за единицу: ' + (inh
         ? 'наследуется из договора по виду работ. Если вида в договоре нет — берётся прайс на сегодня, и позиция помечается «вне договора».'
         : 'берётся из прайса бригадира на сегодня.') + '\n\n' +
       'Сумму посчитает сервер — она будет видна до признания второй стороной.')){ toast('Отменено'); return; }
   ADD_BUSY = true;
   toast('Отправляю…', 'wait');
-  const j = await contractApi({ mode: 'addendum', object_id: D.object_id, contract_id: f.id, items: rows });
+  let j = await contractApi({ mode: 'addendum', object_id: D.object_id, contract_id: f.id, items: rows });
+  /* Помещение у позиции вне сметы — поле новое [140]: ветка договора его до
+     сих пор не принимала. Если сервер на нём споткнулся, повторяем без него
+     и говорим об этом вслух: потерять допсоглашение из-за одного поля хуже,
+     чем записать его без помещения. Молчать о потере нельзя — человек
+     вписывал помещение руками. */
+  let без_помещения = false;
+  if((!j || !j.ok) && rows.some(r => r.room_code)){
+    без_помещения = true;
+    j = await contractApi({ mode: 'addendum', object_id: D.object_id, contract_id: f.id,
+                            items: rows.map(r => ({ work_code: r.work_code, qty: r.qty })) });
+  }
   ADD_BUSY = false;
   if(!j || !j.ok){ toast((j && j.error) || 'Не удалось предложить допсоглашение', 'err'); return; }
   const out = Number(j['вне_договора'] || 0);
   toast('Допсоглашение № ' + j.no + ' предложено: ' + j.items + ' поз. на ' + fmt(j.total_usd) + ' $' +
-        (out ? (' · вне договора: ' + out) : ''));
-  ADD_QTY = {};
+        (out ? (' · вне договора: ' + out) : '') +
+        (без_помещения ? ' · помещение сервер не принял — позиции записаны без него' : ''));
+  ADD_QTY = {}; ADD_EXTRA = []; ADD_FIND = '';
   await addendaLoad(true);
   back();
 }
@@ -8233,7 +8371,6 @@ addnew(){
   if(!f) return head + '<div class="sub">договор ещё не признан — правки идут в смету</div>';
   const inh  = String(f.succession || 'inherit') === 'inherit';
   const list = addWorks();
-  if(!list.length) return head + '<div class="sub">в смете нет живых работ, из которых собрать допсоглашение</div>';
   const rows = list.map(w => {
     const v = ADD_QTY[w.code];
     return '<div class="li" style="align-items:center">' +
@@ -8253,12 +8390,13 @@ addnew(){
            : 'по прайсу бригадира на сегодня.') + '</span></div>' +
     '<div class="card">' +
       '<div class="lbl">Работы объекта</div>' +
-      rows +
+      (rows || '<div class="m">В смете нет живых работ — возьмите вид из справочника ниже.</div>') +
       '<div class="m" id="addPicked" style="margin-top:8px">' +
         (addNewRows().length ? ('выбрано позиций: ' + addNewRows().length) : 'ничего не выбрано') + '</div>' +
-      '<div class="row" style="margin-top:10px">' +
-        '<button onclick="addSend()" style="flex:1;padding:12px;border-radius:11px;border:0;background:#0a84ff;color:#fff;font-size:15px">Предложить допсоглашение</button>' +
-      '</div>' +
+    '</div>' +
+    addExtraHtml() +
+    '<div class="row" style="margin-top:10px">' +
+      '<button onclick="addSend()" style="flex:1;padding:12px;border-radius:11px;border:0;background:#0a84ff;color:#fff;font-size:15px">Предложить допсоглашение</button>' +
     '</div>';
 },
 
@@ -13198,7 +13336,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "140.3";
+const BUILD = "140.4";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
