@@ -8323,7 +8323,22 @@ function objSelScreen(){
       : 'Если объекта нет в списке — откройте его ссылкой ещё раз: панель запомнит ключ и покажет его здесь.';
   return '<div class="hello">Выбор объекта</div>' +
     '<div class="sub">' + sub + '</div>' +
-    (rows || (nokey ? "" : '<div class="stat"><div class="m">Панель пока не знает ни одного ключа. Объект открывается ссылкой от бригадира — либо заведите свой.</div>' + '<button onclick="go(\'newobj\')" style="width:100%;margin-top:10px;padding:11px;border-radius:11px;border:0;background:#2c2c2e;color:#fff;font-size:15px">➕ Завести объект</button>' + '</div>')) +
+    rows +
+    /* [150] Вход в заведение объекта больше не прячется за пустым списком.
+       Прежде кнопка жила в ветке «нет строк И нет участий без ключа», и человек,
+       которому панель показала хоть одну строку — в том числе строку «ключа нет,
+       попросите ссылку у бригадира», — своего объекта завести не мог ВОВСЕ:
+       второй вход (newObjBox) стоит внутри экрана «Объект», куда без открытого
+       объекта не попасть. Это тупик на первом шаге сценария первой встречи.
+       Право здесь не проверяется намеренно: роли панель ещё не знает, а сервер
+       откажет сам — двойной замок права (076). */
+    '<div class="stat" style="margin-top:12px">' +
+      '<div class="r"><span class="k">Свой объект</span></div>' +
+      '<div class="m">' + (rows || nokey
+          ? 'Заводится в базе по вашей подписи Telegram. Нужно только название — адрес и сумму договора можно дописать потом.'
+          : 'Панель пока не знает ни одного ключа. Объект открывается ссылкой от бригадира — либо заведите свой.') + '</div>' +
+      '<button onclick="go(\'newobj\')" style="width:100%;margin-top:10px;padding:11px;border-radius:11px;border:0;background:#2c2c2e;color:#fff;font-size:15px">➕ Завести объект</button>' +
+    '</div>' +
     nokey +
     (OBJSRV.err ? '<div class="stat" style="margin-top:12px"><div class="m">Список с сервера не пришёл: ' + esc(OBJSRV.err) + '. Показаны объекты, которые панель помнит.</div></div>' : '') +
     '<div class="stat" style="margin-top:12px"><div class="m">' + note + '</div></div>';
@@ -13896,7 +13911,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "146.2";
+const BUILD = "150.1";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
