@@ -1834,6 +1834,25 @@ function pdfБлокиИзHTML(html){
   док.querySelectorAll('script,style,noscript,.pbtn,button').forEach(n => n.remove());
   const блоки = [];
   const текст = n => String(n.textContent || '').replace(/\s+/g, ' ').trim();
+  /* Листовой узел печатается не одним textContent, а по своим кускам:
+     иначе карточка «Заказчик / Дмитрий / тел. …» слипается в
+     «ЗаказчикДмитрийтел. …». В HTML их разделяет вёрстка, в бумаге
+     разделять нечем — ставим разделитель сами. Найдено на настоящей
+     печатной форме T127, на выдуманном образце этого не видно. */
+  const кусками = n => {
+    const части = [];
+    Array.from(n.childNodes).forEach(д => {
+      if(д.nodeType === 3){ const t = String(д.nodeValue||'').replace(/\s+/g,' ').trim(); if(t) части.push(t); return; }
+      if(д.nodeType !== 1) return;
+      const тег = д.tagName.toLowerCase();
+      if(тег === 'br') return;
+      const t = текст(д);
+      if(!t) return;
+      части.push((тег === 'b' || тег === 'strong') && !/[:：]$/.test(t) ? t + ':' : t);
+    });
+    if(!части.length) return текст(n);
+    return части.join(' · ').replace(/: · /g, ': ');
+  };
 
   const обойти = узел => {
     for(const n of Array.from(узел.children || [])){
@@ -1854,8 +1873,8 @@ function pdfБлокиИзHTML(html){
       /* Узел с блочными детьми разбираем вглубь, иначе весь документ слипся
          бы в один абзац; лист — печатаем как строку. */
       if(n.querySelector('table,h1,h2,h3,h4,h5,h6,p,div,li,tr,hr')){ обойти(n); continue; }
-      const t = текст(n);
-      if(t) блоки.push({ тип: 'строка', текст: t, размер: тег === 'li' ? 11 : 11, отступ: тег === 'li' ? 14 : 0 });
+      const t = кусками(n);
+      if(t) блоки.push({ тип: 'строка', текст: t, размер: 11, отступ: тег === 'li' ? 14 : 0 });
     }
   };
   обойти(док.body || док.documentElement);
@@ -13168,7 +13187,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "140.1";
+const BUILD = "140.2";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
