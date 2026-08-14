@@ -485,7 +485,16 @@ function authQS(){
    (ссылка t.me/бота?startapp=inv_КОД) или руками через ?invite / поле ввода.
    Сервер доверяет только тому коду, который сам достаёт из initData или body —
    здесь код нужен лишь чтобы показать его в поле и не заставлять печатать. */
-const INVITE = String((tg && tg.initDataUnsafe && tg.initDataUnsafe.start_param) || new URLSearchParams(location.search).get("invite") || "").replace(/^inv_/i, "");
+/* [чат 144, пункт 13 смены] Сообщение бота о событии возвращает человека в
+   панель тем же start_param, каким приходит код приглашения. Параметр вида
+   ev_* кодом НЕ является: без этой развилки invAuto() уносит его в
+   /invite/accept, сервер отвечает отказом, и вместо экрана, ради которого
+   нажата ссылка, человек видит «приглашение недействительно». */
+const START_RAW = String((tg && tg.initDataUnsafe && tg.initDataUnsafe.start_param) || "");
+const EV_IS = /^ev[_-]/i.test(START_RAW);
+const EV_RAW = EV_IS ? START_RAW : String(new URLSearchParams(location.search).get("ev") || "");
+const START_INV_RAW = EV_IS ? "" : START_RAW;
+const INVITE = String(START_INV_RAW || new URLSearchParams(location.search).get("invite") || "").replace(/^inv_/i, "");
 /* Регистр НЕ приводится [чат 083]: серверный код — 10 знаков hex в нижнем
    регистре, и toUpperCase ломал бы каждую новую ссылку. Верхний регистр
    нужен только старой ветке /register — он ставится там, на входе.      */
@@ -494,8 +503,42 @@ const INVITE = String((tg && tg.initDataUnsafe && tg.initDataUnsafe.start_param)
    код без спроса можно только тогда, когда он пришёл подписанной ссылкой.
    INV_AUTO_DONE держит попытку в пределах сеанса панели: load() зовётся из
    двух десятков мест, и accept не должен уходить на сервер при каждом. */
-const START_INVITE = String((tg && tg.initDataUnsafe && tg.initDataUnsafe.start_param) || "").replace(/^inv_/i, "");
+const START_INVITE = String(START_INV_RAW).replace(/^inv_/i, "");
 let INV_AUTO_DONE = false;
+
+/* ── Ссылка возврата из сообщения бота [чат 144] ───────────────────────────
+   Формат: ev_<экран>__<object_id>. Экран берётся из списка ниже, а не из
+   параметра напрямую: иначе чужая ссылка водила бы панель по любому внутреннему
+   имени. Неизвестный экран = ссылки нет вовсе, панель открывается обычно. */
+const EV_ЭКРАНЫ = { deal:"deal", changes:"changes", works:"works", object:"object",
+                    invites:"invites", money:"money", accept:"accept", plan:"plan" };
+const EVENT = (function(){
+  const s0 = String(EV_RAW || ""); if(!s0) return null;
+  const части = s0.replace(/^ev[_-]/i, "").split("__");
+  const экран = EV_ЭКРАНЫ[String(части[0] || "").toLowerCase()] || "";
+  if(!экран) return null;
+  return { scr: экран, obj: String(части[1] || "") };
+})();
+let EV_DONE = false;
+
+/* Открыть экран, ради которого нажата ссылка. Зовётся один раз за сеанс
+   панели: load() зовётся из двух десятков мест, и повтор уводил бы человека
+   с того экрана, куда он ушёл сам. */
+function evApply(){
+  if(!EVENT || EV_DONE) return;
+  EV_DONE = true;
+  try{
+    const свой = !EVENT.obj || !D || !D.object_id || String(D.object_id) === EVENT.obj;
+    if(!свой){
+      /* Честно: сообщение про другой объект. Ключа чужого объекта у панели нет —
+         переключить сама она не может, поэтому говорит и ведёт к выбору. */
+      toast("Сообщение относится к другому объекту — выберите его в списке", "wait");
+      go("objsel");
+      return;
+    }
+    if(stack[stack.length - 1] !== EVENT.scr) go(EVENT.scr);
+  }catch(e){}
+}
 
 let D = null;                       // данные с сервера
 let stack = ["home"];               // стек навигации
@@ -570,6 +613,7 @@ async function load(){
     if(!D || !D.role) throw new Error(BAD);
     OBJ_SWITCH = null;                      /* [138.3] объект открылся */
     render();
+    evApply();                              // [чат 144] ссылка возврата из сообщения бота
     /* [124] Серверный список объектов запрашивался ТОЛЬКО при открытии экрана
        выбора, а сам экран открывался только если панель уже знала больше одного
        объекта — замкнутый круг: заказчик с тремя объектами видел один и не мог
@@ -1213,7 +1257,8 @@ async function addSend(){
   const out = Number(j['вне_договора'] || 0);
   toast('Допсоглашение № ' + j.no + ' предложено: ' + j.items + ' поз. на ' + fmt(j.total_usd) + ' $' +
         (out ? (' · вне договора: ' + out) : '') +
-        (без_помещения ? ' · помещение сервер не принял — позиции записаны без него' : ''));
+        (без_помещения ? ' · помещение сервер не принял — позиции записаны без него' : '') +
+        ' · второй стороне уходит сообщение бота, если её Telegram привязан к объекту');
   ADD_QTY = {}; ADD_EXTRA = []; ADD_FIND = '';
   await addendaLoad(true);
   back();
@@ -1420,7 +1465,11 @@ async function contractPropose(){
     else toast(j.error || 'Не удалось предложить договор', 'err');
     return;
   }
-  toast('Договор № ' + j.no + ' предложен: ' + j.items + ' позиций на ' + fmt(j.total) + ' $');
+  /* [чат 144] Событие уходит второй стороне сообщением бота (канал I0, чат 143).
+     Панель доставку НЕ наблюдает — врезка рассылки стоит после ответа сервера,
+     поэтому сказано условие, а не факт. */
+  toast('Договор № ' + j.no + ' предложен: ' + j.items + ' позиций на ' + fmt(j.total) + ' $' +
+        ' · второй стороне уходит сообщение бота, если её Telegram привязан к объекту');
   await contractsLoad(true);
   render();
 }
@@ -13656,7 +13705,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "142.3";
+const BUILD = "144.1";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
