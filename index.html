@@ -512,6 +512,29 @@ const attr = t => esc(t);
 
 /* ── ЗАГРУЗКА ─────────────────────────────────────────────── */
 let LOAD_MS = 30000;   /* [137] срок ответа сервера данных: дольше — это отказ, а не ожидание */
+/* [142, пункт 9 смены] Общий срок для КАЖДОГО запроса, от которого зависит
+   показ экрана. До этой правки срок стоял только у главного /data: остальные
+   запросы старта — погашение кода из ссылки, справочник, бригада, фоновое
+   обновление — висели без срока вовсе, и молчащий сервер держал панель на
+   «Загружаю…» до перезагрузки руками. Сообщение об истёкшем сроке называет,
+   ЧТО именно не дождались: «сервер не отвечает» без предмета не помогает. */
+async function fetchT(url, opts, ms, чего){
+  const wait = ms || LOAD_MS;
+  const ctl = new AbortController();
+  const tmo = setTimeout(() => { try{ ctl.abort(); }catch(_e){} }, wait);
+  try{
+    return await fetch(url, Object.assign({}, opts || {}, { signal: ctl.signal }));
+  }catch(err){
+    if(String((err && err.name) || "") === "AbortError"){
+      const e = new Error("Сервер не ответил за " + Math.round(wait / 1000) + " с"
+        + (чего ? " (" + чего + ")" : "")
+        + ". Он бывает занят на тяжёлых объектах — попробуйте ещё раз.");
+      e.timeout = true;
+      throw e;
+    }
+    throw err;
+  }finally{ clearTimeout(tmo); }
+}
 async function load(){
   try{
     /* Погашение кода из ссылки [чат 089]. До этой правки accept звался только
@@ -532,16 +555,7 @@ async function load(){
        выглядит как зависшая панель: «Открываю объект…» крутится, пока человек
        не перезагрузит страницу руками. Сообщение об истёкшем сроке ведёт в тот
        же экран отказа, где уже есть «Ещё раз» и «К объектам». */
-    const ctl = new AbortController();
-    const tmo = setTimeout(() => { try{ ctl.abort(); }catch(_e){} }, LOAD_MS);
-    let r;
-    try{
-      r = await fetch(`${API}/data?${auth}`, { cache: "no-store", signal: ctl.signal });
-    }catch(err){
-      if(String((err && err.name) || "") === "AbortError")
-        throw new Error("Сервер не ответил за " + Math.round(LOAD_MS / 1000) + " с. Он бывает занят на тяжёлых объектах — попробуйте ещё раз.");
-      throw err;
-    }finally{ clearTimeout(tmo); }
+    const r = await fetchT(`${API}/data?${auth}`, { cache: "no-store" });
     const BAD = "Доступ не подтверждён — откройте панель через бота в Telegram.";
     if(r.status === 401 || r.status === 403) throw new Error(BAD);
     if(!r.ok) throw new Error("Сервер не отвечает (HTTP " + r.status + ")");
@@ -590,8 +604,13 @@ async function load(){
           (sw.from ? 'Прежний объект остался открытым.' : '') + '</div></div>' +
         '<div class="row" style="margin-top:14px;gap:8px">' +
           '<button onclick="go(\'objsel\')" style="flex:1;padding:12px;border-radius:11px;border:0;background:#0a84ff;color:#fff;font-size:15px">К списку объектов</button>' +
-          '<button onclick="load()" style="flex:1;padding:12px;border-radius:11px;border:1px solid #3a3a3c;background:#1c1c1e;color:#fff;font-size:15px">Ещё раз</button>' +
-        '</div>';
+          '<button onclick="objRetry(\'' + attr(sw.to || '') + '\')" style="flex:1;padding:12px;border-radius:11px;border:1px solid #3a3a3c;background:#1c1c1e;color:#fff;font-size:15px">Ещё раз</button>' +
+        '</div>' +
+        /* Кнопки перестали быть синонимами — скажем это словами: человек
+           только что нажал обе и получил одно и то же. */
+        '<div class="m" style="color:var(--hint);margin-top:10px">«Ещё раз» пробует открыть ' +
+          esc(sw.title || 'этот объект') + ' заново' +
+          (sw.from ? '; «К списку объектов» вернёт к списку, оставив открытым прежний.' : '.') + '</div>';
       return;
     }
     if(INIT && /не подтверждён/.test(String(e.message || ""))){
@@ -836,7 +855,9 @@ function priceStats(){
 async function loadCatalog(force){
   if(D.catalog && !force) return true;
   const auth = authQS();
-  const r = await fetch(API + '/data?' + auth + '&catalog=1', { cache: 'no-store' });
+  let r;
+  try{ r = await fetchT(API + '/data?' + auth + '&catalog=1', { cache: 'no-store' }, LOAD_MS, 'справочник'); }
+  catch(e){ throw new Error((e && e.timeout) ? e.message : 'Не удалось загрузить справочник'); }
   const raw = (await r.text()).trim();
   if(!r.ok || !raw) throw new Error('Не удалось загрузить справочник');
   let j; try{ j = JSON.parse(raw); }catch(e){ throw new Error('Не удалось загрузить справочник'); }
@@ -6830,7 +6851,9 @@ let CREW_DATA = null, CREW_LOAD = false;
 
 async function crewLoad(){
   const auth = authQS();
-  const r = await fetch(API + "/data?" + auth + "&crew=1", { cache: "no-store" });
+  let r;
+  try{ r = await fetchT(API + "/data?" + auth + "&crew=1", { cache: "no-store" }, LOAD_MS, "бригада"); }
+  catch(e){ throw new Error((e && e.timeout) ? e.message : "нет данных бригады"); }
   const raw = (await r.text()).trim();
   let j = null; try{ j = JSON.parse(raw); }catch(e){}
   if(!j || !j.crew) throw new Error("нет данных бригады");
@@ -6999,10 +7022,10 @@ function invCodeOf(t, st){
 async function invApi(path, body){
   let r, txt;
   try{
-    r = await fetch(API + path, { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(Object.assign({ initData: INIT, key: KEY }, body || {})) });
+    r = await fetchT(API + path, { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(Object.assign({ initData: INIT, key: KEY }, body || {})) }, LOAD_MS, "приглашение");
     txt = (await r.text()).trim();
-  }catch(e){ return { error: "Нет связи с сервером — попробуйте ещё раз.", code: 0, net: true }; }
+  }catch(e){ return { error: (e && e.timeout) ? e.message : "Нет связи с сервером — попробуйте ещё раз.", code: 0, net: true }; }
   let j = null; try{ j = JSON.parse(txt); }catch(e){}
   /* «Ветки ещё нет» опознаётся по НЕ-JSON ответу, а не по коду 404 [чат 097 —
      тот же дефект, что вылечен в objsrvLoad 096.2]. Этот n8n на незарегистрированный
@@ -8109,6 +8132,20 @@ function objSelScreen(){
 }
 
 let OBJ_SWITCH = null;
+/* [142, Д-142-1] Повторная попытка открыть объект, по которому сервер
+   отказал. Прежде кнопка «Ещё раз» звала load() — а ключ к тому моменту
+   уже вернулся на ПРЕЖНИЙ объект, и панель заново открывала то, что и так
+   было открыто. Обе кнопки экрана делали одно и то же, и человек не мог
+   повторить попытку вовсе. Идём тем же путём, что и обычное переключение:
+   он ставит метку объекта, экран ожидания и зовёт загрузку. */
+function objRetry(key){
+  key = String(key || "");
+  if(!key || key === KEY){
+    app.innerHTML = '<div class="hello">Открываю объект…</div>';
+    return load();
+  }
+  objsSwitch(key);
+}
 function objsSwitch(key){
   key = String(key || ""); if(!key) return;
   if(key === KEY){ back(); return; }
@@ -8774,6 +8811,43 @@ works(){
   const base   = fRoom ? D.works.filter(w => w.room === fRoom) : D.works;
   const doneN  = base.filter(w => w.status === "Готово").length;
   const list   = hideDone ? base.filter(w => w.status !== "Готово") : base;
+
+  /* [142, пункт 10 смены] Пустой список молчал: на новом объекте экран
+     показывал «0 позиций», две полосы фильтров и белое поле — ни причины,
+     ни следующего шага. Пустота бывает трёх разных пород, и лечится каждая
+     своим: сметы нет вовсе · её спрятал фильтр помещения · всё готово и
+     скрыто. Кнопку сборки видит тот, кто вправе её собрать (владелец,
+     бригадир, администратор), остальным она не показывается вовсе. */
+  if(!list.length){
+    const may = planMayMark();
+    const noRooms = !((D.rooms || []).length);
+    let причина, шаги;
+    if(!D.works.length){
+      причина = "в смете этого объекта пока нет ни одной работы";
+      шаги = noRooms
+        ? '<div class="stat"><span class="k">Смета собирается из помещений: сначала заводятся комнаты и обмеры, ' +
+            'потом в профиле ремонта отмечается, что в каждой из них делаем, и панель превращает выбор в смету.</span></div>' +
+          (may ? '<button class="tile" style="width:100%" onclick="go(\'object\')"><span class="nm">Завести помещения</span>' +
+                 '<div class="h">экран объекта · комнаты и обмеры</div></button>' : "")
+        : '<div class="stat"><span class="k">Помещения уже заведены. Осталось отметить в профиле ремонта, что в каждом из них делаем, — ' +
+            'выбранное превращается в смету одной операцией.</span></div>' +
+          (may ? '<button class="tile" style="width:100%" onclick="openProfile()"><span class="nm">Собрать смету</span>' +
+                 '<div class="h">профиль ремонта · ' + (D.rooms || []).length + ' помещ.</div></button>' : "");
+      if(!may) шаги += '<div class="stat"><span class="k">Собрать смету может владелец объекта, бригадир или администратор.</span></div>';
+    }else if(fRoom && !base.length){
+      причина = "в этом помещении работ нет";
+      шаги = '<div class="stat"><span class="k">Смета объекта не пуста — пусто только выбранное помещение. ' +
+        'Другие помещения видны по кнопке «Все».</span></div>' +
+        '<button class="tile" style="width:100%" onclick="fRoom=\'\';render()"><span class="nm">Показать все помещения</span>' +
+        '<div class="h">всего в смете: ' + D.works.length + '</div></button>';
+    }else{
+      причина = "все работы здесь готовы";
+      шаги = '<div class="stat"><span class="k">Готовое сейчас скрыто фильтром — поэтому список пуст.</span></div>' +
+        '<button class="tile" style="width:100%" onclick="hideDone=false;render()"><span class="nm">Показать готовое</span>' +
+        '<div class="h">готовых: ' + doneN + '</div></button>';
+    }
+    return '<div class="hello">Работы</div><div class="sub">' + esc(причина) + '</div>' + шаги;
+  }
 
   return `
     <div class="hello">Работы</div>
@@ -12366,7 +12440,7 @@ async function refresh(){
   if(busy) return;                       // не мешаем вводу, голосовому окну и активному вопросу опроса [чат 059]
   try{
     const auth = authQS();
-    const r = await fetch(`${API}/data?${auth}`, { cache:"no-store" });
+    const r = await fetchT(`${API}/data?${auth}`, { cache:"no-store" }, LOAD_MS, "обновление");
     if(!r.ok) return;
     const raw = (await r.text()).trim();
     if(!raw) return;
@@ -13532,7 +13606,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "141.3";
+const BUILD = "142.1";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
