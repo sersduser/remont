@@ -1151,8 +1151,14 @@ function addExtraRoom(i, v){ if(ADD_EXTRA[i]) ADD_EXTRA[i].room = String(v || ''
 
 /* Готовые позиции вне сметы. Объём обязателен — без него позиции нет. */
 function addExtraRows(){
+  const комнаты = (D.rooms || []);
   return ADD_EXTRA.filter(x => Number(x.qty) > 0)
-                  .map(x => ({ work_code: x.code, qty: Number(x.qty), room_code: x.room || undefined }));
+                  .map(x => {
+                    const r = комнаты.find(c => String(c.code) === String(x.room));
+                    return { kind_code: x.code, qty: Number(x.qty),
+                             name: x.name || undefined, unit: x.unit || undefined,
+                             room: x.room ? ((r && (r.name || r.code)) || x.room) : undefined };
+                  });
 }
 
 function addExtraHtml(){
@@ -1298,9 +1304,34 @@ function addQty(code, v){
   const el = document.getElementById('addPicked');
   if(el) el.textContent = addNewRows().length ? ('выбрано позиций: ' + addNewRows().length) : 'ничего не выбрано';
 }
+/* Код ВИДА работ у строки сметы [чат 147, Д-151-1].
+   works.code — код строки сметы (SP-01), а вид лежит в note текстом
+   («вид DM-10»); тот же приём уже используется в трёх местах панели.
+   Серверная функция addendum_propose_tg берёт цену по it->>'kind_code'
+   (НАКАТ_допсоглашения_121.sql, строка 162) — без него позиция
+   отклоняется с «не указан вид работ (400)». */
+function workKind(w){
+  const m = String((w && w.note) || '').match(/вид\s+([A-Za-z]+-\d+)/i);
+  return m ? m[1].toUpperCase() : '';
+}
 function addNewRows(){
-  return Object.keys(ADD_QTY).map(c => ({ work_code: c, qty: ADD_QTY[c] }))
+  const works = (typeof addWorks === 'function') ? addWorks() : (D.works || []);
+  return Object.keys(ADD_QTY).map(c => {
+      const w = works.find(x => String(x.code) === String(c)) || {};
+      const вид = workKind(w);
+      const р = { work_code: c, qty: ADD_QTY[c] };
+      if(вид) р.kind_code = вид;
+      if(w.name) р.name = w.name;
+      if(w.unit) р.unit = w.unit;
+      if(w.room) р.room = String(w.room).split(' (')[0];
+      return р;
+    })
     .concat(typeof addExtraRows === 'function' ? addExtraRows() : []);
+}
+/* Позиции сметы, у которых вид не читается: сервер цену им не возьмёт. */
+function addRowsNoKind(){
+  return addNewRows().filter(r => !r.kind_code && !r.unit_price_usd)
+                     .map(r => r.name || r.work_code || r.kind_code);
 }
 
 /* Работы объекта, из которых собирается доп: живые строки сметы.
@@ -1316,6 +1347,10 @@ async function addSend(){
   const rows = addNewRows();
   if(!rows.length){ toast('Впишите объём хотя бы у одной работы', 'err'); return; }
   const inh = String(f.succession || 'inherit') === 'inherit';
+  const безВида = (typeof addRowsNoKind === 'function') ? addRowsNoKind() : [];
+  if(безВида.length && !await ask('У ' + безВида.length + ' позиций не указан вид работ:\n' +
+      безВида.slice(0, 6).map(s => '· ' + s).join('\n') + (безВида.length > 6 ? '\n…' : '') +
+      '\n\nСервер не сможет взять для них цену и откажет. Отправить всё равно?')){ toast('Отменено'); return; }
   const вне = (typeof addExtraRows === 'function' ? addExtraRows() : []).length;
   if(!await ask('Предложить допсоглашение к договору № ' + f.no + '?\n\n' +
       'Позиций: ' + rows.length + (вне ? (', из них вне сметы: ' + вне) : '') + '\n' +
@@ -1332,10 +1367,10 @@ async function addSend(){
      чем записать его без помещения. Молчать о потере нельзя — человек
      вписывал помещение руками. */
   let без_помещения = false;
-  if((!j || !j.ok) && rows.some(r => r.room_code)){
+  if((!j || !j.ok) && rows.some(r => r.room)){
     без_помещения = true;
     j = await contractApi({ mode: 'addendum', object_id: D.object_id, contract_id: f.id,
-                            items: rows.map(r => ({ work_code: r.work_code, qty: r.qty })) });
+                            items: rows.map(r => { const c = Object.assign({}, r); delete c.room; return c; }) });
   }
   ADD_BUSY = false;
   if(!j || !j.ok){ toast((j && j.error) || 'Не удалось предложить допсоглашение', 'err'); return; }
@@ -13954,7 +13989,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "151.2";
+const BUILD = "151.3";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
