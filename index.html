@@ -1544,6 +1544,348 @@ function profClearAsk(){
    окна не даёт. Печать — штатная печать устройства (в неё же печатают в PDF),
    скачивание — Blob + download; если клиент не умеет ни того, ни другого,
    документ всё равно виден глазами и это не тупик. */
+/* ═══════════════════════════════════════════════════════════════════════
+   PDF ДОКУМЕНТА СВОИМ КОДОМ [чат 140, пункт 2 плана смены; разбор 41]
+
+   Договорённость Дмитрия (137, 138): «файл мы договаривались, что будет
+   пдф». Сервер рендерить не умеет и научить его ночью нельзя (проверено
+   139: связка «вебхук + активация» отбита), библиотека вроде pdfmake
+   утроила бы вес панели ради одной кнопки. Поэтому PDF собирается здесь,
+   из того же серверного HTML, который показан в окне: источник один,
+   расходиться нечему.
+
+   Что важно знать про этот PDF: он собран из ТЕКСТА, а не из вёрстки.
+   Документ выходит строгим бланком (заголовки, абзацы, таблица), а не
+   снимком экрана. Для договора это скорее плюс, но знать это надо заранее.
+
+   Шрифт (Liberation Sans, кириллица) лежит рядом со сборкой и тянется по
+   сети один раз. Не пришёл — работаем как раньше, HTML, и говорим об этом
+   словами: молчащая кнопка хуже честного отказа [урок 137, Д-137-2]. */
+
+var PDF_ШРИФТ_АДРЕС = 'LiberationSans-Regular.ttf';
+var _pdfШрифтКэш = null;
+
+async function pdfШрифт(){
+  if(_pdfШрифтКэш) return _pdfШрифтКэш;
+  const c = new AbortController();
+  const t = setTimeout(() => c.abort(), 20000);   /* без срока надпись живёт вечно [137] */
+  try{
+    const r = await fetch(PDF_ШРИФТ_АДРЕС, {signal: c.signal, cache: 'force-cache'});
+    if(!r.ok) throw new Error('шрифт: HTTP ' + r.status);
+    const b = new Uint8Array(await r.arrayBuffer());
+    if(b.length < 100000) throw new Error('шрифт пришёл обрезанным');
+    _pdfШрифтКэш = b;
+    return b;
+  } finally { clearTimeout(t); }
+}
+
+/* Разбор TTF: head/maxp/hhea/hmtx/cmap(формат 4). Формат 4 покрывает
+   кириллицу у Liberation и Carlito; шрифт с одной таблицей 12 потребовал бы
+   ещё тридцати строк — этого случая у нас нет [разбор 41 § 2]. */
+function pdfЧитатьTTF(buf){
+  const u16 = o => buf[o] * 256 + buf[o + 1];
+  const i16 = o => { const v = u16(o); return v > 32767 ? v - 65536 : v; };
+  const u32 = o => ((buf[o] * 256 + buf[o + 1]) * 256 + buf[o + 2]) * 256 + buf[o + 3];
+  const tables = {};
+  const numTables = u16(4);
+  for(let i = 0; i < numTables; i++){
+    const p = 12 + i * 16;
+    const tag = String.fromCharCode(buf[p], buf[p+1], buf[p+2], buf[p+3]);
+    tables[tag] = { off: u32(p + 8), len: u32(p + 12) };
+  }
+  const head = tables.head.off;
+  const unitsPerEm = u16(head + 18);
+  const xMin = i16(head + 36), yMin = i16(head + 38), xMax = i16(head + 40), yMax = i16(head + 42);
+  const numGlyphs = u16(tables.maxp.off + 4);
+  const numHMetrics = u16(tables.hhea.off + 34);
+  const ascent = i16(tables.hhea.off + 4), descent = i16(tables.hhea.off + 6);
+
+  const cm = tables.cmap.off;
+  let sub = 0;
+  const n = u16(cm + 2);
+  for(let i = 0; i < n; i++){
+    const pid = u16(cm + 4 + i * 8), eid = u16(cm + 6 + i * 8), off = u32(cm + 8 + i * 8);
+    if((pid === 3 && (eid === 1 || eid === 10)) || pid === 0) sub = cm + off;
+  }
+  const map = new Map();
+  if(sub && u16(sub) === 4){
+    const segX2 = u16(sub + 6);
+    const endO = sub + 14, startO = endO + segX2 + 2, deltaO = startO + segX2, rangeO = deltaO + segX2;
+    for(let s = 0; s < segX2 / 2; s++){
+      const end = u16(endO + s * 2), start = u16(startO + s * 2);
+      const delta = i16(deltaO + s * 2), ro = u16(rangeO + s * 2);
+      if(start === 0xffff) continue;
+      for(let c = start; c <= end && c !== 0x10000; c++){
+        let g;
+        if(ro === 0) g = (c + delta) & 0xffff;
+        else { const gi = rangeO + s * 2 + ro + (c - start) * 2; g = u16(gi); if(g) g = (g + delta) & 0xffff; }
+        if(g) map.set(c, g);
+      }
+    }
+  }
+  const width = g => u16(tables.hmtx.off + Math.min(g, numHMetrics - 1) * 4);
+  return { unitsPerEm, numGlyphs, ascent, descent, xMin, yMin, xMax, yMax, map, width, bytes: buf };
+}
+
+/* ── байтовые мелочи: в браузере нет Buffer ───────────────────────────── */
+function pdfБайты(s){ const a = new Uint8Array(s.length); for(let i = 0; i < s.length; i++) a[i] = s.charCodeAt(i) & 255; return a; }
+function pdfСклеить(куски){
+  let n = 0; куски.forEach(k => n += k.length);
+  const out = new Uint8Array(n); let o = 0;
+  куски.forEach(k => { out.set(k, o); o += k.length; });
+  return out;
+}
+/* Flate = zlib-обёртка, ровно то, что читалка ждёт от /FlateDecode.
+   CompressionStream('deflate') даёт именно её (не 'deflate-raw'). Нет его в
+   клиенте — кладём шрифт как есть: PDF станет втрое тяжелее, но откроется. */
+async function pdfСжать(данные){
+  try{
+    if(typeof CompressionStream !== 'function') return null;
+    const cs = new CompressionStream('deflate');
+    const w = cs.writable.getWriter(); w.write(данные); w.close();
+    const buf = await new Response(cs.readable).arrayBuffer();
+    return new Uint8Array(buf);
+  }catch(e){ return null; }
+}
+
+/* Сборка документа. Страницы A4 (595×842 pt), поля 56 pt. Блоки:
+   заголовок · строка · таблица · линия · отступ. */
+async function pdfСобрать(ttf, блоки){
+  const F = pdfЧитатьTTF(ttf);
+  const sc = 1000 / F.unitsPerEm;
+  const used = new Map();
+  const gid = ch => { const g = F.map.get(ch.codePointAt(0)) || 0; if(g) used.set(g, ch.codePointAt(0)); return g; };
+  const hex = s => Array.from(String(s)).map(c => gid(c).toString(16).padStart(4, '0')).join('');
+  const wOf = s => Array.from(String(s)).reduce((a, c) => a + F.width(gid(c)) * sc, 0);
+
+  const W = 595, H = 842, M = 56;
+  const страницы = [];
+  let поток = '', y = H - M;
+  const новая = () => { if(поток) страницы.push(поток); поток = ''; y = H - M; };
+  const строка = (текст, размер, отступ, серый) => {
+    const шаг = размер * 1.45;
+    if(y - шаг < M) новая();
+    поток += 'BT /F1 ' + размер + ' Tf ' + (серый ? '0.42 0.42 0.45 rg ' : '0 0 0 rg ') +
+             (M + (отступ || 0)) + ' ' + (y - размер) + ' Td <' + hex(текст) + '> Tj ET\n';
+    y -= шаг;
+  };
+  const перенос = (текст, размер, ширина, отступ, серый) => {
+    const слова = String(текст).split(/\s+/).filter(Boolean);
+    let ст = '';
+    слова.forEach(сл => {
+      const проба = ст ? ст + ' ' + сл : сл;
+      if(wOf(проба) * размер / 1000 > ширина && ст){ строка(ст, размер, отступ, серый); ст = сл; }
+      else ст = проба;
+    });
+    if(ст) строка(ст, размер, отступ, серый);
+  };
+  /* Ячейка переносится по словам внутри своей колонки, а не обрезается:
+     в договоре «Демонтаж двер…» вместо названия работы — потеря смысла, а
+     не косметика. Обрезка остаётся только для слова, которое само шире
+     колонки, и тогда честно помечается многоточием. */
+  const вЯчейку = (текст, ширина, размер) => {
+    const слова = String(текст == null ? '' : текст).split(/\s+/).filter(Boolean);
+    const влезает = t => wOf(t) * размер / 1000 <= ширина - 4;
+    const строки = [];
+    let ст = '';
+    слова.forEach(сл => {
+      const проба = ст ? ст + ' ' + сл : сл;
+      if(влезает(проба)){ ст = проба; return; }
+      if(ст){ строки.push(ст); ст = ''; }
+      if(влезает(сл)){ ст = сл; return; }
+      let к = сл;                                  /* одно слово шире колонки */
+      while(к.length > 1 && !влезает(к + '…')) к = к.slice(0, -1);
+      строки.push(к + '…');
+    });
+    if(ст) строки.push(ст);
+    return строки.length ? строки : [''];
+  };
+  /* Ширины колонок: числовые и единицы — по содержимому, остаток отдаётся
+     текстовым. Поровну делить нельзя: у «№» и «шт» запас пропадает зря, а
+     названию работ его как раз не хватает. */
+  const ширины = (строки, размер, всего) => {
+    const колонок = строки.reduce((m, р) => Math.max(m, р.length), 0) || 1;
+    const надо = new Array(колонок).fill(0);
+    строки.forEach(р => р.forEach((я, k) => {
+      надо[k] = Math.max(надо[k], wOf(String(я == null ? '' : я)) * размер / 1000 + 8);
+    }));
+    const сумма = надо.reduce((a, b) => a + b, 0);
+    if(сумма <= всего){
+      /* Остаток раздаём пропорционально, а не одной колонке: отдать весь
+         запас «Виду работ» — значит отбросить числа к правому краю и
+         оставить посреди строки пустоту, в которой глаз теряет строку. */
+      const к = всего / сумма;
+      return надо.map(w => w * к);
+    }
+    /* Не влезло: узкие колонки (до 60 pt) сохраняем, широкие ужимаем. */
+    const узкие = надо.map(w => Math.min(w, 60));
+    const остаток = всего - узкие.reduce((a, b) => a + b, 0);
+    const широкиеСумма = надо.reduce((a, w, k) => a + (w > 60 ? w - 60 : 0), 0);
+    return надо.map((w, k) => w > 60 && широкиеСумма > 0
+      ? 60 + (w - 60) / широкиеСумма * Math.max(остаток, 0)
+      : Math.min(w, 60));
+  };
+
+  (блоки || []).forEach(б => {
+    if(б.тип === 'заголовок'){ if(б.размер && б.размер < 16) y -= 8; перенос(б.текст, б.размер || 16, W - 2 * M, 0); y -= 6; }
+    else if(б.тип === 'строка') перенос(б.текст, б.размер || 11, W - 2 * M - (б.отступ || 0), б.отступ || 0, б.серый);
+    else if(б.тип === 'отступ') y -= (б.высота || 10);
+    else if(б.тип === 'линия'){
+      if(y - 8 < M) новая();
+      поток += '0.8 0.8 0.82 RG 0.7 w ' + M + ' ' + y + ' m ' + (W - M) + ' ' + y + ' l S\n'; y -= 10;
+    }
+    else if(б.тип === 'таблица'){
+      const рз = б.размер || 9, шаг = рз * 1.55;
+      const строки = б.строки || [];
+      const колонок = строки.reduce((m, р) => Math.max(m, р.length), 0) || 1;
+      const шир = б.ширины && б.ширины.length === колонок ? б.ширины : ширины(строки, рз, W - 2 * M);
+      строки.forEach((р, i) => {
+        const ячейки = р.map((яч, k) => вЯчейку(яч, шир[k] || шир[шир.length - 1], рз));
+        const высота = ячейки.reduce((m, с) => Math.max(m, с.length), 1) * шаг;
+        if(y - высота < M) новая();
+        let x = M;
+        ячейки.forEach((строкиЯчейки, k) => {
+          строкиЯчейки.forEach((текст, j) => {
+            поток += 'BT /F1 ' + рз + ' Tf ' + (i === 0 ? '0.42 0.42 0.45 rg ' : '0 0 0 rg ') +
+                     x + ' ' + (y - рз - j * шаг) + ' Td <' + hex(текст) + '> Tj ET\n';
+          });
+          x += шир[k] || шир[шир.length - 1];
+        });
+        y -= высота;
+        /* Линейка под шапкой: без неё столбцы читаются как случайные числа. */
+        if(i === 0){ поток += '0.8 0.8 0.82 RG 0.5 w ' + M + ' ' + (y + шаг * 0.35) + ' m ' + (W - M) + ' ' + (y + шаг * 0.35) + ' l S\n'; y -= 3; }
+      });
+      y -= 6;
+    }
+  });
+  новая();
+  if(!страницы.length) страницы.push('');
+
+  const гиды = Array.from(used.keys()).sort((a, b) => a - b);
+  const W_arr = гиды.map(g => g + ' [' + Math.round(F.width(g) * sc) + ']').join(' ');
+  const bf = гиды.map(g => '<' + g.toString(16).padStart(4, '0') + '> <' +
+        used.get(g).toString(16).padStart(4, '0') + '>').join('\n');
+  const toUni = '/CIDInit /ProcSet findresource begin\n12 dict begin\nbegincmap\n/CMapName /A def\n/CMapType 2 def\n' +
+    '1 begincodespacerange\n<0000> <FFFF>\nendcodespacerange\n' + гиды.length + ' beginbfchar\n' + bf + '\nendbfchar\nendcmap\n' +
+    'CMapName currentdict /CMap defineresource pop\nend\nend';
+
+  const idКат = 1, idPages = 2;
+  const idСтр = страницы.map((_, i) => 3 + i * 2);
+  const idСод = страницы.map((_, i) => 4 + i * 2);
+  const база = 3 + страницы.length * 2;
+  const idШрифт = база, idCID = база + 1, idДеск = база + 2, idФайл = база + 3, idUni = база + 4;
+
+  const жатый = await pdfСжать(ttf);
+
+  const тела = {};
+  тела[idКат] = '<< /Type /Catalog /Pages ' + idPages + ' 0 R >>';
+  тела[idPages] = '<< /Type /Pages /Kids [' + idСтр.map(i => i + ' 0 R').join(' ') + '] /Count ' + страницы.length + ' >>';
+  страницы.forEach((с, i) => {
+    тела[idСтр[i]] = '<< /Type /Page /Parent ' + idPages + ' 0 R /MediaBox [0 0 ' + W + ' ' + H +
+      '] /Resources << /Font << /F1 ' + idШрифт + ' 0 R >> >> /Contents ' + idСод[i] + ' 0 R >>';
+    тела[idСод[i]] = { поток: pdfБайты(с) };
+  });
+  тела[idШрифт] = '<< /Type /Font /Subtype /Type0 /BaseFont /EmbFont /Encoding /Identity-H /DescendantFonts [' +
+    idCID + ' 0 R] /ToUnicode ' + idUni + ' 0 R >>';
+  тела[idCID] = '<< /Type /Font /Subtype /CIDFontType2 /BaseFont /EmbFont /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> /FontDescriptor ' +
+    idДеск + ' 0 R /DW 1000 /W [' + W_arr + '] /CIDToGIDMap /Identity >>';
+  тела[idДеск] = '<< /Type /FontDescriptor /FontName /EmbFont /Flags 4 /FontBBox [' +
+    Math.round(F.xMin * sc) + ' ' + Math.round(F.yMin * sc) + ' ' + Math.round(F.xMax * sc) + ' ' + Math.round(F.yMax * sc) +
+    '] /ItalicAngle 0 /Ascent ' + Math.round(F.ascent * sc) + ' /Descent ' + Math.round(F.descent * sc) +
+    ' /CapHeight 700 /StemV 80 /FontFile2 ' + idФайл + ' 0 R >>';
+  тела[idФайл] = жатый
+    ? { поток: жатый, доп: '/Filter /FlateDecode /Length1 ' + ttf.length }
+    : { поток: ttf, доп: '/Length1 ' + ttf.length };
+  тела[idUni] = { поток: pdfБайты(toUni) };
+
+  const куски = [pdfБайты('%PDF-1.4\n%\xE2\xE3\xCF\xD3\n')];
+  let длина = куски[0].length;
+  const смещения = {};
+  const всего = idUni;
+  for(let i = 1; i <= всего; i++){
+    смещения[i] = длина;
+    const т = тела[i];
+    let кусок;
+    if(т && т.поток !== undefined){
+      const данные = т.поток;
+      кусок = pdfСклеить([
+        pdfБайты(i + ' 0 obj\n<< /Length ' + данные.length + (т.доп ? ' ' + т.доп : '') + ' >>\nstream\n'),
+        данные, pdfБайты('\nendstream\nendobj\n')]);
+    } else {
+      кусок = pdfБайты(i + ' 0 obj\n' + т + '\nendobj\n');
+    }
+    куски.push(кусок); длина += кусок.length;
+  }
+  let x = 'xref\n0 ' + (всего + 1) + '\n0000000000 65535 f \n';
+  for(let i = 1; i <= всего; i++) x += String(смещения[i]).padStart(10, '0') + ' 00000 n \n';
+  x += 'trailer\n<< /Size ' + (всего + 1) + ' /Root ' + idКат + ' 0 R >>\nstartxref\n' + длина + '\n%%EOF\n';
+  куски.push(pdfБайты(x));
+  return pdfСклеить(куски);
+}
+
+/* ── Серверный HTML → блоки ────────────────────────────────────────────
+   Сервер отдаёт готовую печатную форму и структуры не отдаёт, поэтому
+   разбираем разметку. Правила общие (заголовки, абзацы, таблицы), а не
+   завязанные на классы нашего шаблона: шаблон правит база, и привязка к
+   его классам сломалась бы молча при первой же правке формы.
+   Кнопки печати (.pbtn) и служебные теги в бумагу не идут. */
+function pdfБлокиИзHTML(html){
+  const док = new DOMParser().parseFromString(String(html || ''), 'text/html');
+  док.querySelectorAll('script,style,noscript,.pbtn,button').forEach(n => n.remove());
+  const блоки = [];
+  const текст = n => String(n.textContent || '').replace(/\s+/g, ' ').trim();
+
+  const обойти = узел => {
+    for(const n of Array.from(узел.children || [])){
+      const тег = n.tagName.toLowerCase();
+      if(тег === 'table'){
+        const строки = Array.from(n.querySelectorAll('tr')).map(tr =>
+          Array.from(tr.querySelectorAll('th,td')).map(c => текст(c)));
+        const непустые = строки.filter(р => р.some(я => я !== ''));
+        if(непустые.length) блоки.push({ тип: 'таблица', строки: непустые });
+        continue;
+      }
+      if(тег === 'hr'){ блоки.push({ тип: 'линия' }); continue; }
+      if(/^h[1-6]$/.test(тег)){
+        const t = текст(n);
+        if(t) блоки.push({ тип: 'заголовок', текст: t, размер: тег === 'h1' ? 16 : (тег === 'h2' ? 13 : 12) });
+        continue;
+      }
+      /* Узел с блочными детьми разбираем вглубь, иначе весь документ слипся
+         бы в один абзац; лист — печатаем как строку. */
+      if(n.querySelector('table,h1,h2,h3,h4,h5,h6,p,div,li,tr,hr')){ обойти(n); continue; }
+      const t = текст(n);
+      if(t) блоки.push({ тип: 'строка', текст: t, размер: тег === 'li' ? 11 : 11, отступ: тег === 'li' ? 14 : 0 });
+    }
+  };
+  обойти(док.body || док.documentElement);
+  return блоки;
+}
+
+/* Готовит PDF документа целиком. Возвращает {ок, байты, имя} либо
+   {ок:false, причина} — причина уходит человеку словами, а не в консоль. */
+async function pdfДокумент(html, doc){
+  try{
+    const ttf = await pdfШрифт();
+    const блоки = pdfБлокиИзHTML(html);
+    if(!блоки.length) return { ок: false, причина: 'в документе не нашлось текста для PDF' };
+    const байты = await pdfСобрать(ttf, блоки);
+    const no = String((doc && doc.no) || '').replace(/[^0-9A-Za-z._-]+/g, '') || 'x';
+    return { ок: true, байты: байты, имя: 'dogovor-' + no + '.pdf' };
+  }catch(e){
+    return { ок: false, причина: 'PDF собрать не вышло (' + String((e && e.message) || e).slice(0, 60) + ')' };
+  }
+}
+
+/* base64 кусками: одним вызовом fromCharCode на 200-килобайтном массиве
+   переполняется стек аргументов [та же грабля, что у больших выгрузок]. */
+function pdfВBase64(байты){
+  let s = '';
+  const шаг = 0x8000;
+  for(let i = 0; i < байты.length; i += шаг) s += String.fromCharCode.apply(null, байты.subarray(i, i + шаг));
+  return btoa(s);
+}
+
 async function contractFileOpen(id){
   if(!id){ toast('Договор не выбран', 'err'); return; }
   toast('Собираю документ…');
@@ -1593,6 +1935,24 @@ function contractFileShow(doc, id){
   fr.setAttribute('srcdoc', docHtml.indexOf('</head>') >= 0
     ? docHtml.replace('</head>', SCREEN_FIX + '</head>')
     : (SCREEN_FIX + docHtml));
+
+  /* [чат 140] PDF готовится сразу при открытии окна, а не по нажатию кнопки:
+     сборка тянет шрифт по сети (401 КБ, дальше из кэша), и ждать его ПОСЛЕ
+     тапа означало бы ровно ту мёртвую кнопку, из-за которой в 137 пришлось
+     заводить строку ответа рядом с кнопкой. Пока PDF не готов, кнопки
+     работают по-старому — на HTML, и человек об этом читает словами. */
+  let ПДФ = null;
+  const пдфГотов = pdfДокумент(docHtml, doc).then(р => {
+    ПДФ = р;
+    if(!р.ок){
+      const sb = box.querySelector('#dfShare');
+      if(sb) sb.style.display = 'none';
+      dfNote(р.причина + ' — документ уйдёт как раньше, файлом HTML.', false);
+    } else {
+      пдфКнопки();
+    }
+    return р;
+  }).catch(() => ({ ок: false, причина: 'PDF собрать не вышло' }));
   /* [чат 137, Д-137-3] Из окна документа человек выходит тремя способами, и
      все они ведут в одну дверь: «← Назад», «Закрыть» и системная стрелка
      Telegram. Пока окно открыто, стрелка принадлежит ему — навигация панели
@@ -1648,12 +2008,24 @@ function contractFileShow(doc, id){
     b.dataset.busy = '1'; b.disabled = true;
     const was = b.textContent; b.textContent = 'Отправляю…';
     dfNote('Отправляю файл в чат с ботом…');
-    const j = await contractApi({ mode: 'send', contract_id: doc.id || id });
+    /* Сервер рендерить не умеет — поэтому PDF он получает готовым [140].
+       Не собрался — уходит прежний HTML: ветка на сервере это умеет и
+       проверена побайтно, человек в любом случае получает документ. */
+    const тело = { mode: 'send', contract_id: doc.id || id };
+    await пдфГотов;
+    if(ПДФ && ПДФ.ок){
+      тело.pdf_b64 = pdfВBase64(ПДФ.байты);
+      тело.pdf_name = ПДФ.имя;
+    }
+    const j = await contractApi(тело);
     b.dataset.busy = ''; b.disabled = false;
     if(j && j.ok && j.sent){
       b.textContent = '✓ Отправлено';
       setTimeout(() => { b.textContent = was; }, 4000);
-      dfNote('Готово: файл лежит в чате с ботом — закройте это окно и откройте чат.');
+      dfNote((ПДФ && ПДФ.ок)
+        ? 'Готово: PDF лежит в чате с ботом — закройте это окно и откройте чат.'
+        : 'Готово: файл лежит в чате с ботом. PDF собрать не вышло, поэтому ушёл HTML как раньше.',
+        !!(ПДФ && ПДФ.ок));
       toast('Файл отправлен в чат с ботом — откройте Telegram');
     } else {
       b.textContent = was;
@@ -1668,16 +2040,28 @@ function contractFileShow(doc, id){
      именно там). Web Share API отдаёт файл этому меню. Кнопку показываем ТОЛЬКО
      если клиент подтвердил, что примет такой файл: `canShare({files})` — иначе
      получилась бы третья мёртвая кнопка рядом с «Печатью» и «Скачать». */
+  /* [140] Файл для системного меню — PDF, когда он собран; до готовности и
+     при отказе сборки — прежний HTML. Кнопку показываем только если клиент
+     подтвердил, что примет ИМЕННО такой файл: canShare проверяет тип. */
+  const пдфФайл = () => (ПДФ && ПДФ.ок)
+    ? new File([ПДФ.байты], ПДФ.имя, { type: 'application/pdf' })
+    : new File([String(doc.html || '')], String(doc.filename || 'dogovor.html'), { type: 'text/html' });
+  const пдфКнопки = () => {
+    try{
+      const sb = box.querySelector('#dfShare');
+      if(sb && navigator.canShare && navigator.canShare({ files: [пдфФайл()] })) sb.style.display = '';
+    }catch(e){}
+    const sv = box.querySelector('#dfSave');
+    if(sv && ПДФ && ПДФ.ок) sv.textContent = 'Скачать PDF';
+  };
   try{
-    const shareFile = new File([String(doc.html || '')],
-                               String(doc.filename || 'dogovor.html'),
-                               { type: 'text/html' });
+    const shareFile = пдфФайл();
     if(navigator.canShare && navigator.canShare({ files: [shareFile] })){
       const sb = box.querySelector('#dfShare');
       sb.style.display = '';
       sb.onclick = async () => {
         try{
-          await navigator.share({ files: [shareFile], title: 'Договор № ' + (doc.no || '') });
+          await navigator.share({ files: [пдфФайл()], title: 'Договор № ' + (doc.no || '') });
           dfNote('Отдал файл меню телефона — дальше выбирайте: отправить, сохранить или напечатать.');
         }catch(e){
           /* Человек закрыл меню — это не отказ системы, а его решение. */
@@ -1705,18 +2089,29 @@ function contractFileShow(doc, id){
     catch(e){ toast('этот клиент печатать не умеет — присылаю файл в чат'); sendToChat(); }
   };
 
-  box.querySelector('#dfSave').onclick = () => {
+  box.querySelector('#dfSave').onclick = async () => {
     if(mobileTG){
       dfNote('В Telegram файл не сохраняется на телефон — присылаю его в чат с ботом.');
       toast('В Telegram файл не сохраняется — присылаю в чат'); sendToChat(); return;
     }
     try{
-      const blob = new Blob([doc.html], { type: 'text/html;charset=utf-8' });
+      /* Ждём сборку: без неё кнопка отдала бы HTML в тот момент, когда PDF
+         уже почти готов, и человек получил бы не тот файл, о котором
+         договаривались [140]. Ожидание видно в подписи кнопки. */
+      const был = box.querySelector('#dfSave').textContent;
+      box.querySelector('#dfSave').textContent = 'Готовлю…';
+      await пдфГотов;
+      box.querySelector('#dfSave').textContent = был;
+      const пдф = ПДФ && ПДФ.ок;
+      const blob = пдф ? new Blob([ПДФ.байты], { type: 'application/pdf' })
+                       : new Blob([doc.html], { type: 'text/html;charset=utf-8' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
-      a.href = url; a.download = doc.filename || 'dogovor.html';
+      a.href = url; a.download = пдф ? ПДФ.имя : (doc.filename || 'dogovor.html');
       document.body.appendChild(a); a.click();
       setTimeout(() => { a.remove(); URL.revokeObjectURL(url); }, 4000);
+      dfNote(пдф ? 'Отдал PDF — ищите его в загрузках.'
+                 : 'PDF не собрался, отдал документ как HTML.', пдф !== false);
       /* Утверждать «сохранён» панель не вправе: удался ли клик по ссылке,
          она не узнает никак — вместо утверждения даём следующий шаг. */
       toast('Если файл не появился в загрузках — нажмите «В чат»');
@@ -12773,7 +13168,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "139.1";
+const BUILD = "140.1";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
