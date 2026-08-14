@@ -14,6 +14,14 @@
   --btn:  var(--tg-theme-button-color, #5288c1);
   --btxt: var(--tg-theme-button-text-color, #ffffff);
   --ok:#4dcd5e; --warn:#f5a623; --bad:#e5484d; --link:#6ab3f3;
+  /* Верхний запас [чат 128 · возвращён в :root в 146, Д-145-1]. Меньше
+     максимума брать нельзя: viewport-fit=cover велит клиенту рисовать контент
+     ПОД строкой статуса и шапкой Telegram, и кто именно сообщит размер этой
+     зоны — браузер через env() или клиент через свои переменные — зависит от
+     версии Telegram. ЖИТЬ ЭТА СТРОКА ОБЯЗАНА В :root: с 141 по 145 она стояла
+     внутри html.light, и в тёмной теме верхнего запаса не было вовсе. */
+  --top-inset: calc(max(env(safe-area-inset-top, 0px), var(--tg-safe-area-inset-top, 0px))
+                    + var(--tg-content-safe-area-inset-top, 0px));
 }
 /* Светлая тема [141, пункт 8 смены]. Акцентные цвета подобраны под тёмный
    фон и на белом почти не читаются: измерено стендом 141_3 — «не задано»
@@ -22,23 +30,16 @@
    Telegram сообщает её переменной --tg-theme-bg-color. */
 html.light{
   --ok:#1a7f37; --warn:#a15c00; --bad:#c00f0c; --link:#1a6dd9;
-  /* Верхний запас [чат 128]. Меньше максимума брать нельзя: viewport-fit=cover
-     велит клиенту рисовать контент ПОД строкой статуса и шапкой Telegram, и кто
-     именно сообщит размер этой зоны — браузер через env() или клиент через свои
-     переменные — зависит от версии Telegram. До 128 учитывались только
-     телеграмовские, и там, где их нет, верх экрана уезжал под системную строку. */
-  --top-inset: calc(max(env(safe-area-inset-top, 0px), var(--tg-safe-area-inset-top, 0px))
-                    + var(--tg-content-safe-area-inset-top, 0px));
 }
 *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
 body{background:var(--bg);color:var(--txt);font:15px/1.5 -apple-system,"Segoe UI",Roboto,sans-serif;
-  padding:calc(14px + var(--top-inset)) 14px 40px;overscroll-behavior-y:contain}
+  padding:calc(14px + var(--top-inset, 0px)) 14px 40px;overscroll-behavior-y:contain}
 
 /* Полоса объекта [указание Дмитрия 12.08, чат 126]: не уезжает при
    прокрутке. Отрицательные поля вытягивают её на всю ширину поверх
    бокового padding body, sticky держит у верхнего края. Слой ниже
    модальных окон (у них z-index от 9997) и выше содержимого. */
-.objbar{position:sticky;top:var(--top-inset);z-index:60;display:flex;align-items:center;gap:10px;
+.objbar{position:sticky;top:var(--top-inset, 0px);z-index:60;display:flex;align-items:center;gap:10px;
   margin:-14px -14px 12px;
   padding:10px 14px;background:rgba(28,28,30,.97);border-bottom:1px solid rgba(255,255,255,.09);cursor:pointer;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
 .objbar .ob-t{font-size:14.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -307,7 +308,7 @@ function shareCan(){
 }
 function safeDiagShow(){
   const d = SAFE_DIAG || {};
-  toast('Зона сверху: итог ' + (d.env || '—') + ' · система ' + (d.safe || 0) + ' · шапка клиента ' +
+  toast('Зона сверху: итог ' + (d.env || 'ПУСТ (переменной нет)') + ' · система ' + (d.safe || 0) + ' · шапка клиента ' +
         (d.content || 0) + (d.fallback !== d.content ? (' → запас ' + d.fallback) : '') +
         ' · ' + (d.why || '—') + (d.full ? ' · полный экран' : '') +
         ' · окно ' + (d.ih || 0) + '/' + (d.vsh || 0) + (d.over ? (' → перекрытие ' + d.over) : '') +
@@ -2246,7 +2247,7 @@ function contractFileShow(doc, id){
   /* [чат 137, Д-137-5] Верхний запас у окна документа такой же, как у всей
      панели с 128-го: клиент рисует контент под своей шапкой, и первая кнопка
      шапки окна уезжала под неё («зелёная кнопка заслонена»). */
-  box.style.cssText = 'position:fixed;inset:0;z-index:9998;background:#000;display:flex;flex-direction:column;padding-top:var(--top-inset)';
+  box.style.cssText = 'position:fixed;inset:0;z-index:9998;background:#000;display:flex;flex-direction:column;padding-top:var(--top-inset, 0px)';
   box.innerHTML =
     '<div style="display:flex;gap:6px;padding:10px;background:#1c1c1e;align-items:center;flex-wrap:wrap">' +
       '<div style="flex:1 0 100%;font-size:14px;color:#fff;margin-bottom:2px">Договор № ' + esc(doc.no || '') + '</div>' +
