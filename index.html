@@ -169,8 +169,13 @@ input[type=number]{text-align:center}
 .vbtn-cancel{background:var(--sec);color:var(--txt)}
 .vbtn-bad{background:var(--bad);color:#fff}
 
-.vitem{display:flex;gap:11px;align-items:flex-start;background:var(--sec);border-radius:11px;
-  padding:12px;margin-bottom:8px;cursor:pointer}
+/* [152.2, требование Дмитрия 03:58] Выбрано — галка И зелёный фон; не выбрано —
+   ни галки, ни фона. Прежде состояния различались одним квадратиком 22×22:
+   на списке из двадцати видов выбранное от невыбранного глазом не отделялось. */
+.vitem{display:flex;gap:11px;align-items:flex-start;background:transparent;border-radius:11px;
+  box-shadow:inset 0 0 0 1px rgba(128,128,128,.26);
+  padding:12px;margin-bottom:8px;cursor:pointer;transition:background .12s,box-shadow .12s}
+.vitem.sel{background:rgba(48,209,88,.16);box-shadow:inset 0 0 0 2px var(--ok)}
 .vitem .vchk{width:22px;height:22px;border-radius:6px;border:2px solid var(--hint);flex:0 0 22px;
   margin-top:1px;display:flex;align-items:center;justify-content:center;font-size:14px;color:#fff}
 .vitem.sel .vchk{background:var(--ok);border-color:var(--ok)}
@@ -341,7 +346,33 @@ try{
   tg?.onEvent?.('fullscreenChanged', safeTop);
 }catch(e){}
 
-const INIT = (tg && tg.initData) || "";                              // подписанные данные Telegram
+const INIT = (tg && tg.initData) || "";
+
+/* [152] Пропуск Telegram живёт ровно сутки — сервер проверяет
+   (Date.now()/1000 - auth_date) > 86400 и отвечает «401: устарело».
+   Панель называла чужую причину: разбор речи просил «сказать иначе»,
+   справочник — «попробовать ещё раз», а человек искал вину в своих словах
+   и мог искать до утра. Возраст пропуска виден панели без сервера. */
+const INIT_TTL = 86400;
+function initAgeSec(){
+  try{
+    for(const p of String(INIT || "").split("&")){
+      const i = p.indexOf("=");
+      if(i < 0) continue;
+      if(decodeURIComponent(p.slice(0, i)) === "auth_date"){
+        const t = Number(decodeURIComponent(p.slice(i + 1))) || 0;
+        return t > 0 ? Math.floor(Date.now() / 1000 - t) : -1;
+      }
+    }
+  }catch(e){}
+  return -1;                      /* пропуска нет вовсе (панель открыта по ключу) */
+}
+function initStale(){ const a = initAgeSec(); return a >= 0 && a > INIT_TTL; }
+function staleMsg(){
+  return "Приложение открыто больше суток. Telegram выдаёт пропуск на 24 часа, и этот сервер уже не принимает. "
+       + "Закройте это окно крестиком и откройте панель заново кнопкой «Смета» внизу чата с ботом — "
+       + "всё записанное останется на месте.";
+}                              // подписанные данные Telegram
 /* Ключ объекта [чат 091, D4]. До 091 KEY был константой из ?key= и при работе
    в Telegram вовсе не уезжал на сервер (auth был «или initData, или key»), из-за
    чего сервер всегда попадал в фолбэк «объект единственный». Теперь ключ живёт
@@ -947,9 +978,9 @@ async function loadCatalog(force){
   const auth = authQS();
   let r;
   try{ r = await fetchT(API + '/data?' + auth + '&catalog=1', { cache: 'no-store' }, LOAD_MS, 'справочник'); }
-  catch(e){ throw new Error((e && e.timeout) ? e.message : 'Не удалось загрузить справочник'); }
+  catch(e){ throw new Error((e && e.timeout) ? e.message : (initStale() ? staleMsg() : 'Не удалось загрузить справочник')); }
   const raw = (await r.text()).trim();
-  if(!r.ok || !raw) throw new Error('Не удалось загрузить справочник');
+  if(!r.ok || !raw) throw new Error(initStale() ? staleMsg() : 'Не удалось загрузить справочник');
   let j; try{ j = JSON.parse(raw); }catch(e){ throw new Error('Не удалось загрузить справочник'); }
   D.catalog = j.catalog || { kinds: [], price: [] };
   return true;
@@ -10802,8 +10833,8 @@ async function qzSay(){
       body: JSON.stringify(body)
     });
     const raw = (await r.text()).trim();
-    if(r.status === 401 || r.status === 403) throw new Error("Доступ не подтверждён.");
-    if(!raw) throw new Error("Не удалось разобрать. Попробуйте сказать иначе.");
+    if(r.status === 401 || r.status === 403) throw new Error(initStale() ? staleMsg() : "Доступ не подтверждён.");
+    if(!raw) throw new Error(initStale() ? staleMsg() : "Не удалось разобрать. Попробуйте сказать иначе.");
     let d; try{ d = JSON.parse(raw); }catch{ throw new Error("Сервер вернул неожиданный ответ."); }
     showVResult(d);
   }catch(e){ showVError(e.message); }
@@ -11691,8 +11722,8 @@ async function onRecStop(){
     if(vQ) fd.append("q", vQ);                   // контекст активного вопроса опроса [чат 059]: сервер сужает промпт и не зовёт классификатор
     const r = await fetch(`${API}/voice`, { method: "POST", body: fd });
     const raw = (await r.text()).trim();
-    if(r.status === 401 || r.status === 403) throw new Error("Доступ не подтверждён.");
-    if(!raw) throw new Error("Не удалось разобрать запись. Попробуйте ещё раз.");
+    if(r.status === 401 || r.status === 403) throw new Error(initStale() ? staleMsg() : "Доступ не подтверждён.");
+    if(!raw) throw new Error(initStale() ? staleMsg() : "Не удалось разобрать запись. Попробуйте ещё раз.");
     let d; try{ d = JSON.parse(raw); }catch{ throw new Error("Сервер вернул неожиданный ответ."); }
     showVResult(d);
   }catch(e){ showVError(e.message); }
@@ -11769,8 +11800,8 @@ async function vRetry(mode){
       })
     });
     const raw = (await r.text()).trim();
-    if(r.status === 401 || r.status === 403) throw new Error("Доступ не подтверждён.");
-    if(!raw) throw new Error("Не удалось разобрать. Попробуйте сказать иначе.");
+    if(r.status === 401 || r.status === 403) throw new Error(initStale() ? staleMsg() : "Доступ не подтверждён.");
+    if(!raw) throw new Error(initStale() ? staleMsg() : "Не удалось разобрать. Попробуйте сказать иначе.");
     let d; try{ d = JSON.parse(raw); }catch{ throw new Error("Сервер вернул неожиданный ответ."); }
     d.ask = false;                     // второй круг переспроса не показываем: человек уже выбрал
     showVResult(d);
@@ -12642,7 +12673,9 @@ async function applyVoiceRepair(){
       : 'Из сказанного ничего не отмечено', св.взято ? '' : 'err');
     return;
   }
-  try{ if(!D.catalog) await loadCatalog(); }catch(e){ toast(e.message, "err"); return; }
+  /* [152] Тост в узком окне десктопа не виден — отказ читался как мёртвая
+     кнопка (Д-151-6, три чата искали дефект в самой кнопке). Окно видно всегда. */
+  try{ if(!D.catalog) await loadCatalog(); }catch(e){ showVError(e.message); return; }
   const kinds = (D.catalog || {}).kinds || [];
   let n = 0, noVol = 0, rooms = 0, last = null;
   for(const r of ready){
@@ -13989,7 +14022,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "151.3";
+const BUILD = "152.2";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
