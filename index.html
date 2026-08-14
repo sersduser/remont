@@ -1136,16 +1136,18 @@ function addExtraAdd(code){
   const комнаты = (D.rooms || []);
   ADD_EXTRA.push({ code: k.code, name: k.name || k['Вид_работы'] || k.code, unit: k.unit || '',
                    room: комнаты.length ? String(комнаты[0].code) : '', qty: null });
+  addDraftSave();
   render();
 }
-function addExtraDel(i){ ADD_EXTRA.splice(i, 1); render(); }
+function addExtraDel(i){ ADD_EXTRA.splice(i, 1); addDraftSave(); render(); }
 function addExtraQty(i, v){
   const n = Number(String(v == null ? '' : v).replace(',', '.'));
   if(ADD_EXTRA[i]) ADD_EXTRA[i].qty = n > 0 ? n : null;
+  addDraftSave();
   const el = document.getElementById('addPicked');
   if(el) el.textContent = addNewRows().length ? ('выбрано позиций: ' + addNewRows().length) : 'ничего не выбрано';
 }
-function addExtraRoom(i, v){ if(ADD_EXTRA[i]) ADD_EXTRA[i].room = String(v || ''); }
+function addExtraRoom(i, v){ if(ADD_EXTRA[i]) ADD_EXTRA[i].room = String(v || ''); addDraftSave(); }
 
 /* Готовые позиции вне сметы. Объём обязателен — без него позиции нет. */
 function addExtraRows(){
@@ -1159,6 +1161,9 @@ function addExtraHtml(){
     '<div class="work">' +
       '<div class="t">' + esc(x.name) + ' <span style="color:#ff9f0a;font-size:12px">вне сметы</span></div>' +
       '<div class="m">' + esc(x.code) + (x.unit ? (' · ' + esc(x.unit)) : '') + '</div>' +
+      (комнаты.length
+        ? '<div class="m" style="margin-top:8px">В каком помещении — объём позиции считается по его обмерам</div>'
+        : '') +
       '<div class="m" style="margin-top:6px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">' +
         (комнаты.length
           ? ('<select onchange="addExtraRoom(' + i + ', this.value)" ' +
@@ -1241,8 +1246,41 @@ function addVoiceApply(){
   return { взято, без_объёма, вне };
 }
 
+/* ── Черновик допсоглашения [чат 147, Д-151-2] ──────────────────────────
+   Набранное переживает уход с экрана и перезагрузку панели. Повод: снимок
+   994 — панель отказала по отсутствующему помещению и сама же послала
+   человека заводить его на экране «Объект», а возврат приводил к пустому
+   экрану: addNewOpen() чистил набор безусловно. Черновик привязан к паре
+   «объект + договор», поэтому чужой объект его не подхватит. */
+const ADD_DRAFT_KEY = 'REMONT_ADD_DRAFT';
+let ADD_RESTORED = 0;          // сколько позиций восстановлено при открытии
+
+function addDraftSave(){
+  try{
+    const f = contractFrozen();
+    if(!f) return;
+    const пусто = !Object.keys(ADD_QTY).length && !ADD_EXTRA.length;
+    if(пусто){ localStorage.removeItem(ADD_DRAFT_KEY); return; }
+    localStorage.setItem(ADD_DRAFT_KEY, JSON.stringify({
+      obj: D.object_id, contract: f.id, qty: ADD_QTY, extra: ADD_EXTRA, ts: Date.now() }));
+  }catch(e){}
+}
+function addDraftDrop(){ try{ localStorage.removeItem(ADD_DRAFT_KEY); }catch(e){} }
+function addDraftLoad(){
+  try{
+    const f = contractFrozen();
+    if(!f) return 0;
+    const d = JSON.parse(localStorage.getItem(ADD_DRAFT_KEY) || 'null');
+    if(!d || d.obj !== D.object_id || String(d.contract) !== String(f.id)) return 0;
+    ADD_QTY   = (d.qty && typeof d.qty === 'object') ? d.qty : {};
+    ADD_EXTRA = Array.isArray(d.extra) ? d.extra : [];
+    return addNewRows().length;
+  }catch(e){ return 0; }
+}
+
 function addNewOpen(){
   ADD_QTY = {}; ADD_EXTRA = []; ADD_FIND = ''; ADD_VOICE = false;
+  ADD_RESTORED = addDraftLoad();
   go('addnew');
   if(!D.catalog){
     toast('Загружаю справочник…');
@@ -1256,6 +1294,7 @@ function addNewOpen(){
 function addQty(code, v){
   const n = Number(String(v == null ? '' : v).replace(',', '.'));
   if(n > 0) ADD_QTY[String(code)] = n; else delete ADD_QTY[String(code)];
+  addDraftSave();
   const el = document.getElementById('addPicked');
   if(el) el.textContent = addNewRows().length ? ('выбрано позиций: ' + addNewRows().length) : 'ничего не выбрано';
 }
@@ -1305,7 +1344,7 @@ async function addSend(){
         (out ? (' · вне договора: ' + out) : '') +
         (без_помещения ? ' · помещение сервер не принял — позиции записаны без него' : '') +
         ' · второй стороне уходит сообщение бота, если её Telegram привязан к объекту');
-  ADD_QTY = {}; ADD_EXTRA = []; ADD_FIND = '';
+  ADD_QTY = {}; ADD_EXTRA = []; ADD_FIND = ''; addDraftDrop();
   await addendaLoad(true);
   back();
 }
@@ -8829,6 +8868,10 @@ addnew(){
       'Цену за единицу посчитает сервер: ' +
       (inh ? 'по договору, а чего в нём не было — по прайсу на сегодня с пометкой «вне договора».'
            : 'по прайсу бригадира на сегодня.') + '</span></div>' +
+    (ADD_RESTORED
+      ? '<div class="stat"><span class="k">Черновик восстановлен: позиций ' + ADD_RESTORED +
+          '. Набранное сохраняется — можно уйти на «Объект», завести помещение и вернуться сюда.</span></div>'
+      : '<div class="m" style="margin-top:6px">Набранное сохраняется: можно уйти на «Объект» и вернуться, ничего не потеряв.</div>') +
     '<div class="card">' +
       '<div class="lbl">Работы объекта</div>' +
       (rows || '<div class="m">В смете нет живых работ — возьмите вид из справочника ниже.</div>') +
@@ -13911,7 +13954,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "150.1";
+const BUILD = "151.2";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
