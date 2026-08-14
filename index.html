@@ -345,6 +345,10 @@ function objsRemember(key, title){
   const list = objsAll(), i = list.findIndex(o => o.key === key);
   const rec = { key: key, title: String(title || (i >= 0 ? list[i].title : "") || ""), ts: Date.now(),
                  role: (i >= 0 ? (list[i].role || "") : "") };   /* роль с сервера не теряется [096] */
+  /* [145, Д-142-5] Метка «сервер подтвердил» переживает перезапись записи:
+     иначе любое открытие объекта стирало бы знание о том, что этой строки
+     на сервере нет, и приглушённая строка снова притворялась бы живой. */
+  if(i >= 0 && (list[i].srv === 0 || list[i].srv === 1)) rec.srv = list[i].srv;
   if(i >= 0) list[i] = rec; else list.unshift(rec);
   objsWrite(list);
 }
@@ -389,9 +393,19 @@ const OBJ_ROLE_RU = { owner: "заказчик", foreman: "бригадир", ha
 /* state: idle → load → done | absent (ветки ещё нет) | nosign (вне Telegram) */
 let OBJSRV = { state: "idle", nokey: [], err: "" };
 
+/* [145, Д-142-5] Метка подтверждения `srv` у записи хранилища:
+     1 — объект пришёл в ответе ветки /objects, участие подтверждено подписью;
+     0 — ответ был, и объекта в нём нет: строка осталась в памяти ЭТОГО
+         устройства (так ТЕСТ REMONT_123 виден под аккаунтом Суботина —
+         ключ лёг сюда с прежних заходов под sersduser);
+     нет поля — сервера ещё не спрашивали (первый запуск, сборка старше 145).
+   Метки ставятся ТОЛЬКО отсюда, а objsMerge зовётся единственным местом —
+   успешной веткой objsrvLoad, после проверки r.ok и разбора списка. При
+   nosign, отказе ветки и обрыве связи сюда ход не доходит вовсе, поэтому
+   потеря сети не может перекрасить весь список в «неподтверждённый». */
 function objsMerge(list){
   if(!Array.isArray(list)) return;
-  const cur = objsAll(), nokey = [];
+  const cur = objsAll(), nokey = [], пришли = new Set();
   for(const r of list){
     if(!r) continue;
     const key = String(r.key || ""), title = String(r.title || ""), role = String(r.role || "");
@@ -400,15 +414,19 @@ function objsMerge(list){
       nokey.push({ id: String(r.object_id || ""), title: title, role: role });
       continue;
     }
+    пришли.add(key);
     const i = cur.findIndex(o => o.key === key);
     if(i >= 0){
       /* имя с сервера главнее локального: локальное вписано при заведении и могло устареть */
-      cur[i] = { key: key, title: title || cur[i].title || "", ts: cur[i].ts || 0, role: role || cur[i].role || "" };
+      cur[i] = { key: key, title: title || cur[i].title || "", ts: cur[i].ts || 0, role: role || cur[i].role || "", srv: 1 };
     }else{
       /* панель этот объект не открывала — ts = 0, чтобы он не встал выше живых */
-      cur.unshift({ key: key, title: title, ts: 0, role: role });
+      cur.unshift({ key: key, title: title, ts: 0, role: role, srv: 1 });
     }
   }
+  /* Строки, которых в ответе не было, помечаются неподтверждёнными — не
+     удаляются: ключ может пригодиться, а решение забыть его принимает человек. */
+  for(const o of cur){ if(!пришли.has(o.key)) o.srv = 0; }
   objsWrite(cur);
   OBJSRV.nokey = nokey;
 }
@@ -640,11 +658,21 @@ async function load(){
     if(OBJ_SWITCH){
       const sw = OBJ_SWITCH; OBJ_SWITCH = null;
       if(sw.from){ KEY = sw.from; objsSetActive(sw.from); }   /* прежний объект остаётся открытым */
+      /* [145, Д-142-5] Причина отказа у строки, которой сервер не подтвердил,
+         известна точно — и это не «вас ещё не добавили»: строка осталась в
+         памяти устройства с чужого захода. Прежний текст отправлял человека
+         к бригадиру за тем, что бригадир уже сделал. */
+      const мимо = (function(){
+        try{ const o = objsAll().find(x => x.key === (sw.to || '')); return !!(o && o.srv === 0); }
+        catch(_){ return false; }
+      })();
       app.innerHTML =
         '<div class="hello">Объект не открылся</div>' +
         '<div class="sub">' + esc(sw.title || '') + '</div>' +
         '<div class="stat" style="margin-top:12px"><div class="m">' + esc(e.message) +
-          '<br><br>Чаще всего это значит, что на этом объекте вас ещё нет — попросите бригадира добавить вас. ' +
+          (мимо
+            ? '<br><br>На этом объекте вас нет: строка осталась в памяти этого устройства — её ключ панель запомнила с прежнего захода, возможно под другим аккаунтом. Чтобы войти, нужна ссылка-приглашение от владельца объекта; убрать строку можно кнопкой «Забыть здесь» в списке объектов. '
+            : '<br><br>Чаще всего это значит, что на этом объекте вас ещё нет — попросите бригадира добавить вас. ') +
           (sw.from ? 'Прежний объект остался открытым.' : '') + '</div></div>' +
         '<div class="row" style="margin-top:14px;gap:8px">' +
           '<button onclick="go(\'objsel\')" style="flex:1;padding:12px;border-radius:11px;border:0;background:#0a84ff;color:#fff;font-size:15px">К списку объектов</button>' +
@@ -8195,12 +8223,22 @@ function objSelScreen(){
   const rows = list.map(o => {
     const on = (o.key === KEY);
     const role = objSelRole(o.role);
+    /* [145, Д-142-5] Неподтверждённая строка выглядит иначе — тем же приёмом,
+       что и участие без ключа ниже: приглушённый фон и своя строка-пояснение.
+       Кликать её не запрещаем (участие могли выдать только что), но обещать
+       ею объект больше нельзя. */
+    const мимо = (o.srv === 0);
     return '<div onpointerdown="tapDown(event)" onpointerup="tapUp(event, function(){ objsSwitchTap(\'' + esc(o.key) + '\') })"' +
       ' onclick="objsSwitchTap(\'' + esc(o.key) + '\')" style="margin-top:8px;padding:12px;border-radius:12px;' +
-      'background:' + (on ? "#0a84ff" : "#2c2c2e") + ';color:#fff;cursor:pointer">' +
+      'background:' + (on ? "#0a84ff" : (мимо ? "#1c1c1e" : "#2c2c2e")) + ';color:' + (мимо && !on ? "#8e8e93" : "#fff") + ';cursor:pointer' +
+      (мимо && !on ? ';border:1px solid #3a3a3c' : '') + '">' +
       '<div style="font-size:15px">' + esc(objsTitle(o.key)) + (on ? " · открыт" : "") + '</div>' +
       '<div style="font-size:12px;opacity:.65;margin-top:3px">' + (role ? esc(role) + ' · ' : '') +
         'ключ …' + esc(String(o.key).slice(-6)) + '</div>' +
+      (мимо ? '<div style="font-size:12px;margin-top:6px;color:var(--warn)">Сервер эту строку не подтвердил — она осталась в памяти этого устройства</div>' +
+        '<button onpointerdown="event.stopPropagation()" onpointerup="event.stopPropagation()"' +
+        ' onclick="event.stopPropagation(); objsForget(\'' + esc(o.key) + '\')"' +
+        ' style="margin-top:8px;padding:8px 12px;border-radius:9px;border:1px solid #3a3a3c;background:#2c2c2e;color:#fff;font-size:13px">Забыть здесь</button>' : '') +
     '</div>';
   }).join("");
   /* Участия без годного ключа: показываем, но переключиться нечем — человеку
@@ -8215,11 +8253,19 @@ function objSelScreen(){
   }).join("");
   /* Подзаголовок обязан быть честным: пока ветка не ответила, список — память
      панели, и обещать «все ваши объекты» нельзя. */
-  const sub = (OBJSRV.state === "done") ? "объекты, где вы участвуете"
+  /* [145, Д-142-5] Подпись больше не выдаёт весь список за серверный: строки
+     без подтверждения живут в нём наравне с подтверждёнными, и раньше человек
+     читал «список пришёл с сервера» ровно над той строкой, по которой сервер
+     потом отказывал. */
+  const мимоN = list.filter(o => o.srv === 0).length;
+  const sub = (OBJSRV.state === "done")
+              ? (мимоN ? "объекты, где вы участвуете, и " + мимоN + " строк" + (мимоN === 1 ? "а" : (мимоN < 5 ? "и" : "")) + " из памяти устройства"
+                       : "объекты, где вы участвуете")
             : (OBJSRV.state === "load") ? "спрашиваю сервер о ваших объектах…"
             : "панель помнит объекты, ключи которых получала";
   const note = (OBJSRV.state === "done")
-      ? 'Список пришёл с сервера по вашей подписи. Если объекта нет и здесь — вас ещё не добавили на него.'
+      ? (мимоN ? 'Сервер по вашей подписи подтвердил не все строки. Приглушённые он не подтвердил — их ключи панель помнит с прежних заходов на этом устройстве, возможно под другим аккаунтом; открыть такой объект не выйдет, пока вас на него не добавят. Если объекта нет и здесь — вас ещё не добавили на него.'
+               : 'Список пришёл с сервера по вашей подписи. Если объекта нет и здесь — вас ещё не добавили на него.')
       : 'Если объекта нет в списке — откройте его ссылкой ещё раз: панель запомнит ключ и покажет его здесь.';
   return '<div class="hello">Выбор объекта</div>' +
     '<div class="sub">' + sub + '</div>' +
@@ -8465,6 +8511,22 @@ function tapOnce(key, fn){
   fn();
 }
 function objsSwitchTap(key){ tapOnce('obj:' + key, () => objsSwitch(key)); }
+/* [145, Д-142-5] Убрать с устройства строку, которой сервер не подтвердил.
+   Панель теперь говорит про такую строку правду — значит человеку нужен и
+   способ её убрать, иначе список навсегда остаётся с чужим следом. Действие
+   местное: ключ живёт в ссылке приглашения, и объект вернётся, если открыть
+   ссылку заново; активный объект не трогаем — его строку сервер подтвердил. */
+async function objsForget(key){
+  key = String(key || ""); if(!key) return;
+  if(key === KEY){ toast('Этот объект сейчас открыт — сначала переключитесь на другой', 'warn'); return; }
+  const имя = objsTitle(key);
+  const да = await ask('Убрать «' + имя + '» из списка на этом устройстве?\n\nКлюч …' + key.slice(-6) +
+                       ' будет забыт здесь. Объект вернётся в список, если открыть ссылку-приглашение заново.', 'Убрать');
+  if(!да) return;
+  objsWrite(objsAll().filter(o => o.key !== key));
+  toast('Убрано с этого устройства', 'ok');
+  render();
+}
 function objBarGo(){ tapOnce('objbar', objBarTap); }
 
 let OBJ_HOLD = { t: 0, x: 0, y: 0, fired: false };
@@ -13705,7 +13767,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "144.1";
+const BUILD = "145.1";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
