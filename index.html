@@ -22,6 +22,11 @@
      внутри html.light, и в тёмной теме верхнего запаса не было вовсе. */
   --top-inset: calc(max(env(safe-area-inset-top, 0px), var(--tg-safe-area-inset-top, 0px))
                     + var(--tg-content-safe-area-inset-top, 0px));
+  /* Нижний запас [146, нижняя половина Д-145-1]. Тот же случай, что наверху:
+     в полноэкранном режиме env(safe-area-inset-bottom) равен нулю, а нижняя
+     зона (жестовая полоса, скруглённый край) есть, и о ней говорит клиент. */
+  --bot-inset: calc(max(env(safe-area-inset-bottom, 0px), var(--tg-safe-area-inset-bottom, 0px))
+                    + var(--tg-content-safe-area-inset-bottom, 0px));
 }
 /* Светлая тема [141, пункт 8 смены]. Акцентные цвета подобраны под тёмный
    фон и на белом почти не читаются: измерено стендом 141_3 — «не задано»
@@ -33,7 +38,7 @@ html.light{
 }
 *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
 body{background:var(--bg);color:var(--txt);font:15px/1.5 -apple-system,"Segoe UI",Roboto,sans-serif;
-  padding:calc(14px + var(--top-inset, 0px)) 14px 40px;overscroll-behavior-y:contain}
+  padding:calc(14px + var(--top-inset, 0px)) 14px calc(40px + var(--bot-inset, 0px));overscroll-behavior-y:contain}
 
 /* Полоса объекта [указание Дмитрия 12.08, чат 126]: не уезжает при
    прокрутке. Отрицательные поля вытягивают её на всю ширину поверх
@@ -133,7 +138,7 @@ input[type=number]{text-align:center}
    «Записать» оставались внизу за краем, а «Расслышал:» уезжал вверх, и
    проверить распознанное было нечем. */
 .vsheet{background:var(--bg);width:100%;max-width:560px;border-radius:18px 18px 0 0;
-  padding:18px 16px calc(18px + env(safe-area-inset-bottom));transform:translateY(20px);transition:.24s;
+  padding:18px 16px calc(18px + var(--bot-inset, 0px));transform:translateY(20px);transition:.24s;
   max-height:88vh;overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolling:touch}
 /* Фильтр «только отмеченные»: прячем невыбранное, не трогая состояние выбора. */
 #vlist.selonly .vitem:not(.sel){display:none}
@@ -283,10 +288,21 @@ function safeTop(){
     const fb    = b ? b : (need ? 46 : 0);
     if (fb) r.setProperty('--tg-content-safe-area-inset-top', fb + 'px');
     else    r.removeProperty('--tg-content-safe-area-inset-top');
+    /* [146] Низ — зеркально верху. Запаса «на всякий случай» здесь нет: снизу
+       Telegram своей шапки не рисует, поэтому берём ровно то, что сказал
+       клиент, и складываем с env() уже в CSS. */
+    const ab = (tg && tg.safeAreaInset && tg.safeAreaInset.bottom) || 0;
+    const bb = (tg && tg.contentSafeAreaInset && tg.contentSafeAreaInset.bottom) || 0;
+    if (ab) r.setProperty('--tg-safe-area-inset-bottom', ab + 'px');
+    else    r.removeProperty('--tg-safe-area-inset-bottom');
+    if (bb) r.setProperty('--tg-content-safe-area-inset-bottom', bb + 'px');
+    else    r.removeProperty('--tg-content-safe-area-inset-bottom');
     SAFE_DIAG = { env: getComputedStyle(document.documentElement).getPropertyValue('--top-inset').trim(),
                   safe: a, content: b, fallback: fb, platform: (tg && tg.platform) || '—',
                   ver: (tg && tg.version) || '—', full: full, tells: tells, vv: vvTop,
                   ih: ih, vsh: vsh, over: over,
+                  envDown: getComputedStyle(document.documentElement).getPropertyValue('--bot-inset').trim(),
+                  safeD: ab, contentD: bb,
                   why: b ? 'сказал клиент'
                          : (need ? (full ? 'полный экран' : (!tells ? 'клиент старее 8.0' : 'смещён viewport'))
                                  : 'перекрытия нет') };
@@ -311,6 +327,7 @@ function safeDiagShow(){
   toast('Зона сверху: итог ' + (d.env || 'ПУСТ (переменной нет)') + ' · система ' + (d.safe || 0) + ' · шапка клиента ' +
         (d.content || 0) + (d.fallback !== d.content ? (' → запас ' + d.fallback) : '') +
         ' · ' + (d.why || '—') + (d.full ? ' · полный экран' : '') +
+        ' · зона снизу ' + (d.envDown || 'ПУСТ') + ' (система ' + (d.safeD || 0) + ' · клиент ' + (d.contentD || 0) + ')' +
         ' · окно ' + (d.ih || 0) + '/' + (d.vsh || 0) + (d.over ? (' → перекрытие ' + d.over) : '') +
         ' · ' + (d.platform || '—') + ' · Bot API ' + (d.ver || '—') + navDiag() +
         ' · поделиться: ' + shareCan() +
@@ -4631,7 +4648,7 @@ function planScaleDraw(){
     box = document.createElement("div");
     box.id = "pscBox";
     box.style.cssText = "position:fixed;inset:0;z-index:9997;background:#000;overflow-y:auto;" +
-      "padding:14px 14px calc(16px + env(safe-area-inset-bottom,0px))";
+      "padding:14px 14px calc(16px + var(--bot-inset, 0px))";
     document.body.appendChild(box);
   }
   const n = PSC.pts.length;
@@ -4755,7 +4772,7 @@ function planPolyDraw(){
     box = document.createElement("div");
     box.id = "pplBox";
     box.style.cssText = "position:fixed;inset:0;z-index:9997;background:#000;overflow-y:auto;" +
-      "padding:14px 14px calc(16px + env(safe-area-inset-bottom,0px))";
+      "padding:14px 14px calc(16px + var(--bot-inset, 0px))";
     document.body.appendChild(box);
   }
   const rooms = roomList();
@@ -4847,7 +4864,7 @@ function planRulerDraw(){
     box = document.createElement("div");
     box.id = "prlBox";
     box.style.cssText = "position:fixed;inset:0;z-index:9997;background:#000;overflow-y:auto;" +
-      "padding:14px 14px calc(16px + env(safe-area-inset-bottom,0px))";
+      "padding:14px 14px calc(16px + var(--bot-inset, 0px))";
     document.body.appendChild(box);
   }
   const sc = planScale();
@@ -4968,7 +4985,7 @@ function planMarkDraw(){
     box = document.createElement("div");
     box.id = "pmkBox";
     box.style.cssText = "position:fixed;inset:0;z-index:9997;background:#000;overflow-y:auto;" +
-      "padding:14px 14px calc(16px + env(safe-area-inset-bottom,0px))";
+      "padding:14px 14px calc(16px + var(--bot-inset, 0px))";
     document.body.appendChild(box);
   }
   const cur = PMQ[PMI] || null;
@@ -5201,7 +5218,7 @@ async function objCamera(){
     '<div style="flex:1;min-height:0;display:flex;align-items:center;justify-content:center">' +
       '<video id="objCamV" playsinline autoplay muted style="max-width:100%;max-height:100%"></video>' +
     "</div>" +
-    '<div style="display:flex;gap:8px;padding:14px calc(14px + env(safe-area-inset-left)) calc(14px + env(safe-area-inset-bottom))">' +
+    '<div style="display:flex;gap:8px;padding:14px calc(14px + env(safe-area-inset-left)) calc(14px + var(--bot-inset, 0px))">' +
       '<button id="objCamNo" style="flex:1;padding:14px;border-radius:12px;border:0;background:#3a3a3c;color:#fff;font-size:15px">Отмена</button>' +
       '<button id="objCamGo" style="flex:2;padding:14px;border-radius:12px;border:0;background:#0a84ff;color:#fff;font-size:15px">Снять</button>' +
     "</div>";
@@ -13830,7 +13847,7 @@ function langButton(){
   b.id = "langbtn";
   b.textContent = LANG === "uz" ? "RU" : "UZ";
   b.setAttribute("aria-label", LANG === "uz" ? "Русский" : "O'zbekcha");
-  b.style.cssText = "position:fixed;right:10px;bottom:calc(10px + env(safe-area-inset-bottom,0px));z-index:9999;" +
+  b.style.cssText = "position:fixed;right:10px;bottom:calc(10px + var(--bot-inset, 0px));z-index:9999;" +
     "padding:7px 11px;border:0;border-radius:12px;background:rgba(58,58,60,.92);color:#fff;" +
     "font-size:13px;font-weight:600;letter-spacing:.5px;box-shadow:0 2px 8px rgba(0,0,0,.45)";
   b.onclick = () => langSet(LANG === "uz" ? "ru" : "uz", true);   // true = переключил человек
@@ -13879,13 +13896,13 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "145.2";
+const BUILD = "146.2";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
   d.id = "buildtag";
   d.textContent = BUILD;
-  d.style.cssText = "position:fixed;right:56px;bottom:calc(10px + env(safe-area-inset-bottom,0px));z-index:9998;" +
+  d.style.cssText = "position:fixed;right:56px;bottom:calc(10px + var(--bot-inset, 0px));z-index:9998;" +
     "padding:6px 9px;border-radius:10px;background:rgba(58,58,60,.72);color:rgba(235,235,245,.9);" +
     "font-size:12px;font-weight:600;line-height:1;letter-spacing:.5px;pointer-events:none;user-select:none";
   document.body.appendChild(d);
