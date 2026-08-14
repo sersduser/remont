@@ -1854,8 +1854,19 @@ function pdfБлокиИзHTML(html){
     return части.join(' · ').replace(/: · /g, ': ');
   };
 
+  /* Обходим childNodes, а не children: голый текст, лежащий РЯДОМ с
+     блочным ребёнком («<b>Заказчик</b>Дмитрий<div>тел…</div>»), при обходе
+     одних элементов теряется молча. В договоре потерянная строка — это не
+     косметика, поэтому текстовые узлы печатаются наравне с элементами.
+     Найдено живым прогоном на боевой сборке 140.1. */
   const обойти = узел => {
-    for(const n of Array.from(узел.children || [])){
+    for(const n of Array.from(узел.childNodes || [])){
+      if(n.nodeType === 3){
+        const t = String(n.nodeValue || '').replace(/\s+/g, ' ').trim();
+        if(t) блоки.push({ тип: 'строка', текст: t, размер: 11, отступ: 0 });
+        continue;
+      }
+      if(n.nodeType !== 1) continue;
       const тег = n.tagName.toLowerCase();
       if(тег === 'table'){
         const строки = Array.from(n.querySelectorAll('tr')).map(tr =>
@@ -13187,7 +13198,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "140.2";
+const BUILD = "140.3";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
