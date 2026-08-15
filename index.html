@@ -10928,7 +10928,11 @@ function qzNote(s){
      значение и должен оказаться там, где остановился, а не залипнуть на старом
      вопросе. Через qzNote проходят все пути записи и «Позже». */
   QZ.forced = null;
-  QZ.log.unshift(String(s));
+  /* [чат 158, Д-153-12] Запись помнит помещение, в котором сделана. Берётся не
+     текущий вопрос — к моменту записи очередь уже пересчитана и вопрос может
+     быть из другой комнаты, — а помещение вопроса, который человек ВИДЕЛ,
+     когда отвечал (QZ.lastRoom ставится при отрисовке экрана). */
+  QZ.log.unshift({ t: String(s), room: String(QZ.lastRoom || "") });
   if(QZ.log.length > QZ_MAX_LOG) QZ.log.length = QZ_MAX_LOG;
 }
 
@@ -11268,6 +11272,9 @@ function qzScreen(){
     const h = QZ.hist || (QZ.hist = []);
     if(!h.length || h[h.length - 1].id !== q.id){ h.push(q); if(h.length > 40) h.shift(); }
   }
+  /* [чат 158, Д-153-12] Помещение вопроса, который человек видит сейчас: по нему
+     подписывается запись ответа и отбирается нижний блок. */
+  if(q) QZ.lastRoom = String(q.room || "");
   const total = qzTotal();
   const later = Object.keys(QZ.later).length;
   const head = '<div class="hello">Опрос · ' + esc(objNowTitle()) + '</div>';
@@ -11365,9 +11372,26 @@ function qzScreen(){
      она попала в документ, — поэтому чтение планируется отдельным тактом. */
   if(QZ_TTS === "auto"){ try{ setTimeout(qzAuto, 0); }catch(e){} }
 
-  const log = QZ.log.length
-    ? '<div class="stat" style="margin-top:12px"><div class="m" style="opacity:.75">Записано в этом опросе</div>' +
-      QZ.log.map(s => '<div class="m" style="margin-top:4px">· ' + esc(s) + "</div>").join("") + "</div>"
+  /* [чат 158, Д-153-12] Просьба Дмитрия дословно (1064): «в нижнем блоке
+     уместнее было бы видеть информацию по текущему вопросу — что уже введено
+     по данной локации?». Блок мешал помещения в одну ленту: «Записано голосом:
+     2 знач. · Шахта» соседствовало с «Отмечено в профиле: 17 видов · Ванна»,
+     и человек, стоя в одной комнате, читал отчёт про другую.
+     Записи хранятся парой «текст + помещение» (qzNote). Строки, записанные до
+     этой сборки, — простые строки: их показываем, а не роняем экран. */
+  const logAll = (QZ.log || []).map(x => (x && typeof x === "object") ? x : { t: String(x), room: "" });
+  const logRoom = q.room ? logAll.filter(x => !x.room || x.room === q.room) : logAll;
+  const logZag  = q.room
+    ? ("Записано здесь · " + esc(qzName(room || { code: q.room })))
+    : "Записано в этом опросе";
+  const log = logRoom.length
+    ? '<div class="stat" style="margin-top:12px"><div class="m" style="opacity:.75">' + logZag + '</div>' +
+      logRoom.map(x => '<div class="m" style="margin-top:4px">· ' + esc(x.t) + "</div>").join("") +
+      /* Записи по другим помещениям не пропали — сказано, сколько их и где смотреть. */
+      (q.room && logAll.length > logRoom.length
+        ? '<div class="m" style="margin-top:6px;opacity:.6">по другим помещениям записано ещё ' + (logAll.length - logRoom.length) + ' — видно в своде опроса</div>'
+        : "") +
+      "</div>"
     : "";
 
   /* [чат 114.3, просьба Дмитрия на живом проходе] Шапка опроса липкая и НАЗЫВАЕТ
@@ -12254,7 +12278,22 @@ function showVRooms(d){
   const matchedN = vRooms.reduce((s, r) => s + (r.matched || []).length, 0);
   const rows = vRooms.map((r, i) => {
     const head = `<div class="vt">${esc(r.name || "помещение")}${r.isNew ? ' <span style="color:#ff9f0a">· новое</span>' : ""}</div>`;
-    const fl = r.fields.map((f, j) => `
+    /* [чат 158, Д-153-11] Просьба Дмитрия дословно (1098): «Наряду с
+       производными значениями, должны отображаться и прямо введённые». Пол и
+       периметр окно показывало, а сторон, из которых они посчитаны, не было
+       нигде: человек диктовал «пятьсот шестьдесят семь на сто сорок шесть», а
+       видел 8.28 м² и 14.26 м — проверить их было не с чем. Контур приходит
+       тем же ответом отдельным полем; показываем его сторонами в метрах, а не
+       JSON-строкой, какой он лежит в листе. */
+    const ctrF = (r.fields || []).filter(f => /контур/i.test(String(f.col || f.label || "")))[0];
+    const ctrC = ctrF ? ctrParse(ctrF.now) : null;
+    /* fmt округляет до целых — здесь он соврал бы: 5,67 стало бы 6, и строка,
+       заведённая ради точности, показывала бы неправду. Метры пишем сами. */
+    const ctrM = v => String(Math.round(Number(v) * 100) / 100).replace(".", ",");
+    const ctrRow = (ctrC && ctrC.sides && ctrC.sides.length)
+      ? `<div class="m" style="margin:2px 0 6px;opacity:.85">Продиктовано: <b>${esc(ctrC.sides.map(x => ctrM(x.len)).join(" · "))}</b> м${ctrC.area ? ` — отсюда пол ${esc(ctrM(ctrC.area))} м² и периметр ${esc(ctrM(ctrC.perim))} м` : ""}</div>`
+      : "";
+    const fl = ctrRow + r.fields.map((f, j) => /контур/i.test(String(f.col || f.label || "")) ? "" : `
       <div class="vitem${f._sel ? " sel" : ""}" data-i="${i}-${j}" onclick="toggleVRoom(${i},${j})">
         <div class="vchk">✓</div>
         <div style="flex:1;min-width:0">
@@ -14298,7 +14337,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "157.1";
+const BUILD = "157.2";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
