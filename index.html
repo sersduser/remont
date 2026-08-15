@@ -649,7 +649,7 @@ async function fetchT(url, opts, ms, чего){
     throw err;
   }finally{ clearTimeout(tmo); }
 }
-/* ══ [155.4, Д-153-14] Сторож экрана загрузки ═══════════════════════════════
+/* ══ [156.1, Д-153-14] Сторож экрана загрузки ═══════════════════════════════
    Срок у запроса (`fetchT`, 137) отвечает на вопрос «ответил ли сервер».
    Человек же смотрит на экран и спрашивает другое: «сколько ещё ждать».
    Между этими вопросами и жил дефект: «Загружаю объект…» висело без конца,
@@ -701,7 +701,7 @@ async function load(){
     if(D && D.need_setup){ renderSetup(D); return; }
     if(!D || !D.role) throw new Error(BAD);
     OBJ_SWITCH = null;                      /* [138.3] объект открылся */
-    loadWatch(false);                       /* [155.4] данные есть — сторож не нужен */
+    loadWatch(false);                       /* [156.1] данные есть — сторож не нужен */
     render();
     evApply();                              // [чат 144] ссылка возврата из сообщения бота
     /* [124] Серверный список объектов запрашивался ТОЛЬКО при открытии экрана
@@ -8764,7 +8764,7 @@ function objBarDraw(){
   const html =
     '<div style="min-width:0;flex:1 1 auto">' +
       '<div class="ob-t">🏠 ' + esc(title) + '</div>' +
-      /* [155.4, Д-153-14] Пока роль неизвестна, слово «объект» стояло там, где
+      /* [156.1, Д-153-14] Пока роль неизвестна, слово «объект» стояло там, где
          человек читает «заказчик» или «бригадир», и выглядело как роль. */
       '<div class="ob-s">' + (role ? esc(role) : 'загружается…') +
         (n > 1 ? (' · объектов ' + n) : '') + '</div>' +
@@ -9134,7 +9134,7 @@ home(){
   /* [138] Экран, который читает D, обязан переживать его отсутствие:
      объект в момент переключения существует, а данных ещё нет. */
   if (!D){
-    /* [155.4, Д-153-14] */
+    /* [156.1, Д-153-14] */
     if(LOAD_STUCK) return '' +
       '<div class="stat">' +
         '<div class="r"><span class="k">Объект не открылся</span></div>' +
@@ -12735,6 +12735,11 @@ function vRepMerge(list){
       if(!k.novol)  был.novol   = false;                              // объём нашёлся хоть в одной записи
       if(k.qty_said != null && был.qty_said == null) был.qty_said = k.qty_said;
     });
+    /* [чат 160] Проёмы при слиянии не теряются. Модель на реплику про три проёма
+       возвращает ДВА элемента одного помещения: один с проёмами, другой с работами
+       (исполнение 47441). Слияние 155.3 сводило их в один блок и оставляло только
+       проёмы первого — то есть починенная в 160 потеря повторилась бы здесь. */
+    if((r.openings || []).length){ цель.openings = (цель.openings || []).concat(r.openings); }
     цель.kinds.sort((x, y) => (x.src === y.src) ? 0 : (x.src === "said" ? -1 : 1));
   });
   return порядок;
@@ -12808,9 +12813,34 @@ function showVRepair(d){
         </div>
       </div>`).join("");
     const rfHead = (r.refused || []).length ? '<div class="vd" style="margin:8px 0 2px">Отказано голосом</div>' : "";
+    /* [чат 160, Д-156-4] Услышанное про проёмы. Размеры и судьба проёма, названные
+       в одной фразе с работами, до 160 пропадали молча: «Расслышал» показывал фразу
+       целиком, а записывались только работы — человек считал размеры введёнными.
+       Показываем их тем же способом, что и отказ голосом: без галочки, потому что
+       отмечать нечего, но видимо — иначе услышанное снова исчезнет молча. Запись
+       остаётся за схемой проёмов: адрес проёма знает она, а не эта реплика [032]. */
+    const opN = (o) => {
+      const w = o && o.w != null ? String(o.w).replace(".", ",") : "";
+      const h = o && o.h != null ? String(o.h).replace(".", ",") : "";
+      return (w && h) ? (w + " × " + h + " м") : (w ? ("ширина " + w + " м") : (h ? ("высота " + h + " м") : ""));
+    };
+    const op = (r.openings || []).map(o => {
+      const куда = String((o && (o.side || o.side_code)) || "").trim();
+      const что  = [o && o.fact ? ("сейчас " + o.fact) : "", o && o.fate ? o.fate : "", opN(o)].filter(Boolean).join(" · ");
+      return `
+      <div class="vitem" style="opacity:.85">
+        <div class="vchk" style="opacity:.35">◇</div>
+        <div style="flex:1;min-width:0">
+          <div class="vv">${esc(r.name || "")}${куда ? " ↔ " + esc(куда) : ""}</div>
+          <div class="vd">${esc(что)} · <span style="color:#ff9f0a">услышано, но не записано</span></div>
+        </div>
+      </div>`;
+    }).join("");
+    const opHead = (r.openings || []).length
+      ? '<div class="vd" style="margin:8px 0 2px">Про проёмы — запишите на экране объекта, в схеме проёмов</div>' : "";
     const ref = (r.refused || []).length;
     const note = [lik ? `перенесено из «${(r._like && r._like.name) || ""}»: ${lik}` : "", ofr ? `предложено целиком: ${ofr} — не отмечено` : "", nov ? `без объёма здесь: ${nov} — не отмечено` : "", tech ? (`по технологии добавлено: ${tech}` + (techX ? ` · из них ${techX} не отмечено: другая поверхность` : "")) : "", dup ? `уже в смете: ${dup} — не отмечено` : "", ref ? `отказано: ${ref}` : "", skp ? `этапов можно пропустить: ${skp} — решается в профиле` : ""].filter(Boolean).join(" · ");
-    return `<div style="margin-bottom:12px">${head}${note ? `<div class="vd" style="margin:2px 0 6px">${esc(note)}</div>` : ""}${kl}${rfHead}${rf}
+    return `<div style="margin-bottom:12px">${head}${note ? `<div class="vd" style="margin:2px 0 6px">${esc(note)}</div>` : ""}${kl}${rfHead}${rf}${opHead}${op}
       </div>`;
   }).join("");
   openVSheet(`
@@ -14249,7 +14279,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "155.4";
+const BUILD = "156.1";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
