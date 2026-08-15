@@ -10638,7 +10638,7 @@ const vsheet = document.getElementById("vsheet");
    цена перезапуска названа честно — отложенные вернутся раньше срока.
    ═════════════════════════════════════════════════════════════════ */
 
-let QZ = { on:false, pos:0, later:{}, log:[], ring:false, seenRing:{}, hist:[], forced:null };
+let QZ = { on:false, pos:0, later:{}, log:[], ring:false, seenRing:{}, hist:[], forced:null, ever:{} };
 
 const QZ_MAX_LOG = 12;
 
@@ -10836,7 +10836,14 @@ function qzList(){
   const all = qzQueue();
   const main = all.filter(q => !QZ.later[q.id]);
   const late = all.filter(q => QZ.later[q.id]);
-  return main.concat(late);      // круг отложенных — в конце обхода (§6)
+  const list = main.concat(late);      // круг отложенных — в конце обхода (§6)
+  /* [чат 158, Д-153-7] Здесь и только здесь копится «сколько всего вопросов
+     было». Считать всего как «пройдено + осталось» нельзя: вопрос, снятый
+     ответом (сказал «окон нет» — ушла пачка про окна), исчезает из очереди,
+     не будучи показанным, и не попадает никуда. Оттого «всего» и падало
+     по ходу прохода. */
+  if(QZ.on){ const ev = QZ.ever || (QZ.ever = {}); list.forEach(q => { ev[q.id] = 1; }); }
+  return list;
 }
 
 function qzCur(){
@@ -10858,7 +10865,7 @@ async function qzStart(){
     await loadCatalog();
   }catch(e){ /* без справочника опрос всё равно ведёт обмеры */ }
   if(typeof PROF !== "object" || !PROF || !PROF.plan) PROF = { room: null, plan: {} };
-  QZ = { on:true, pos:0, later:{}, log:[], ring:false, seenRing:{}, hist:[], forced:null };
+  QZ = { on:true, pos:0, later:{}, log:[], ring:false, seenRing:{}, hist:[], forced:null, ever:{} };
   qzSyncRoom();
   go("quiz");
 }
@@ -11269,14 +11276,26 @@ function qzScreen(){
     return head + '<div class="sub">пройдено · дыр не осталось</div>' + qzSummaryHtml();
   }
 
-  /* [чат 129, по наблюдению Дмитрия «зациклился опросник»] Номер вопроса — это
-     пройденный путь, а не позиция в убывающей очереди. Пройденные берём из
-     истории предъявленных: вопрос, которого в живой очереди больше нет, закрыт. */
-  const liveIds = {}; qzList().forEach(x => { liveIds[x.id] = 1; });
-  const seenIds = {}; (QZ.hist || []).forEach(x => { if(!liveIds[x.id]) seenIds[x.id] = 1; });
-  const passed  = Object.keys(seenIds).length;
-  const idx     = passed + Math.min(QZ.pos + 1, Math.max(total, 1));
-  const totalAll = passed + total;
+  /* [чат 158, Д-153-7] Числа в шапке жили по разным правилам, и человек искал
+     между ними арифметику, которой не было: «вопрос 12 из 24 · пройдено 11 ·
+     осталось 13» (12 + 13 ≠ 24), «3 из 7 · пройдено 0» — три нажатия «Дальше»
+     без единого ответа, «10 из 10 · осталось 3» — последний вопрос, после
+     которого ещё три. Хуже прочего, ВСЕГО убывало по ходу: 19 → 20 → 15 → 19 →
+     24 → 13 → 15 → 7. Пройденные брались из истории предъявленных, а она
+     обрезается сороковой записью (qzScreen), и вопросы, ушедшие из очереди
+     непоказанными, не попадали ни в «пройдено», ни во «всего». Убывающее
+     «всего» человек читает как «моя работа не сохранилась» — ровно это
+     Дмитрий и сказал на проходе 153.
+
+     Теперь «всего» — счётчик вопросов, которые хоть раз стояли в живой очереди
+     (QZ.ever, копится в qzList): он не убывает никогда, а рост объяснён
+     подписью ниже. «Пройдено» считается вычитанием, поэтому равенство
+     «пройдено + осталось = всего» выполняется по построению, а не по удаче.
+     Номер вопроса убран совсем: он рос от листания «Дальше», пока «пройдено»
+     стояло на месте, — два счётчика в одной строке противоречили друг другу,
+     и правдивым был только второй. */
+  const totalAll = Math.max(Object.keys(QZ.ever || {}).length, total);
+  const passed   = Math.max(0, totalAll - total);
   const isLate = !!QZ.later[q.id];
   const room = q.room ? (roomList().find(r => r.code === q.room) || null) : null;
 
@@ -11358,8 +11377,8 @@ function qzScreen(){
      с 114.1, но в опросе человек проводит больше времени, чем на нём. */
   return '<div style="position:sticky;top:0;z-index:50;background:#000;padding:8px 0 6px;margin:-4px 0 2px;box-shadow:0 8px 12px -10px rgba(0,0,0,.95)">' +
       '<div class="hello" style="margin:0">Опрос · ' + esc(objNowTitle()) + '</div>' +
-      '<div class="sub" style="margin:2px 0 0">вопрос ' + idx + " из " + totalAll +
-        " · пройдено " + passed + " · осталось " + total +
+      '<div class="sub" style="margin:2px 0 0">пройдено ' + passed + " из " + totalAll +
+        " · осталось " + total +
         (later ? (" · отложено " + later) : "") +
         (room ? (" · " + esc(qzName(room))) : "") + "</div>" +
       /* [чат 131, Д-130-2 п. 2] Знаменатель — длина ЖИВОЙ очереди, а она
@@ -14279,7 +14298,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "156.1";
+const BUILD = "157.1";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
