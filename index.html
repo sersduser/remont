@@ -2932,6 +2932,14 @@ function profPicked(code){                      // выбор одного по�
 }
 
 // Сколько единиц работы даёт помещение по базе объёма из справочника
+/* [153, Д-153-2] Пусто ли поле обмера. Ноль — это заданный ноль, а не пустота:
+   у шахты потолка может не быть вовсе, и подменять такой ноль расчётом нельзя. */
+function volEmpty(v){ return v === null || v === undefined || v === ""; }
+function volOrCalc(saved, calc){
+  if(!volEmpty(saved)) return saved;
+  try{ const v = calc(); return (v === null || v === undefined || !(Number(v) > 0)) ? null : Number(v); }
+  catch(e){ return null; }
+}
 function profVol(kind, room){
   if(!kind || !room) return null;
   const part = b => {
@@ -2946,8 +2954,16 @@ function profVol(kind, room){
       return null;
     }
     if(b === 'пол')       return room.floor_m2;
-    if(b === 'потолок')   return room.ceiling_m2;
-    if(b === 'стены')     return room.wall_m2;
+    /* [153, Д-153-2] Потолок и стены брались ТОЛЬКО из полей записи помещения.
+       Поля заполняются отдельным действием «пересчитать», и пока человек его
+       не сделал, все работы по потолку и стенам стояли «нет обмеров» — при
+       заданных поле, периметре и высоте. В проходе Дмитрия 15.08 это дало
+       «без объёма: 25 из 43» и смету из двух строк. Площадь потолка равна
+       площади пола (геометрия, а не догадка), площадь стен считает roomWalls
+       по периметру, высоте и заведённым проёмам. Записанное поле по-прежнему
+       главнее расчёта: правка добавляет расчёт только там, где поле пусто. */
+    if(b === 'потолок')   return volOrCalc(room.ceiling_m2, () => (Number(room.floor_m2) > 0 ? Number(room.floor_m2) : null));
+    if(b === 'стены')     return volOrCalc(room.wall_m2, () => roomWalls(room));
     if(b === 'периметр')  return room.perimeter_m;
     if(b === 'окна')      return room.windows;
     if(b === 'двери')     return room.doors;
@@ -2995,8 +3011,9 @@ function profVolWhy(kind, room){
         if(q) v = elemOf(room.code).length ? elemVol(room.code, q.src, q.role, q.side, kind.unit)
                 : (q.src === 'двери' ? room.doors : (q.src === 'окна' ? room.windows : null));
         else if(nm === 'пол')      v = room.floor_m2;
-        else if(nm === 'потолок')  v = room.ceiling_m2;
-        else if(nm === 'стены')    v = room.wall_m2;
+        /* [153, Д-153-2] причина считается по тем же правилам, что и объём */
+        else if(nm === 'потолок')  v = volOrCalc(room.ceiling_m2, () => (Number(room.floor_m2) > 0 ? Number(room.floor_m2) : null));
+        else if(nm === 'стены')    v = volOrCalc(room.wall_m2, () => roomWalls(room));
         else if(nm === 'периметр') v = room.perimeter_m;
         else if(nm === 'окна')     v = room.windows;
         else if(nm === 'двери')    v = room.doors;
@@ -5703,6 +5720,7 @@ function elemBuild(){
     elemAdjBlock() +
     '<div id="vlist">' + rows + '</div>' +
     (plan.length > 14 ? '<div class="vd">и ещё: ' + (plan.length - 14) + '</div>' : '') +
+    '<div id="elemErr"></div>' +
     '<div class="vrow">' +
       '<button class="vbtn-cancel" onclick="closeVSheet()">Отмена</button>' +
       '<button class="vbtn-ok" id="elemGo" onclick="elemBuildGo()">Построить</button>' +
@@ -5732,7 +5750,26 @@ async function elemBuildGo(){
     toast("Схема построена: " + rows.length + " проёмов");
     await load();
     render();
-  }catch(e){ toast(e.message, "err"); }
+  }catch(e){
+    /* [154, Д-153-3] Отказ больше не стирает собранное: окно остаётся, план
+       цел, кнопка зовёт повторить, причина названа словами, а если лист
+       объекта не заведён — рядом стоит кнопка, которая это чинит. */
+    const текст = (e && e.message) || "Сервер не принял запись";
+    const лист  = (e && e.noSheet) || "";
+    const блок  = document.getElementById("elemErr");
+    if(блок){
+      блок.innerHTML =
+        '<div class="warnbox" style="margin-top:10px">' + esc(текст) + '</div>' +
+        (лист
+          ? '<div class="vs">Лист <b>' + esc(лист) + '</b> у этого объекта не заведён — серверу некуда положить проёмы. ' +
+            'Кнопка ниже создаст недостающие листы объекта; то, что уже есть, не тронется.</div>' +
+            '<button class="vbtn-ok" style="width:100%;margin-top:6px" onclick="objectSheets()">Подготовить листы объекта</button>'
+          : '<div class="vs">Собранное здесь не потеряно — можно повторить.</div>');
+    }
+    const b = document.getElementById("elemGo");
+    if(b){ b.disabled = false; b.textContent = "Повторить"; }
+    toast(текст, "err");
+  }
   ELEM_BUSY = false;
 }
 
@@ -6790,7 +6827,7 @@ async function writeCell(sheet, code, field, value){
     body: JSON.stringify({ initData: INIT, key: KEY, sheet: sheet, code: code, field: field, value: value })
   });
   const txt = (await r.text()).trim();
-  if (!r.ok || !txt) throw new Error('Не удалось сохранить ' + code);
+  if (!r.ok || !txt) throw srvFail(txt, 'Не удалось сохранить ' + code);
   patch(sheet, code, field, value);
   return true;
 }
@@ -7141,15 +7178,56 @@ async function crewCell(sheet, code, field, value){
   const r = await fetch(API + "/update", { method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ initData: INIT, key: KEY, sheet: sheet, code: code, field: field, value: value }) });
   const t = (await r.text()).trim();
-  if(!r.ok || !t) throw new Error("Не удалось сохранить (" + field + ")");
+  if(!r.ok || !t) throw srvFail(t, "Не удалось сохранить (" + field + ")");
   return true;
 }
+/* ══════════════════════════════════════════════════════════════
+   ОТКАЗ ЗАПИСИ НАЗЫВАЕТ ПРИЧИНУ [154, по Д-153-3]
+   Урок Д-151-6 записан, но исполнен только наполовину: отказ, о котором
+   нельзя узнать, читается как отказ другого узла. Сервер называет причину
+   словами — «403: … не может дописывать строки в 13_Элементы»,
+   «500: не прочитал шапку листа 13_Элементы», «401: данные устарели», — а
+   панель выбрасывала этот текст и говорила своё «Сервер не принял запись».
+   15.08 в 03:44 Дмитрий собрал смежность и 13 проёмов «Юнусабад 13», нажал
+   «Построить» и получил красную плашку без причины; исполнение n8n #36450
+   в тот же миг записало «не прочитал шапку листа 13_Элементы [line 94]» —
+   то есть у объекта нет листа, а лечение (кнопка «Подготовить листы
+   объекта») лежит в этой же панели и человеку не предлагается.
+   ══════════════════════════════════════════════════════════════ */
+function srvWhy(txt){
+  const s = String(txt || "").trim();
+  if(!s) return "";
+  let m = "";
+  try{
+    const j = JSON.parse(s);
+    m = (j && (j.message || j.error || j.reason || (j.data && j.data.message))) || "";
+    if(m && typeof m !== "string") m = "";
+  }catch(e){}
+  m = String(m || s).trim();
+  /* n8n оборачивает текст узла служебным хвостом — человеку нужна суть */
+  m = m.replace(/^Error:\s*/i, "").replace(/\s*\[line\s*\d+\]\s*$/i, "").trim();
+  if(m.length > 220) m = m.slice(0, 217) + "…";
+  return m;
+}
+/* У части отказов лечение уже есть в панели: лист объекта не заведён —
+   значит нужна кнопка «Подготовить листы объекта», а не совет позвонить. */
+function noSheetIn(msg){
+  const m = /не прочитал шапку листа\s+([^\s"',;]+)/i.exec(String(msg || ""));
+  return m ? m[1] : "";
+}
+function srvFail(txt, fallback){
+  const why = srvWhy(txt);
+  const e = new Error(why ? (fallback + ": " + why) : fallback);
+  e.srv = why; e.noSheet = noSheetIn(why);
+  return e;
+}
+
 async function crewAppend(sheet, rows){
   const r = await fetch(API + "/append", { method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ initData: INIT, key: KEY, sheet: sheet, rows: rows }) });
   const t = (await r.text()).trim();
   let ok = false; try{ ok = !!(t && JSON.parse(t).ok); }catch(e){}
-  if(!r.ok || !ok) throw new Error("Сервер не принял запись");
+  if(!r.ok || !ok) throw srvFail(t, "Сервер не принял запись");
   return true;
 }
 
@@ -8475,6 +8553,14 @@ function objsSwitch(key){
      показывал договор ПРЕЖНЕГО объекта, пока его не перезагрузили руками. */
   D = null; INVS = null; CREW_DATA = null;
   CONTRACTS = null; PLAN = null; ADDENDA = null; ADD_QTY = {};
+  /* [153, Д-153-1] Профиль ремонта в этот список не входил, и план
+     оставался в памяти от прежнего объекта: на чужом объекте стояли
+     его работы с кодами помещений, которых там нет, а profilePull()
+     начинается с `if(PROF_PULLED) return false` — то есть профиль
+     нового объекта не запрашивался вовсе. Хуже показа: первая же
+     правка писала чужой план в базу текущего объекта (profPush шлёт
+     D.object_id). Найдено живым проходом слота 8 на трёх объектах. */
+  PROF = null; PROF_PULLED = 0; PROF_SRV = null;
   /* [138, Д-137-4] Здесь стоял back(), и он ронял всё переключение.
      Кэши только что обнулены, а back() перерисовывает экран под стеком —
      home() по пустому D бросал исключение, оно всплывало наружу, и ни
@@ -12439,6 +12525,37 @@ function vLikeFill(r){
               : (r._like.part && r.like && r.like.why === "nopart" ? "nopart" : "empty"));
   return r;
 }
+/* ══════════════════════════════════════════════════════════════
+   ЧТО ПРИХОДИТ ОТМЕЧЕННЫМ [154.2, Д-153-6 · алгоритм Дмитрия Б9 15.08 04:01]
+   До 154.2 отметка стояла по одному признаку — «объём посчитался». В проходе
+   15.08 это дало каскад: «в спальне два, как в зале» перенесло 12 работ и
+   отметило 2, потому что у принимающего помещения не было обмеров; следующая
+   отсылка «как в спальне два» перенесла уже только эти две. Десять работ
+   снимались молча, и человек видел в итоге «Спальня два — 2 отмечено» при
+   двенадцати продиктованных.
+   Слова Дмитрия: «очевидным можно считать перенос работ по полу, стенам и
+   потолку. Остальные элементы (двери, окна) адаптировать под имеющуюся
+   информацию о количестве».
+   Отсюда правило: работа по ПОВЕРХНОСТИ помещения переносится отмеченной
+   всегда — её объём появится вместе с обмерами и ничего не подменяет.
+   Работа по ЭЛЕМЕНТАМ (двери, окна) отмечается только там, где у принимающего
+   помещения эти элементы есть: их количество берётся из него самого, а не из
+   образца (это уже делает profVol по базе вида). «Уже в смете» и «предложено
+   вместо названной части» не отмечаются по-прежнему — там решает человек.
+   ══════════════════════════════════════════════════════════════ */
+const БАЗА_ПОВЕРХНОСТИ = ["пол", "стены", "потолок", "периметр"];
+function likeSurface(k){
+  const base = String((k && k.base) || "").trim();
+  if(!base) return false;
+  return base.split("+").some(p => БАЗА_ПОВЕРХНОСТИ.indexOf(p.trim()) >= 0);
+}
+function likeSel(k){
+  if(!k || k.already || k.offer) return false;
+  if(!k.novol) return true;                 // объём есть — как и раньше
+  if(k.src !== "like") return false;        // правило Б9 — только про перенос «как в X»
+  return likeSurface(k);                    // поверхности едут отмеченными без объёма
+}
+
 /* Строка-объяснение переноса: у отсылки четыре исхода, и у каждого свои слова
    (правило четырёх исходов, К4-132) — перенесли · образец пуст · образец не
    узнан · «как здесь же». Пятый молчаливый исход был бы возвратом дефекта. */
@@ -12525,7 +12642,7 @@ function showVRepair(d){
     loadCatalog().then(function(){ if(VREP_D === d) showVRepair(d); }).catch(function(){});
   }
   vRep = list.map(r => vLikeFill({ ...r, kinds: (r.kinds || []).map(k => ({ ...k })) }))
-             .map(r => ({ ...r, kinds: (r.kinds || []).map(k => ({ ...k, _sel: !k.already && !k.novol && !k.offer })) }));
+             .map(r => ({ ...r, kinds: (r.kinds || []).map(k => ({ ...k, _sel: likeSel(k) })) }));
   const quote = d.recognized ? `<div class="vquote" onclick="this.classList.toggle('op')">Расслышал: <b>${esc(d.recognized)}</b><span class="vq-more">коснитесь, чтобы развернуть или свернуть</span></div>` : "";
   if(!list.length){
     tg?.HapticFeedback?.notificationOccurred("warning");
@@ -12553,7 +12670,7 @@ function showVRepair(d){
         <div class="vchk">✓</div>
         <div style="flex:1;min-width:0">
           <div class="vv">${esc(k.name)}<span style="opacity:.6"> · ${esc(k.unit || "")}</span></div>
-          <div class="vd">${esc(k.code)}${vRepVol(r.code, k.code, k)}${k.src === "tech" ? " · добавлено по технологии" : ""}${k.src === "like" ? " · как в «" + esc((r._like && r._like.name) || (r.like && r.like.name) || "образце") + "»" : ""}${k.offer ? ' · <span style="opacity:.75">предложено вместо части «' + esc((r._like && (r._like.partSaid || r._like.part)) || "") + '»</span>' : ""}${k.novol && !vRepVol(r.code, k.code, k) ? ' · <span style="color:var(--warn)">' + esc(novolNote(r.code, k)) + '</span>' : ""}${k.already ? ' · <span style="color:#ff9f0a">уже в смете</span>' : ""}${profCanSkip(k.code) ? ' · <span style="opacity:.75">можно пропустить — решится в профиле</span>' : ""}</div>
+          <div class="vd">${esc(k.code)}${vRepVol(r.code, k.code, k)}${k.src === "tech" ? " · добавлено по технологии" : ""}${k.src === "like" ? " · как в «" + esc((r._like && r._like.name) || (r.like && r.like.name) || "образце") + "»" : ""}${k.offer ? ' · <span style="opacity:.75">предложено вместо части «' + esc((r._like && (r._like.partSaid || r._like.part)) || "") + '»</span>' : ""}${k.novol && !vRepVol(r.code, k.code, k) ? ' · <span style="color:var(--warn)">' + esc(novolNote(r.code, k)) + (k._sel && k.src === "like" ? ' — работа в плане останется, объём появится с обмерами' : '') + '</span>' : ""}${k.already ? ' · <span style="color:#ff9f0a">уже в смете</span>' : ""}${profCanSkip(k.code) ? ' · <span style="opacity:.75">можно пропустить — решится в профиле</span>' : ""}</div>
         </div>
       </div>`).join("");
     const tech = r.kinds.filter(k => k.src === "tech").length;
@@ -14022,7 +14139,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "152.2";
+const BUILD = "154.2";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
