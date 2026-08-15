@@ -176,9 +176,13 @@ input[type=number]{text-align:center}
   box-shadow:inset 0 0 0 1px rgba(128,128,128,.26);
   padding:12px;margin-bottom:8px;cursor:pointer;transition:background .12s,box-shadow .12s}
 .vitem.sel{background:rgba(48,209,88,.16);box-shadow:inset 0 0 0 2px var(--ok)}
+/* [155.2, требование Дмитрия 15.08 03:58] «Не выбрано — без галки и фона».
+   В 152.2 сняли фон, а символ «✓» остался нарисованным серым и читался как
+   отметка. Теперь он виден только у выбранной строки; пустой квадрат остаётся
+   — он говорит, что строку можно отметить. */
 .vitem .vchk{width:22px;height:22px;border-radius:6px;border:2px solid var(--hint);flex:0 0 22px;
-  margin-top:1px;display:flex;align-items:center;justify-content:center;font-size:14px;color:#fff}
-.vitem.sel .vchk{background:var(--ok);border-color:var(--ok)}
+  margin-top:1px;display:flex;align-items:center;justify-content:center;font-size:14px;color:transparent}
+.vitem.sel .vchk{background:var(--ok);border-color:var(--ok);color:#fff}
 .vitem .vt{font-size:14px;font-weight:500;line-height:1.3}
 .vitem .vd{font-size:12px;color:var(--hint);margin-top:2px}
 .vitem .vv{font-size:13px;margin-top:3px}
@@ -645,6 +649,24 @@ async function fetchT(url, opts, ms, чего){
     throw err;
   }finally{ clearTimeout(tmo); }
 }
+/* ══ [155.4, Д-153-14] Сторож экрана загрузки ═══════════════════════════════
+   Срок у запроса (`fetchT`, 137) отвечает на вопрос «ответил ли сервер».
+   Человек же смотрит на экран и спрашивает другое: «сколько ещё ждать».
+   Между этими вопросами и жил дефект: «Загружаю объект…» висело без конца,
+   когда загрузка обрывалась мимо ветки отказа. Сторож мерит видимое —
+   сколько экран стоит пустым, — и через 12 секунд даёт человеку слова и две
+   дороги вместо бесконечной надписи. */
+let LOAD_WATCH = null, LOAD_STUCK = false;
+function loadWatch(on){
+  if(!on){ if(LOAD_WATCH){ clearTimeout(LOAD_WATCH); LOAD_WATCH = null; } LOAD_STUCK = false; return; }
+  if(LOAD_WATCH || LOAD_STUCK) return;                 // render() зовётся часто — сторож один
+  LOAD_WATCH = setTimeout(function(){
+    LOAD_WATCH = null;
+    if(!D){ LOAD_STUCK = true; try{ render(); }catch(_){} }
+  }, 12000);
+}
+function loadRetry(){ LOAD_STUCK = false; loadWatch(false); try{ render(); }catch(_){} load(); }
+
 async function load(){
   try{
     /* Погашение кода из ссылки [чат 089]. До этой правки accept звался только
@@ -679,6 +701,7 @@ async function load(){
     if(D && D.need_setup){ renderSetup(D); return; }
     if(!D || !D.role) throw new Error(BAD);
     OBJ_SWITCH = null;                      /* [138.3] объект открылся */
+    loadWatch(false);                       /* [155.4] данные есть — сторож не нужен */
     render();
     evApply();                              // [чат 144] ссылка возврата из сообщения бота
     /* [124] Серверный список объектов запрашивался ТОЛЬКО при открытии экрана
@@ -8393,6 +8416,13 @@ async function exportBook(){
 /* Блок на экране «Объект». Сводка обязательна (§11.2 п. 5): кнопка без отчёта
    неотличима от кнопки, которая ничего не делает. */
 function exportBox(){
+  /* [155.2] Google-таблицы на экране объекта больше нет: решение Дмитрия 15.08
+     «уходим совсем» (151) и вопрос с прохода 16.08 01:46 «Блок про таблицу
+     нужен здесь?». Блок обещал витрину, которой в новой модели не будет, и
+     предлагал переписать книгу из базы — действие без смысла после ухода.
+     Строка ниже — вся правка: вернуть блок стоит её снятия, а не сборки
+     заново по памяти (серверный Google-хвост ещё не выкачен). */
+  return "";
   if(!canExport()) return "";
   return '<div class="stat">' +
     '<div class="r"><span class="k">Google-таблица</span>' +
@@ -8734,7 +8764,9 @@ function objBarDraw(){
   const html =
     '<div style="min-width:0;flex:1 1 auto">' +
       '<div class="ob-t">🏠 ' + esc(title) + '</div>' +
-      '<div class="ob-s">' + (role ? esc(role) : 'объект') +
+      /* [155.4, Д-153-14] Пока роль неизвестна, слово «объект» стояло там, где
+         человек читает «заказчик» или «бригадир», и выглядело как роль. */
+      '<div class="ob-s">' + (role ? esc(role) : 'загружается…') +
         (n > 1 ? (' · объектов ' + n) : '') + '</div>' +
     '</div>' +
     '<div class="ob-b">' + (n > 1 ? 'Сменить' : 'Мои объекты') + '</div>';
@@ -9101,7 +9133,18 @@ invites(){
 home(){
   /* [138] Экран, который читает D, обязан переживать его отсутствие:
      объект в момент переключения существует, а данных ещё нет. */
-  if (!D) return '<div class="load">Загружаю объект…</div>';
+  if (!D){
+    /* [155.4, Д-153-14] */
+    if(LOAD_STUCK) return '' +
+      '<div class="stat">' +
+        '<div class="r"><span class="k">Объект не открылся</span></div>' +
+        '<div class="m">Данные не пришли за 12 секунд. Обычно это связь или занятый сервер: он бывает медленным на тяжёлых объектах. Ничего не потеряно — попробуйте ещё раз или выберите объект из списка.</div>' +
+        '<button onclick="loadRetry()" style="width:100%;margin-top:10px;padding:11px;border-radius:11px;border:0;background:#0a84ff;color:#fff;font-size:15px">Ещё раз</button>' +
+        '<button onclick="go(\'objsel\')" style="width:100%;margin-top:8px;padding:11px;border-radius:11px;border:0;background:#2c2c2e;color:#fff;font-size:15px">К объектам</button>' +
+      '</div>';
+    loadWatch(true);
+    return '<div class="load">Загружаю объект…</div>';
+  }
   if (D.kind === "hand") return handHome();   // контур работника [чат 013]
   const worker = D.role === "worker";
   const p = progress();
@@ -12556,6 +12599,41 @@ function likeSel(k){
   return likeSurface(k);                    // поверхности едут отмеченными без объёма
 }
 
+/* ══ [155.1, вопрос Дмитрия 16.08 01:40 «Что означает лишний пункт про
+   финишное покрытие?»] ═══════════════════════════════════════════════════
+   Достройка по технологии читает поле справочника «Зависит_от_видов», а оно
+   несёт ОЧЕРЁДНОСТЬ, а не состав: у DV-02 «Дверь межкомнатная: установка»
+   там стоит PL-04 «Укладка финишного покрытия» — потому что дверь ставят
+   после чистового пола. Сервер достраивает предшественника, панель ставит
+   галочку (объём-то считается), и разговор про одну дверь кладёт в профиль
+   укладку пола на всю комнату.
+
+   Правило: достроенное отмечается только там, где его поверхность совпала с
+   поверхностью хотя бы одного из НАЗВАННЫХ вслух видов того же помещения.
+   Поверхность считается тем же vPartsOfKind, что и перенос «как в X»: одно
+   понятие — одна функция. Строка при этом остаётся на экране и говорит,
+   почему не отмечена: молчаливое исчезновение — возврат дефекта 132.
+
+   Границу поверхностей в справочнике на 16.08 пересекает ровно одна пара из
+   74 однозначных зависимостей — DV-02 → PL-04. Правило написано не под неё
+   одну, а под класс: следующая такая пара тоже не проедет молча. */
+function repParts(k){
+  try { return Object.keys(vPartsOfKind(k) || {}); } catch(e){ return []; }
+}
+function repCross(k, kinds){
+  if(!k || k.src !== "tech") return false;
+  const свои = repParts(k);
+  if(!свои.length) return false;                       // поверхность не определена — не судим
+  const сказанные = {};
+  (kinds || []).forEach(x => { if(x && x.src === "said") repParts(x).forEach(p => { сказанные[p] = true; }); });
+  if(!Object.keys(сказанные).length) return false;     // сказанного с поверхностью нет — не судим
+  return !свои.some(p => сказанные[p]);
+}
+function repSel(k, kinds){
+  if(repCross(k, kinds)) return false;
+  return likeSel(k);
+}
+
 /* Строка-объяснение переноса: у отсылки четыре исхода, и у каждого свои слова
    (правило четырёх исходов, К4-132) — перенесли · образец пуст · образец не
    узнан · «как здесь же». Пятый молчаливый исход был бы возвратом дефекта. */
@@ -12631,6 +12709,37 @@ function vRepVol(roomCode, code, k){
     return ' · <b>' + calc + '</b>';
   }catch(e){ return ''; }
 }
+/* ══ [155.3, снимок Дмитрия 16.08 01:42] ══════════════════════════════════
+   Сервер разбирает речь участками, а не помещениями: три проёма коридора,
+   названные одной фразой, приезжают двумя записями с одним кодом «Коридор» —
+   и панель рисовала два блока с одинаковым заголовком подряд.
+
+   Сливаем записи одного помещения в один блок. Виды объединяются по коду:
+   `said` вытесняет `tech` (названное вслух главнее достроенного), пометки
+   `already` и `novol` сохраняются от любой из записей. Незаведённые
+   помещения (isNew) и записи без кода не сливаются: у них свои сообщения. */
+function vRepMerge(list){
+  const порядок = [], по = {};
+  (Array.isArray(list) ? list : []).forEach(r => {
+    const код = String((r && r.code) || "").trim();
+    if(!код || r.isNew){ порядок.push(r); return; }
+    if(!по[код]){ по[код] = { ...r, kinds: (r.kinds || []).map(k => ({ ...k })) }; порядок.push(по[код]); return; }
+    const цель = по[код];
+    цель._like = цель._like || r._like;
+    цель.like  = цель.like  || r.like;
+    (r.kinds || []).forEach(k => {
+      const был = (цель.kinds || []).find(x => String(x.code) === String(k.code));
+      if(!был){ цель.kinds.push({ ...k }); return; }
+      if(был.src !== "said" && k.src === "said") был.src = "said";     // речь главнее достройки
+      if(k.already) был.already = true;
+      if(!k.novol)  был.novol   = false;                              // объём нашёлся хоть в одной записи
+      if(k.qty_said != null && был.qty_said == null) был.qty_said = k.qty_said;
+    });
+    цель.kinds.sort((x, y) => (x.src === y.src) ? 0 : (x.src === "said" ? -1 : 1));
+  });
+  return порядок;
+}
+
 let VREP_D = null;
 function showVRepair(d){
   const list = Array.isArray(d.rooms) ? d.rooms : [];
@@ -12641,8 +12750,8 @@ function showVRepair(d){
   if(!(D && D.catalog)){
     loadCatalog().then(function(){ if(VREP_D === d) showVRepair(d); }).catch(function(){});
   }
-  vRep = list.map(r => vLikeFill({ ...r, kinds: (r.kinds || []).map(k => ({ ...k })) }))
-             .map(r => ({ ...r, kinds: (r.kinds || []).map(k => ({ ...k, _sel: likeSel(k) })) }));
+  vRep = vRepMerge(list).map(r => vLikeFill({ ...r, kinds: (r.kinds || []).map(k => ({ ...k })) }))
+             .map(r => ({ ...r, kinds: (r.kinds || []).map(k => ({ ...k, _sel: repSel(k, r.kinds) })) }));
   const quote = d.recognized ? `<div class="vquote" onclick="this.classList.toggle('op')">Расслышал: <b>${esc(d.recognized)}</b><span class="vq-more">коснитесь, чтобы развернуть или свернуть</span></div>` : "";
   if(!list.length){
     tg?.HapticFeedback?.notificationOccurred("warning");
@@ -12670,10 +12779,11 @@ function showVRepair(d){
         <div class="vchk">✓</div>
         <div style="flex:1;min-width:0">
           <div class="vv">${esc(k.name)}<span style="opacity:.6"> · ${esc(k.unit || "")}</span></div>
-          <div class="vd">${esc(k.code)}${vRepVol(r.code, k.code, k)}${k.src === "tech" ? " · добавлено по технологии" : ""}${k.src === "like" ? " · как в «" + esc((r._like && r._like.name) || (r.like && r.like.name) || "образце") + "»" : ""}${k.offer ? ' · <span style="opacity:.75">предложено вместо части «' + esc((r._like && (r._like.partSaid || r._like.part)) || "") + '»</span>' : ""}${k.novol && !vRepVol(r.code, k.code, k) ? ' · <span style="color:var(--warn)">' + esc(novolNote(r.code, k)) + (k._sel && k.src === "like" ? ' — работа в плане останется, объём появится с обмерами' : '') + '</span>' : ""}${k.already ? ' · <span style="color:#ff9f0a">уже в смете</span>' : ""}${profCanSkip(k.code) ? ' · <span style="opacity:.75">можно пропустить — решится в профиле</span>' : ""}</div>
+          <div class="vd">${esc(k.code)}${vRepVol(r.code, k.code, k)}${k.src === "tech" ? (repCross(k, r.kinds) ? ' · <span style="color:var(--warn)">по технологии идёт раньше — отметьте, если делаем и это</span>' : " · добавлено по технологии") : ""}${k.src === "like" ? " · как в «" + esc((r._like && r._like.name) || (r.like && r.like.name) || "образце") + "»" : ""}${k.offer ? ' · <span style="opacity:.75">предложено вместо части «' + esc((r._like && (r._like.partSaid || r._like.part)) || "") + '»</span>' : ""}${k.novol && !vRepVol(r.code, k.code, k) ? ' · <span style="color:var(--warn)">' + esc(novolNote(r.code, k)) + (k._sel && k.src === "like" ? ' — работа в плане останется, объём появится с обмерами' : '') + '</span>' : ""}${k.already ? ' · <span style="color:#ff9f0a">уже в смете</span>' : ""}${profCanSkip(k.code) ? ' · <span style="opacity:.75">можно пропустить — решится в профиле</span>' : ""}</div>
         </div>
       </div>`).join("");
     const tech = r.kinds.filter(k => k.src === "tech").length;
+    const techX = r.kinds.filter(k => k.src === "tech" && repCross(k, r.kinds)).length;
     const lik  = r.kinds.filter(k => k.src === "like" && !k.offer).length;
     const ofr  = r.kinds.filter(k => k.offer).length;
     const nov  = r.kinds.filter(k => k.novol && !k.offer).length;
@@ -12699,7 +12809,7 @@ function showVRepair(d){
       </div>`).join("");
     const rfHead = (r.refused || []).length ? '<div class="vd" style="margin:8px 0 2px">Отказано голосом</div>' : "";
     const ref = (r.refused || []).length;
-    const note = [lik ? `перенесено из «${(r._like && r._like.name) || ""}»: ${lik}` : "", ofr ? `предложено целиком: ${ofr} — не отмечено` : "", nov ? `без объёма здесь: ${nov} — не отмечено` : "", tech ? `по технологии добавлено: ${tech}` : "", dup ? `уже в смете: ${dup} — не отмечено` : "", ref ? `отказано: ${ref}` : "", skp ? `этапов можно пропустить: ${skp} — решается в профиле` : ""].filter(Boolean).join(" · ");
+    const note = [lik ? `перенесено из «${(r._like && r._like.name) || ""}»: ${lik}` : "", ofr ? `предложено целиком: ${ofr} — не отмечено` : "", nov ? `без объёма здесь: ${nov} — не отмечено` : "", tech ? (`по технологии добавлено: ${tech}` + (techX ? ` · из них ${techX} не отмечено: другая поверхность` : "")) : "", dup ? `уже в смете: ${dup} — не отмечено` : "", ref ? `отказано: ${ref}` : "", skp ? `этапов можно пропустить: ${skp} — решается в профиле` : ""].filter(Boolean).join(" · ");
     return `<div style="margin-bottom:12px">${head}${note ? `<div class="vd" style="margin:2px 0 6px">${esc(note)}</div>` : ""}${kl}${rfHead}${rf}
       </div>`;
   }).join("");
@@ -14139,7 +14249,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "154.2";
+const BUILD = "155.4";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
