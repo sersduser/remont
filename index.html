@@ -14,6 +14,9 @@
   --btn:  var(--tg-theme-button-color, #5288c1);
   --btxt: var(--tg-theme-button-text-color, #ffffff);
   --ok:#4dcd5e; --warn:#f5a623; --bad:#e5484d; --link:#6ab3f3;
+  /* [159.1] Надпись НА оранжевом фоне: тёмная, потому что сам оранжевый
+     здесь яркий. В светлой теме роль переопределяется — см. html.light. */
+  --warntxt:#1c1c1e;
   /* Верхний запас [чат 128 · возвращён в :root в 146, Д-145-1]. Меньше
      максимума брать нельзя: viewport-fit=cover велит клиенту рисовать контент
      ПОД строкой статуса и шапкой Telegram, и кто именно сообщит размер этой
@@ -35,6 +38,11 @@
    Telegram сообщает её переменной --tg-theme-bg-color. */
 html.light{
   --ok:#1a7f37; --warn:#a15c00; --bad:#c00f0c; --link:#1a6dd9;
+  /* [159.1] На светлом фоне предупреждение тёмное (#a15c00) — надпись по
+     нему обязана быть белой. Прежний жёстко вписанный #1c1c1e давал
+     тёмное по тёмному: кнопка «Пересчитать» читалась хуже соседнего
+     текста ровно там, где должна звать сильнее всего. */
+  --warntxt:#ffffff;
 }
 *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
 body{background:var(--bg);color:var(--txt);font:15px/1.5 -apple-system,"Segoe UI",Roboto,sans-serif;
@@ -77,6 +85,11 @@ button,.tile{touch-action:manipulation}
 .tile .h{font-size:11px;color:var(--hint);margin-top:3px}
 .tile.pri{background:var(--btn);color:var(--btxt)}
 .tile.pri .h{opacity:.85;color:inherit}
+/* [159.1, снимок 1192] Плитка зовёт тем же цветом, каким на этой же
+   странице названа беда: «подсвечивать эту кнопку оранжевым, как один из
+   путей к устранению оранжевых меток неготовности». */
+.tile.warnpri{background:var(--warn);color:var(--warntxt)}
+.tile.warnpri .h{opacity:.9;color:inherit}
 
 .card{background:var(--sec);border-radius:12px;padding:14px;margin-bottom:10px}
 .card .lbl{font-size:11px;color:var(--hint);text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px}
@@ -10081,6 +10094,13 @@ object(){
   const rooms = roomList();
   const plan  = objPlan();
   const gap   = roomGap();
+  /* [159.1, снимок 1192] «Эту кнопку удобно использовать, когда не хочешь
+     разбираться в деталях нижеизложенной информации — просто вопросы и просто
+     ответы». Опрос — второй путь к тому же результату, что и ручное
+     заполнение карточек, и он обязан звать так же громко: считаем ровно то,
+     что помечено оранжевым в карточках (roomTodo — семь полей обмеров плюс
+     судьба каждого проёма), и красим плитку, пока долг есть. */
+  const долгВсего = rooms.reduce((s, r) => s + roomTodo(r), 0);
   const rows  = rooms.map(r => {
     const w    = roomWalls(r);
     const need = (v) => (v === null || v === undefined || v === "");
@@ -10099,7 +10119,7 @@ object(){
            незаданным, — значит зовёт тем же цветом, каким названа беда.
            Когда чинить нечего (значения есть, расходятся с обмерами), кнопка
            остаётся служебно-серой: это уже уточнение, а не долг. */
-        ((need(r.wall_m2) || need(r.ceiling_m2)) ? 'var(--warn);color:#1c1c1e;font-weight:600' : '#3a3a3c;color:#fff') +
+        ((need(r.wall_m2) || need(r.ceiling_m2)) ? 'var(--warn);color:var(--warntxt);font-weight:600' : '#3a3a3c;color:#fff') +
         ';font-size:13px">Пересчитать</button></div>'
       : "";
     const todo = roomTodo(r);
@@ -10165,7 +10185,8 @@ object(){
         ? (rooms.length + " помещений" + (gap.length ? (" · в " + gap.length + " не заданы проёмы") : " · обмеры полны"))
         : "помещений нет — начните с опроса") + "</div>" +
     '<div class="grid">' +
-      '<button class="tile pri" onclick="qzStart()"><span class="ic">🧭</span><span class="nm">Пройти<br>вопросами</span><div class="h">система спросит сама</div></button>' +
+      '<button class="tile ' + (долгВсего ? "warnpri" : "pri") + '" onclick="qzStart()"><span class="ic">🧭</span><span class="nm">Пройти<br>вопросами</span>' +
+        '<div class="h">' + (долгВсего ? (долгВсего + " не заполнено — спросит по одному") : "система спросит сама") + "</div></button>" +
       '<button class="tile" onclick="startVoice(\'rooms\')"><span class="ic">🎤</span><span class="nm">Продиктовать<br>размеры</span><div class="h">пол, потолок, окна, двери</div></button>' +
       '<button class="tile" onclick="objPick()"><span class="ic">🗺️</span><span class="nm">' + (plan ? "Заменить план" : "Загрузить план") + '</span><div class="h">фото плана БТИ</div></button>' +
     "</div>" +
@@ -11482,10 +11503,28 @@ function qzScreen(){
      с 114.1, но в опросе человек проводит больше времени, чем на нём. */
   return '<div style="position:sticky;top:0;z-index:50;background:#000;padding:8px 0 6px;margin:-4px 0 2px;box-shadow:0 8px 12px -10px rgba(0,0,0,.95)">' +
       '<div class="hello" style="margin:0">Опрос · ' + esc(objNowTitle()) + '</div>' +
-      '<div class="sub" style="margin:2px 0 0">пройдено ' + passed + " из " + totalAll +
+      /* [159.1, снимок 1192] «Почему счётчик показывает именно "0/20"?»
+         Снимки 1192–1194 сняты на трёх разных вопросах подряд, и на всех
+         трёх стояло «пройдено 0 из 20»: человек листал «Дальше», а в счёт
+         идут ответы. Слово «пройдено» описывает путь по экранам — ровно то,
+         что человек и делал, — поэтому счётчик выглядел сломанным, будучи
+         верным. «Отвечено» называет то, что считается на самом деле. */
+      '<div class="sub" style="margin:2px 0 0">отвечено ' + passed + " из " + totalAll +
         " · осталось " + total +
         (later ? (" · отложено " + later) : "") +
         (room ? (" · " + esc(qzName(room))) : "") + "</div>" +
+      /* Полоса делает число видимым без чтения: ноль — это пустая полоса в
+         начале пути, а не отказ системы считать. */
+      '<div style="height:4px;border-radius:3px;background:rgba(125,139,153,.35);margin:6px 0 0;overflow:hidden">' +
+        '<div style="height:100%;width:' + (totalAll ? Math.round(passed * 100 / totalAll) : 0) + '%;background:var(--btn)"></div>' +
+      "</div>" +
+      /* Пока не отвечено ничего, счётчик и опыт человека расходятся сильнее
+         всего: экранов пройдено три, в счётчике ноль. Сказать об этом нужно
+         там же, где стоит число, и убрать, как только первый ответ объяснит
+         правило сам. */
+      (passed === 0
+        ? '<div class="m" style="margin:4px 0 0;color:var(--warn)">«Дальше» и «Позже» листают вопрос — в счёт идут только ответы</div>'
+        : "") +
       /* [чат 131, Д-130-2 п. 2] Знаменатель — длина ЖИВОЙ очереди, а она
          растёт от ответов: сказанное число окон и дверей заводит элементы, у
          каждого свои вопросы. Скачок «38 → 35 → 38» человек читал как «моя
@@ -14418,7 +14457,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "158.3";
+const BUILD = "159.1";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
