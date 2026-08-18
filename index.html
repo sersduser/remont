@@ -12411,13 +12411,21 @@ function vrElems(r) {
        относится: он ничего не затирает, у него нет прежнего значения — ровно
        тот же случай, что у пустого поля помещения, которое отмечается само. */
     const fresh = !near.length && !!side;
+    /* [160.2, Д-164-2] Форма, которой лист 13_Элементы не знает: у него есть
+       только ширина и высота. Сервер с чата 164 не выдаёт первые два числа за
+       габарит, а передаёт услышанное как есть — слова и все числа. Записывать
+       нечего, но показать обязаны: 18.08 такая реплика ушла в никуда, и человек
+       прочитал экран как «учтено». */
+    const форма = String(x.shape == null ? "" : x.shape).trim();
+    const числа = Array.isArray(x.nums) ? x.nums.filter(n => n != null) : [];
     return {
       said: String(x.side || x.side_code || ''), side: side,
       id: cur ? cur.id : '', many: near.length > 1,
       isNew: fresh, unknown: !side,
+      shape: форма, nums: числа,
       changes: ch, _sel: fresh
     };
-  }).filter(e => e.changes.length || e.unknown || e.many);
+  }).filter(e => e.changes.length || e.unknown || e.many || e.shape || (e.nums || []).length);
 }
 /* Подпись без предлога: «Проём → Кухня». Падежи в панели не склоняются нигде,
    а «проём в Кухня» читается как ошибка интерфейса. */
@@ -12462,13 +12470,17 @@ function showVRooms(d){
      Дмитрия 07.08, 02:58). Гасим и говорим словами. */
   const pickN = vRooms.reduce((s, r) => s
     + r.fields.length
-    + (r.elems || []).filter(e => !e.unknown && !e.many).length, 0);
+    + (r.elems || []).filter(e => !e.unknown && !e.many && !e.shape && !(e.nums || []).length).length, 0);
   /* [чат 132, Д-129-7] Сколько полей совпало с записанным. Сервер отдаёт их
      полем matched: прежде он выбрасывал такое помещение целиком, и панель
      показывала «Не разобрал» на фразу, понятую до последней цифры. */
   const matchedN = vRooms.reduce((s, r) => s + (r.matched || []).length, 0);
   const rows = vRooms.map((r, i) => {
-    const head = `<div class="vt">${esc(r.name || "помещение")}${r.isNew ? ' <span style="color:#ff9f0a">· новое</span>' : ""}</div>`;
+    /* [160.2] Ответ на вопрос про проём приходит без помещения: имени нет и
+       заводить нечего. Слово «помещение» в заголовке тут вводило бы в
+       заблуждение ровно там, где речь о проёме. */
+    const толькоПроёмы = !String(r.name || "").trim() && !(r.fields || []).length && (r.elems || []).length;
+    const head = `<div class="vt">${esc(r.name || (толькоПроёмы ? "Проём" : "помещение"))}${r.isNew ? ' <span style="color:#ff9f0a">· новое</span>' : ""}</div>`;
     /* [чат 158, Д-153-11] Просьба Дмитрия дословно (1098): «Наряду с
        производными значениями, должны отображаться и прямо введённые». Пол и
        периметр окно показывало, а сторон, из которых они посчитаны, не было
@@ -12493,6 +12505,16 @@ function showVRooms(d){
       </div>`).join("");
     const el = (r.elems || []).map((e, j) => {
       const where = vrSideLabel(e.side, e.said);
+      /* [160.2] Отмечать нечего — но услышанное видно, и сказано, почему оно
+         не записано. Тот же способ, что у отказа голосом и у проёмов в окне
+         работ: строка без галочки, приглушённая, с оранжевым пояснением. */
+      if(e.shape || (e.nums || []).length){
+        const чис = (e.nums || []).map(n => String(Math.round(Number(n) * 100) / 100).replace(".", ",")).join(" · ");
+        return `<div class="vitem" style="opacity:.85"><div class="vchk" style="opacity:.35">◇</div><div style="flex:1;min-width:0">
+          <div class="vv">Проём${where ? " → " + esc(where) : ""}${чис ? " · " + esc(чис) + " м" : ""}</div>
+          <div class="vd">${esc(e.shape || "форма сложнее прямоугольника")} · <span style="color:#ff9f0a">услышано, но не записано: в схеме проёмов есть только ширина и высота</span></div>
+        </div></div>`;
+      }
       if(e.unknown) return `<div class="vitem"><div class="vchk" style="opacity:.3">?</div><div style="flex:1;min-width:0"><div class="vv" style="color:#ff9f0a">Не понял, куда ведёт проём: ${esc(e.said)}</div></div></div>`;
       if(e.many) return `<div class="vitem"><div class="vchk" style="opacity:.3">?</div><div style="flex:1;min-width:0"><div class="vv" style="color:#ff9f0a">Проёмов → ${where} несколько — поправьте в карточке помещения</div></div></div>`;
       /* Разметка разводит интерфейс и данные по разным текстовым узлам:
@@ -14559,7 +14581,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "160.1";
+const BUILD = "160.2";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
