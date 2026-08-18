@@ -3675,6 +3675,28 @@ async function adjToggle(code, other){
   }catch(e){ toast(e.message, "err"); }
 }
 
+/* [158.2, снимок 1183] «Может имеет смысл добавить в перечень "подъезд/улица"
+   и таким образом помечать помещения с выходом вовне? Тем более, что бывают
+   квартиры с двумя выходами». Кнопкой-переключателем это поставить нельзя:
+   смежность пишется симметрично, в обе стороны, а у подъезда и улицы своей
+   строки нет — второй записи некуда лечь. Но данные уже есть: выход наружу
+   живёт проёмом со стороной «подъезд» или «улица». Поэтому показываем их
+   здесь метками состояния, собранными из схемы проёмов: перечень становится
+   полным, два выхода видны сразу, а запись не трогается. */
+const OUT_SIDES = ["подъезд", "улица"];
+function outChips(code){
+  const наружу = {};
+  (elemOf(code) || []).forEach(e => {
+    const s = String(elemSide(e, code) || "").toLowerCase().trim();
+    if(OUT_SIDES.indexOf(s) >= 0 && e.fact !== "нет") наружу[s] = (наружу[s] || 0) + 1;
+  });
+  return OUT_SIDES.filter(s => наружу[s]).map(s =>
+    '<span style="display:inline-block;margin:3px 4px 0 0;padding:6px 10px;border-radius:9px;' +
+      'border:1px dashed rgba(77,205,94,.6);background:rgba(77,205,94,.12);color:var(--ok);font-size:13px">' +
+      (s === "улица" ? "окно на улицу" : "выход в подъезд") +
+      (наружу[s] > 1 ? " · " + наружу[s] : "") + "</span>").join("");
+}
+
 function adjChips(code){
   const near = adjOf(code);
   return roomList().filter(r => r.code !== code).map(r => {
@@ -5553,7 +5575,12 @@ function elemBlock(r){
     const fate = e.fate ? e.fate : (e.fact === "нет" ? "нечего делать" : "судьба не задана");
     const fateHtml = (!e.fate && e.fact !== "нет")
       ? '<span style="color:var(--warn)">' + esc(fate) + '</span>' : esc(fate);
-    return '<div onclick="elemEdit(\'' + esc(e.id) + '\')" style="margin-top:6px;padding:8px 10px;border-radius:10px;background:rgba(255,255,255,.06);cursor:pointer">' +
+    /* [158.2, снимок 1185] Проём без судьбы обведён: человек видит не только
+       что не заполнено, но и куда ткнуть. Заложенному проёму («нечего делать»)
+       рамка не нужна — он не долг. */
+    const надо = (!e.fate && e.fact !== "нет");
+    return '<div onclick="elemEdit(\'' + esc(e.id) + '\')" style="margin-top:6px;padding:8px 10px;border-radius:10px;background:rgba(255,255,255,.06);cursor:pointer' +
+      (надо ? ';border:1px solid rgba(245,166,35,.55)' : '') + '">' +
       '<div>' + esc(String(e.fact || "?")) + ' · ' + esc(elemSideName(e, r.code)) + '</div>' +
       '<div class="m">' + fateHtml +
         (elemGap(e) ? ' · <span style="color:#ff9f0a">на плане ' + esc(e.plan) + '</span>' : '') + '</div></div>';
@@ -10040,7 +10067,14 @@ object(){
       "</div>";
     const wallLine = (w !== null && Math.abs(w - Number(r.wall_m2 || 0)) > 0.05)
       ? '<div class="m" style="margin-top:6px">По обмерам стены выходят <b>' + fmt(w) + '</b> м² (сейчас ' + fmt(r.wall_m2 || 0) + ') ' +
-        '<button onclick="roomApplyWalls(\'' + r.code + '\')" style="margin-left:6px;padding:6px 10px;border-radius:9px;border:0;background:#3a3a3c;color:#fff;font-size:13px">Пересчитать</button></div>'
+        '<button onclick="roomApplyWalls(\'' + r.code + '\')" style="margin-left:6px;padding:6px 10px;border-radius:9px;border:0;background:' +
+        /* [158.2, снимок 1185] «Осталось подсветить оранжевым, куда ткнуть,
+           чтобы это исправить». Кнопка чинит ровно то, что рядом названо
+           незаданным, — значит зовёт тем же цветом, каким названа беда.
+           Когда чинить нечего (значения есть, расходятся с обмерами), кнопка
+           остаётся служебно-серой: это уже уточнение, а не долг. */
+        ((need(r.wall_m2) || need(r.ceiling_m2)) ? 'var(--warn);color:#1c1c1e;font-weight:600' : '#3a3a3c;color:#fff') +
+        ';font-size:13px">Пересчитать</button></div>'
       : "";
     const todo = roomTodo(r);
     return '<div class="work room' + (todo ? ' todo' : '') + '" id="room_' + esc(r.code) + '">' +
@@ -10062,7 +10096,7 @@ object(){
       inpFor("Дверей_шт", "dr_" + r.code, need(r.doors) ? "сколько дверей" : "дверей сейчас " + fmt(r.doors)) +
       elemBlock(r) +
       modBlock(r) +
-      '<div class="m" style="margin-top:8px">Из чего попадаем в помещение:</div><div>' + adjChips(r.code) + "</div>" +
+      '<div class="m" style="margin-top:8px">Из чего попадаем в помещение:</div><div>' + adjChips(r.code) + outChips(r.code) + "</div>" +
       /* Объединение помещений [M3 разбора 39, чат 126]: кнопка стоит в карточке
          самого помещения — объединяют то, на что смотрят. Показывается только
          тому, кто вправе (owner/foreman), и только когда есть с чем объединять. */
@@ -14358,7 +14392,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "158.1";
+const BUILD = "158.2";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
