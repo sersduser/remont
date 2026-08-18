@@ -5597,6 +5597,18 @@ function elemBlock(r){
     rows + numLine;
 }
 
+/* [158.3] Что означает каждая судьба — человеческим языком, от того, что
+   произойдёт на объекте, а не от названия поля. */
+const FATE_HINT = {
+  "не трогаем":    "Остаётся как есть, работ по нему нет.",
+  "заменить":      "Проём остаётся, старое полотно снимаем и ставим новое.",
+  "демонтировать": "Снимаем полотно и не ставим ничего — остаётся открытый проём.",
+  "заложить":      "Закрываем проём стеной: его больше не будет.",
+  "пробить":       "Делаем новый проём там, где стена была глухой.",
+  "перенести":     "Здесь закладываем, рядом пробиваем новый.",
+  "установить":    "Проём есть, а полотна нет — ставим дверь или окно в готовый проём.",
+};
+
 function elemEdit(id){
   const e = elemAll().find(x => x.id === id);
   if(!e) return;
@@ -5609,13 +5621,21 @@ function elemEdit(id){
     '<div class="vh">' + esc(nm) + '</div>' +
     '<div class="vs">' + esc(String(e.a || "")) + ' ↔ ' + esc(String(e.b || "")) +
       (elemGap(e) ? ' · по плану ' + esc(e.plan) + ', по факту ' + esc(e.fact) : '') + '</div>' +
-    '<div class="vd" style="margin-top:8px">Что здесь сейчас</div>' +
-    '<div>' + ELEM_FACTS.map(v => btn('Тип_факт', v, e.fact)).join('') + '</div>' +
-    '<div class="vd" style="margin-top:10px">Что было на плане БТИ</div>' +
+    /* [158.3, снимок 1189] «Надо поменять местами было в БТИ и то, что
+       сейчас»: порядок читается как история — сначала что было, потом что
+       стало. Прежний порядок заставлял мысленно возвращаться назад. */
+    '<div class="vd" style="margin-top:8px">Что было на плане БТИ</div>' +
     '<div>' + ELEM_FACTS.map(v => btn('Тип_план', v, e.plan)).join('') + '</div>' +
+    '<div class="vd" style="margin-top:10px">Что здесь сейчас</div>' +
+    '<div>' + ELEM_FACTS.map(v => btn('Тип_факт', v, e.fact)).join('') + '</div>' +
     '<div class="vd" style="margin-top:10px">Что делаем в ремонте</div>' +
     '<div>' + ELEM_FATES.map(v => btn('Судьба', v, e.fate)).join('') +
       '<button onclick="elemSet(\'' + esc(id) + '\',\'Судьба\',\'\')" style="padding:9px 12px;border-radius:10px;border:0;background:#3a3a3c;color:#fff;font-size:14px;margin:0 6px 6px 0">не решено</button></div>' +
+    /* [158.3, снимок 1191] «Что значит кнопка "установить"?» Названия судеб
+       коротки и различаются тонко: «пробить» и «установить», «заменить» и
+       «перенести». Под кнопками говорим словами, что означает выбранное, —
+       вопрос снимается там, где возник, а не в переписке. */
+    (FATE_HINT[e.fate] ? '<div class="vd" style="margin-top:8px;color:var(--hint)">' + esc(FATE_HINT[e.fate]) + '</div>' : '') +
     (e.note ? '<div class="vd" style="margin-top:10px">' + esc(e.note) + '</div>' : '') +
     '<div class="vrow"><button class="vbtn-cancel" onclick="closeVSheet()">Закрыть</button></div>');
 }
@@ -5628,8 +5648,14 @@ async function elemSet(id, field, value){
     const e = elemAll().find(x => x.id === id);
     if(e){ e[field === "Тип_факт" ? "fact" : (field === "Тип_план" ? "plan" : "fate")] = value; }
     toast("Записано");
-    closeVSheet();
+    /* [158.3, снимок 1189] «Нужно оставаться на этой же странице (всплывающем
+       окне) после кликов по кнопкам. Нужно три клика сделать, а тебя каждый
+       раз выкидывает на основную страницу». У проёма три поля — было, стало,
+       судьба, — и закрытие после каждого превращало три касания в три захода.
+       Перерисовываем фон и тут же поднимаем окно заново: выбранное видно
+       синим, окно закрывает человек кнопкой «Закрыть». */
     render();
+    elemEdit(id);
   }catch(err){ toast(err.message, "err"); }
   ELEM_BUSY = false;
 }
@@ -14392,7 +14418,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "158.2";
+const BUILD = "158.3";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
