@@ -7276,7 +7276,32 @@ function crewFresh(){
     crewLoad().then(() => render()).catch(() => {});
   }catch(e){}
 }
-setInterval(crewFresh, 30000);
+/* ══ [159.3] Пропуск Telegram живёт сутки, а автообновление — вечно ═══════
+   Панель обновляет данные раз в 15 секунд. Когда подпись протухает, сервер
+   отвечает 401, refresh молча выходит по `!r.ok` и заходит снова — забытая
+   открытой вкладка даёт 240 отказов в час. В журнале n8n 18.08 из-за этого
+   было 60–100 % исполнений с ошибкой: настоящие отказы прода тонули в шуме
+   протухших вкладок, а журнал — главный инструмент разбора (приём 333).
+   Считаем ПОДРЯД идущие отказы свежести: одиночный (сеть моргнула) цикл не
+   гасит, второй — останавливает опрос и говорит человеку то, что панель уже
+   умеет сказать. Слова не новые: staleMsg() объясняет, что делать. */
+let STALE_N = 0;                 // подряд идущих 401/403 у автообновления
+let STALE_OFF = 0;               // опрос остановлен
+const TIMERS = {};               // ссылки на циклы — чтобы было что остановить
+function staleStop(){
+  if(STALE_OFF) return;
+  STALE_OFF = 1;
+  try{ clearInterval(TIMERS.refresh); }catch(e){}
+  try{ clearInterval(TIMERS.crew); }catch(e){}
+  if(document.getElementById("staleBar")) return;
+  const b = document.createElement("div");
+  b.id = "staleBar";
+  b.style.cssText = "position:fixed;left:0;right:0;bottom:0;z-index:9998;background:var(--warn);color:var(--warntxt);" +
+    "padding:12px 14px calc(12px + var(--bot-inset, 0px));font-size:14px;line-height:1.4;box-shadow:0 -8px 16px -12px rgba(0,0,0,.9)";
+  b.innerHTML = '<b>Обновление остановлено.</b> ' + esc(staleMsg());
+  document.body.appendChild(b);
+}
+TIMERS.crew = setInterval(crewFresh, 30000);
 document.addEventListener("visibilitychange", () => { if(document.visibilityState === "visible") crewFresh(); });
 
 /* Тихая запись ячейки контура: без локального patch (данные в CREW_DATA
@@ -13292,6 +13317,7 @@ function _snapshot(d){
   }catch{ return ""; }
 }
 async function refresh(){
+  if(STALE_OFF) return;          // пропуск протух — сервер больше не тревожим
   const el = document.activeElement;
   const inQuiz = (typeof QZ === "object" && QZ && QZ.on && stack[stack.length - 1] === "quiz");
   const busy = (el && ["INPUT","SELECT","TEXTAREA"].includes(el.tagName)) || vmask.classList.contains("on") || inQuiz;
@@ -13299,7 +13325,13 @@ async function refresh(){
   try{
     const auth = authQS();
     const r = await fetchT(`${API}/data?${auth}`, { cache:"no-store" }, LOAD_MS, "обновление");
-    if(!r.ok) return;
+    if(!r.ok){
+      /* Только отказ свежести/доступа копится. Прочие коды (500, обрыв сети)
+         цикл не гасят: они лечатся сами, а протухший пропуск — нет. */
+      if(r.status === 401 || r.status === 403){ STALE_N++; if(STALE_N >= 2) staleStop(); }
+      return;
+    }
+    STALE_N = 0;
     const raw = (await r.text()).trim();
     if(!raw) return;
     let nd; try{ nd = JSON.parse(raw); }catch{ return; }
@@ -14465,7 +14497,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "159.2";
+const BUILD = "159.3";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
@@ -14490,7 +14522,7 @@ try{ navRestore(); }catch(e){}                    /* [131] то же место,
 load();
 langInit();                                       // кнопка языка нужна и до данных [чат 020]
 buildTag();                                       // видимый номер версии [чат 021]
-setInterval(refresh, 15000);
+TIMERS.refresh = setInterval(refresh, 15000);
 /* [чат 091, хвост п. 169] Telegram Desktop восстанавливает Mini App замороженным
    состоянием страницы. refresh() обновляет только то, что попало в снимок, —
    списки, живущие в собственных кэшах, остаются вчерашними, и отозванное
