@@ -12421,6 +12421,11 @@ function vrElems(r) {
 }
 /* Подпись без предлога: «Проём → Кухня». Падежи в панели не склоняются нигде,
    а «проём в Кухня» читается как ошибка интерфейса. */
+/* [160.1, Д-164-4] Ширина и высота приходят двумя отдельными правками, и обе
+   подписывались словом «сейчас:»: строка «сейчас: 2,37 · сейчас: 1,96» не
+   говорит, какое число куда легло. Подписи — отдельными узлами текста, чтобы
+   языковой слой переводил их словарём (урок 021 про остаток кириллицы). */
+const VR_KEYW = { fate: "судьба:", plan: "на плане:", w: "ширина:", h: "высота:", sill: "низ:" };
 function vrSideLabel(side, said){
   if(side === "улица" || side === "подъезд") return side;
   const r = roomList().find(x => String(x.code) === side);
@@ -12494,7 +12499,7 @@ function showVRooms(d){
          «Проём →» и «судьба:» — словарь, «Кухня» и «заложить» — значения.
          Слой переводит узлами, и слипшаяся строка «Проём → Кухня — судьба:»
          осталась бы наполовину русской (урок 021 про остаток кириллицы). */
-      const what = e.changes.map(c => `${esc(c.key === "fate" ? "судьба:" : (c.key === "plan" ? "на плане:" : "сейчас:"))} <b>${esc(c.now)}</b>${c.was ? ` <span style="color:#ff9f0a">было: <b>${esc(c.was)}</b></span>` : ""}`).join(" · ");
+      const what = e.changes.map(c => `${esc(VR_KEYW[c.key] || "сейчас:")} <b>${esc(c.now)}</b>${c.was ? ` <span style="color:#ff9f0a">было: <b>${esc(c.was)}</b></span>` : ""}`).join(" · ");
       const sel = e.isNew ? e._sel : e.changes.some(c => c._sel);
       /* [131] Обещание в будущем времени человек читает как уже сделанное.
          Метка говорит о состоянии строки: отмечена — заведу, снята — нет. */
@@ -12583,13 +12588,27 @@ async function applyVoiceRooms(){
   let done = 0, fail = 0, added = 0;
   for(const r of chosen){
     let code = r.code;
-    if(!code){
+    /* [160.1, Д-164-1] Помещение заводится только тогда, когда ему есть что
+       хранить: своё поле обмера или НОВЫЙ проём, которому нужен код стороны A.
+       Ответ про размеры существующего проёма (вопрос q = size:EL-xx) помещения
+       не требует — проём адресуется своим кодом. Прежде здесь рождался призрак:
+       18.08 реплика «Г-образный проём, стороны 237, 196, 152, 131…» на вопросе
+       «Лоджия ↔ Зал» завела в 06_Помещения строку GO «Г-образный проем», а сам
+       проём остался пустым (исполнения 64024 и 64031). */
+    const нуженКод = r.fields.length > 0 || (r.elems || []).some(e => e.isNew);
+    if(!code && нуженКод){
       try{
         code = roomNewCode(r.name);
         const kindF = r.fields.find(f => f.col === "Тип_помещения");
         await crewAppend("06_Помещения", [{ "Код": code, "Помещение": r.name, "Тип_помещения": kindF ? String(kindF.now) : "прочее" }]);
         added++;
-      }catch(e){ fail += r.fields.length; continue; }
+        /* Код нового помещения обязан дожить до цикла проёмов ниже: он читает
+           r.code, а не эту локальную переменную. Пока присвоения не было, весь
+           блок проёмов такого помещения отбрасывался молча, и счётчик
+           «Записано: N» об этом не говорил. */
+        r.code = code;
+        (D.rooms = D.rooms || []).push({ code: code, name: r.name });
+      }catch(e){ fail += r.fields.length + (r.elems || []).length; continue; }
     }
     for(const f of r.fields){
       if(f.col === "Тип_помещения" && added && !r.code) { done++; continue; }
@@ -12605,11 +12624,13 @@ async function applyVoiceRooms(){
      ребро кладётся в D.elements: иначе второй новый проём в той же реплике
      получил бы тот же id. */
   for(const r of chosen){
-    if(!r.code) continue;
     for(const e of (r.elems || [])){
       const sel = e.changes.filter(c => c._sel);
       try{
         if(e.isNew){
+          /* Новому проёму нужна сторона A — без кода помещения его завести
+             нечем, и это честный отказ, а не молчание [160.1]. */
+          if(!r.code){ fail++; continue; }
           const id = elemNextId();
           const val = k => (sel.find(c => c.key === k) || {}).now || "";
           /* [093] Размеры едут вместе со строкой — дефект C2 [062]: vrElems уже
@@ -12621,7 +12642,7 @@ async function applyVoiceRooms(){
           await crewAppend("13_Элементы", [{
             "id": id, "Сторона_A": r.code, "Сторона_B": e.side,
             "Тип_план": val("plan"), "Тип_факт": val("fact") || "дверь", "Судьба": val("fate"),
-            "Название": (roomList().find(x => String(x.code) === r.code) || {}).name + " ↔ " + vrSideLabel(e.side, e.said),
+            "Название": (((roomList().find(x => String(x.code) === r.code) || {}).name) || r.name || r.code) + " ↔ " + vrSideLabel(e.side, e.said),
             "Ширина_м": val("w"), "Высота_м": val("h"), "Примечание": "добавлен голосом", "Обновлено": chgStamp(),
           }]);
           if(val("sill")) await writeCell("13_Элементы", id, "Низ_м", val("sill"));
@@ -13836,7 +13857,7 @@ const UZ = {
 "— загляните в календарь":"— kalendarga qarang","Напишите задание":"Topshiriqni yozing",
 "Загружаю план…":"Reja yuklanmoqda…","План не открылся":"Reja ochilmadi",
 "Сервер не отдал изображение":"Server suratni bermadi",
-"Проёмы":"Ochiqlar","Проём →":"Ochiq →","улица":"ko'cha","подъезд":"podyezd","судьба:":"taqdiri:","сейчас:":"hozir:","на плане:":"rejada:","было:":"edi:",
+"Проёмы":"Ochiqlar","Проём →":"Ochiq →","улица":"ko'cha","подъезд":"podyezd","судьба:":"taqdiri:","сейчас:":"hozir:","ширина:":"eni:","высота:":"balandligi:","низ:":"pastki qismi:","на плане:":"rejada:","было:":"edi:",
 "Пол, м²:":"Pol, m²:","Периметр, м:":"Perimetr, m:","Высота, м:":"Balandlik, m:","Окон:":"Deraza:","Дверей:":"Eshik:","Тип помещения:":"Xona turi:",
 "План не открылся: Сервер не отдал изображение":"Reja ochilmadi: Server suratni bermadi",
 "В прайсе пока нет ни одной позиции.":"Narxlar ro'yxatida hozircha bitta ham pozitsiya yo'q.",
@@ -14538,7 +14559,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "159.4";
+const BUILD = "160.1";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
