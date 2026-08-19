@@ -12637,7 +12637,7 @@ function vrSide(x){
 }
 function vrElems(r) {
   const list = Array.isArray(r.elements) ? r.elements : [];
-  return list.map(x => {
+  const res = list.map(x => {
     /* [063] Адрес проёма из вопроса главнее названия стороны: сервер с 062 отдаёт
        поле el — код элемента, взятый из кода вопроса q (например "size:EL-04").
        Когда он есть, искать ребро по сказанному не нужно и нельзя: на вопрос
@@ -12698,10 +12698,58 @@ function vrElems(r) {
       said: String(x.side || x.side_code || ''), side: side,
       id: cur ? cur.id : '', many: near.length > 1,
       isNew: fresh, unknown: !side,
+      pair: cur ? elemPairLabel(cur) : '',
       shape: форма, nums: числа,
       changes: ch, _sel: fresh
     };
   }).filter(e => e.changes.length || e.unknown || e.many || e.shape || (e.nums || []).length);
+
+  /* ── [169.2] Один вопрос — несколько проёмов в ответе ────────────────────
+     Сервер отдаёт поле el, взятое из кода вопроса (приём 063), и оно ОДНО на
+     всю реплику. Пока в ответе один проём, это верно; как только человек
+     называет несколько — все правки адресуются одному и тому же ребру, и
+     последняя пара затирает предыдущие. Ночью 20.08 так пропали две пары
+     Г-образного проёма (осталась 0,85 × 0,65), а два окна лоджии получили
+     одинаковые размеры 2,00 × 1,55 — проверено чтением боевой базы.
+     Лечение: первому элементу оставляем адрес из вопроса, каждому следующему
+     ищем свободное ребро той же пары сторон (у которого ширина или высота
+     ещё не заданы). Кому места не нашлось — тот показывается словами и НЕ
+     пишется: молчаливая потеря дороже честного отказа. */
+  const занято = new Set();
+  const пусто = v => v === undefined || v === null || String(v).trim() === '';
+  const парой = (x, э) => !!x && !!э && (
+    (String(x.a) === String(э.a) && String(x.b) === String(э.b)) ||
+    (String(x.a) === String(э.b) && String(x.b) === String(э.a)));
+  res.forEach(e => {
+    if(!e.id) return;
+    if(!занято.has(String(e.id))){ занято.add(String(e.id)); return; }
+    const эталон = elemAll().find(x => String(x.id) === String(e.id));
+    const свободный = elemAll().find(x => !занято.has(String(x.id)) && парой(x, эталон)
+                                          && (пусто(x.w) || пусто(x.h)));
+    if(свободный){
+      e.id = String(свободный.id);
+      занято.add(e.id);
+      e.pair = elemPairLabel(свободный);
+      e.changes = e.changes.map(c => {
+        const было = свободный[c.key];
+        const was = пусто(было) ? '' : String(было);
+        return Object.assign({}, c, { was: was, conflict: was !== '', _sel: was === '' });
+      }).filter(c => String(c.was).replace(',', '.') !== String(c.now).replace(',', '.'));
+    }else{
+      e.noPlace = true; e.id = ''; e._sel = false;
+      e.changes = (e.changes || []).map(c => Object.assign({}, c, { _sel: false }));
+    }
+  });
+  return res;
+}
+/* Подпись ребра пáрой сторон: «Спальня один ↔ Зал». Прежде строка показывала
+   одну сторону относительно помещения из разбора — а им бывает третье
+   помещение, в котором проём заведён: на вопрос «Спальня один ↔ Зал» окно
+   писало «Коридор · Проём → Спальня один», и проверить подтверждаемое было
+   нечем (снимок 1219 от 20.08). Запись при этом шла верная — врал показ. */
+function elemPairLabel(e){
+  if(!e) return '';
+  return vrSideLabel(String(e.a || ''), '') + ' ↔ ' + vrSideLabel(String(e.b || ''), '');
 }
 /* Подпись без предлога: «Проём → Кухня». Падежи в панели не склоняются нигде,
    а «проём в Кухня» читается как ошибка интерфейса. */
@@ -12781,13 +12829,23 @@ function showVRooms(d){
       </div>`).join("");
     const el = (r.elems || []).map((e, j) => {
       const where = vrSideLabel(e.side, e.said);
+      /* [169.2] Адрес правки — пара сторон самого ребра, если оно найдено. */
+      const адрес = e.pair ? esc(e.pair) : ("Проём" + (where ? " → " + esc(where) : ""));
+      if(e.noPlace){
+        const чис2 = (e.changes || []).filter(c => c.key === 'w' || c.key === 'h')
+          .map(c => String(c.now)).join(" × ");
+        return `<div class="vitem" style="opacity:.85"><div class="vchk" style="opacity:.35">◇</div><div style="flex:1;min-width:0">
+          <div class="vv">${адрес}${чис2 ? " · " + esc(чис2) + " м" : ""}</div>
+          <div class="vd"><span style="color:#ff9f0a">услышано, но записать некуда: в схеме нет свободного проёма с такими сторонами</span> · заведите его в карточке помещения кнопкой «Добавить»</div>
+        </div></div>`;
+      }
       /* [160.2] Отмечать нечего — но услышанное видно, и сказано, почему оно
          не записано. Тот же способ, что у отказа голосом и у проёмов в окне
          работ: строка без галочки, приглушённая, с оранжевым пояснением. */
       if(e.shape || (e.nums || []).length){
         const чис = (e.nums || []).map(n => String(Math.round(Number(n) * 100) / 100).replace(".", ",")).join(" · ");
         return `<div class="vitem" style="opacity:.85"><div class="vchk" style="opacity:.35">◇</div><div style="flex:1;min-width:0">
-          <div class="vv">Проём${where ? " → " + esc(where) : ""}${чис ? " · " + esc(чис) + " м" : ""}</div>
+          <div class="vv">${адрес}${чис ? " · " + esc(чис) + " м" : ""}</div>
           <div class="vd">${esc(e.shape || "форма сложнее прямоугольника")} · <span style="color:#ff9f0a">услышано, но не записано: в схеме проёмов есть только ширина и высота</span></div>
         </div></div>`;
       }
@@ -12809,7 +12867,7 @@ function showVRooms(d){
       <div class="vitem${sel ? " sel" : ""}" data-e="${i}-${j}" onclick="toggleVElem(${i},${j})">
         <div class="vchk">✓</div>
         <div style="flex:1;min-width:0">
-          <div class="vv">Проём → <b>${esc(where)}</b> · ${what}${mark}</div>
+          <div class="vv">${e.pair ? "<b>" + адрес + "</b>" : "Проём → <b>" + esc(where) + "</b>"} · ${what}${mark}</div>
         </div>
       </div>`;
     }).join("");
@@ -14944,7 +15002,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "169.1";
+const BUILD = "169.2";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
