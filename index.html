@@ -9065,6 +9065,28 @@ function render(toTop){
   }
 }
 
+/* ── [167, Д-153-16] Три меры главного экрана меряют РАЗНОЕ ──────────────────
+   15.08 на «Квартире Сорокиных» рядом стояли «Готовность 5 %», «Пройдено 27.6
+   из 41.5 дн», «Опережение 5.6 дн» и «Отработано аванса 328 из 2 000 $» (16 %) —
+   и читались как противоречие. Противоречия нет: готовность — среднее по
+   проценту готовности всех работ, деньги — доля ОПЛАЧЕННОГО АВАНСА (а не
+   договора), дни — положение последней принятой работы на календаре плана.
+   Числа не сводятся друг к другу и не должны: дефект был в молчании экрана,
+   а не в счёте. Каждая мера теперь называет, чем она меряется. */
+const doneCount = () => (D.works || []).filter(w => w.status === "Готово").length;
+function progNote(){
+  const all = (D.works || []).length;
+  if(!all) return "";
+  return "по работам: принято " + doneCount() + " из " + all + " · среднее по проценту готовности";
+}
+function advNote(){
+  const S2 = D.settings || {};
+  const paid = Number(S2["Оплачено_за_работу_USD"] ?? (D.my_money && D.my_money.received_usd) ?? 0);
+  if(!paid) return "";
+  return "по деньгам: считается от оплаченного аванса, не от суммы договора";
+}
+const timeNote = () => "по календарю плана: докуда доводит последняя принятая работа";
+
 const progress = () => D.works.length
   ? D.works.reduce((s,w) => s + (w.progress || 0), 0) / D.works.length : 0;
 
@@ -9315,6 +9337,7 @@ home(){
     <div class="r"><span class="k">${adv.k}</span>
       <span class="v" style="color:${adv.color}">${adv.main}</span></div>
     <div class="r"><span class="k" style="font-size:13px;opacity:.65">${adv.sub}</span><span class="v"></span></div>
+    ${advNote() ? `<div class="r"><span class="k" style="font-size:12px;opacity:.5">${advNote()}</span><span class="v"></span></div>` : ""}
     <div class="bar"><i style="width:${adv.pct}%"></i></div>` : "";
   /* Временна́я шкала — симметрия денежной: как «отработано аванса» отвечает,
      где деньги относительно работ, так эта отвечает, где мы относительно срока. */
@@ -9323,6 +9346,7 @@ home(){
     <div class="r"><span class="k">${tm.diff >= 0 ? "Опережение графика" : "Отставание от графика"}</span>
       <span class="v" style="color:${tm.diff >= 0 ? '#30d158' : '#ff9f0a'}">${Math.abs(tm.diff)} дн</span></div>
     <div class="r"><span class="k" style="font-size:13px;opacity:.65">Пройдено ${tm.reached} из ${tm.real} дн · прошло ${tm.elapsed}</span><span class="v"></span></div>
+    <div class="r"><span class="k" style="font-size:12px;opacity:.5">${timeNote()}</span><span class="v"></span></div>
     <div class="bar"><i style="width:${Math.max(0, Math.min(100, Math.round(tm.reached / (tm.real || 1) * 100)))}%"></i></div>`;
 
   const head = worker && m ? `
@@ -9337,6 +9361,7 @@ home(){
         <span class="v" style="color:var(--ok)">${fmt(accSum("price_contractor_usd"))} $</span></div>
       <div class="r"><span class="k">Готовность объекта</span>
         <span class="v">${Math.round(p)} %</span></div>
+      ${progNote() ? `<div class="r"><span class="k" style="font-size:12px;opacity:.5">${progNote()}</span><span class="v"></span></div>` : ""}
       <div class="bar"><i style="width:${p}%"></i></div>
     </div>` : `
     <div class="stat">
@@ -9348,6 +9373,7 @@ home(){
         <span class="v warn">${usd(dealRest())} $</span></div>
       <div class="r"><span class="k">Готовность</span>
         <span class="v">${Math.round(p)} %</span></div>
+      ${progNote() ? `<div class="r"><span class="k" style="font-size:12px;opacity:.5">${progNote()}</span><span class="v"></span></div>` : ""}
       <div class="bar"><i style="width:${p}%"></i></div>
     </div>`;
 
@@ -9357,7 +9383,8 @@ home(){
       ${worker
         ? `Из аванса на материалы <b>${fmt(chekiUZS)} сум</b> пока без чеков.<br>
            <span style="color:var(--hint);font-size:13px">Сфотографируйте их в боте — строка исчезнет.</span>`
-        : `<b>${fmt(chekiUZS)} сум</b> из аванса 26.06 — без расшифровки.`}
+        : `<b>${fmt(chekiUZS)} сум</b> из аванса 26.06 — без расшифровки.<br>
+           <span style="color:var(--hint);font-size:13px">Это деньги на материалы, в сумах: с договором и авансом за работу в $ они не складываются.</span>`}
     </div>` : "";
 
   return `
@@ -14753,7 +14780,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "167.3";
+const BUILD = "167.4";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
