@@ -13076,13 +13076,16 @@ function showVRepair(d){
         <div class="vchk">✓</div>
         <div style="flex:1;min-width:0">
           <div class="vv">${esc(k.name)}<span style="opacity:.6"> · ${esc(k.unit || "")}</span></div>
-          <div class="vd">${esc(k.code)}${vRepVol(r.code, k.code, k)}${k.src === "tech" ? (repCross(k, r.kinds) ? ' · <span style="color:var(--warn)">по технологии идёт раньше — отметьте, если делаем и это</span>' : " · добавлено по технологии") : ""}${k.src === "like" ? " · как в «" + esc((r._like && r._like.name) || (r.like && r.like.name) || "образце") + "»" : ""}${k.offer ? ' · <span style="opacity:.75">предложено вместо части «' + esc((r._like && (r._like.partSaid || r._like.part)) || "") + '»</span>' : ""}${k.novol && !vRepVol(r.code, k.code, k) ? ' · <span style="color:var(--warn)">' + esc(novolNote(r.code, k)) + (k._sel && k.src === "like" ? ' — работа в плане останется, объём появится с обмерами' : '') + '</span>' : ""}${k.already ? ' · <span style="color:#ff9f0a">уже в смете</span>' : ""}${(k.in_plan && !k.already) ? ' · <span style="color:#ff9f0a">уже отмечено в этом помещении</span>' : ""}${profCanSkip(k.code) ? ' · <span style="opacity:.75">можно пропустить — решится в профиле</span>' : ""}</div>
+          <div class="vd">${esc(k.code)}${vRepVol(r.code, k.code, k)}${k.src === "tech" ? (repCross(k, r.kinds) ? ' · <span style="color:var(--warn)">по технологии идёт раньше — отметьте, если делаем и это</span>' : " · добавлено по технологии") : ""}${k.src === "like" ? " · как в «" + esc((r._like && r._like.name) || (r.like && r.like.name) || "образце") + "»" : ""}${k.bulk ? ' · <span style="color:var(--warn)">названо направление целиком — отметьте, что делаем</span>' : ""}${(k.offer && !k.bulk) ? ' · <span style="opacity:.75">предложено вместо части «' + esc((r._like && (r._like.partSaid || r._like.part)) || "") + '»</span>' : ""}${k.novol && !vRepVol(r.code, k.code, k) ? ' · <span style="color:var(--warn)">' + esc(novolNote(r.code, k)) + (k._sel && k.src === "like" ? ' — работа в плане останется, объём появится с обмерами' : '') + '</span>' : ""}${k.already ? ' · <span style="color:#ff9f0a">уже в смете</span>' : ""}${(k.in_plan && !k.already) ? ' · <span style="color:#ff9f0a">уже отмечено в этом помещении</span>' : ""}${profCanSkip(k.code) ? ' · <span style="opacity:.75">можно пропустить — решится в профиле</span>' : ""}</div>
         </div>
       </div>`).join("");
     const tech = r.kinds.filter(k => k.src === "tech").length;
     const techX = r.kinds.filter(k => k.src === "tech" && repCross(k, r.kinds)).length;
     const lik  = r.kinds.filter(k => k.src === "like" && !k.offer).length;
-    const ofr  = r.kinds.filter(k => k.offer).length;
+    /* [166, Д-153-4 п.5] Разворот направления считается отдельно от
+       «предложено вместо части»: у них разные причины и разные слова. */
+    const blk  = r.kinds.filter(k => k.bulk).length;
+    const ofr  = r.kinds.filter(k => k.offer && !k.bulk).length;
     const nov  = r.kinds.filter(k => k.novol && !k.offer).length;
     const dup  = r.kinds.filter(k => k.already).length;
     /* [159.2] Повтор внутри сеанса считается отдельно от сметы: человеку важно
@@ -13134,7 +13137,7 @@ function showVRepair(d){
     const opHead = (r.openings || []).length
       ? '<div class="vd" style="margin:8px 0 2px">Про проёмы — запишите на экране объекта, в схеме проёмов</div>' : "";
     const ref = (r.refused || []).length;
-    const note = [lik ? `перенесено из «${(r._like && r._like.name) || ""}»: ${lik}` : "", ofr ? `предложено целиком: ${ofr} — не отмечено` : "", nov ? `без объёма здесь: ${nov} — не отмечено` : "", tech ? (`по технологии добавлено: ${tech}` + (techX ? ` · из них ${techX} не отмечено: другая поверхность` : "")) : "", dup ? `уже в смете: ${dup} — не отмечено` : "", inpl ? `уже отмечено в этом помещении: ${inpl} — не отмечено` : "", ref ? `отказано: ${ref}` : "", skp ? `этапов можно пропустить: ${skp} — решается в профиле` : ""].filter(Boolean).join(" · ");
+    const note = [lik ? `перенесено из «${(r._like && r._like.name) || ""}»: ${lik}` : "", blk ? `названо направлением: ${blk} — не отмечено` : "", ofr ? `предложено целиком: ${ofr} — не отмечено` : "", nov ? `без объёма здесь: ${nov} — не отмечено` : "", tech ? (`по технологии добавлено: ${tech}` + (techX ? ` · из них ${techX} не отмечено: другая поверхность` : "")) : "", dup ? `уже в смете: ${dup} — не отмечено` : "", inpl ? `уже отмечено в этом помещении: ${inpl} — не отмечено` : "", ref ? `отказано: ${ref}` : "", skp ? `этапов можно пропустить: ${skp} — решается в профиле` : ""].filter(Boolean).join(" · ");
     return `<div style="margin-bottom:12px">${head}${note ? `<div class="vd" style="margin:2px 0 6px">${esc(note)}</div>` : ""}${kl}${rfHead}${rf}${opHead}${op}
       </div>`;
   }).join("");
@@ -13143,7 +13146,9 @@ function showVRepair(d){
     <div class="vs">${!repSelN
       ? (vRep.some(r => !r.isNew && (r.refused || []).length) && !vRep.some(r => !r.isNew && (r.kinds || []).length)
           ? "Услышал отказ: эти виды делать не будем — по технологии их тоже не достраиваю."
-          : vRep.some(r => !r.isNew && (r.kinds || []).some(k => k.offer))
+          : vRep.some(r => !r.isNew && (r.kinds || []).some(k => k.bulk))
+      ? "Названо направление целиком — показываю весь набор, но ничего не отмечаю: выбирать работы за вас нельзя. Отметьте, что делаем."
+      : vRep.some(r => !r.isNew && (r.kinds || []).some(k => k.offer))
           ? "Названной части в образце нет — предлагаю его набор целиком. Отметьте, что перенести; без отметки ничего не запишется."
           : vRep.some(r => !r.isNew && (r.kinds || []).length)
           ? "Нового в сказанном нет: эти виды уже стоят в смете. Отметьте строку, если нужно записать заново."
@@ -14581,7 +14586,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "160.2";
+const BUILD = "166.1";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
