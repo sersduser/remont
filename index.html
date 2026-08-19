@@ -5784,7 +5784,9 @@ function roomTodo(r){
 function elemBlock(r){
   const list = elemOf(r.code);
   const gaps = list.filter(elemGap).length;
-  const d = elemDelta(r);
+  /* [169.4] Когда карточка уже предлагает общий ход, частная кнопка сведения
+     чисел молчит: два предложения об одном и том же читаются как выбор. */
+  const d = (typeof roomFixPlan === "function" && roomFixPlan(r).length >= 2) ? null : elemDelta(r);
   if(!list.length){
     return '<div class="m" style="margin-top:8px">Проёмы этого помещения не заведены ' +
       '<button onclick="elemAdd(\'' + esc(r.code) + '\')" style="margin-left:6px;padding:6px 10px;border-radius:9px;border:0;background:#3a3a3c;color:#fff;font-size:13px">Добавить проём</button></div>';
@@ -6277,6 +6279,60 @@ async function allocApply(total){
 
 /* Пересчёт стен и потолка по обмерам: предлагается кнопкой и никогда
    не делается молча — эти числа уже участвуют в объёмах работ. */
+/* ── [169.4] Свести помещение к расчёту одним ходом ─────────────────────
+   roomFixPlan собирает всё, что панель умеет посчитать сама: стены и потолок
+   из обмеров, окна и двери из схемы проёмов. Пока расходится одна величина,
+   карточка показывает частную кнопку рядом с ней — это понятно. Когда
+   расходятся две и больше, частные кнопки уступают место одной строке и
+   одному ходу: человек не обязан выбирать между четырьмя механизмами правки
+   одного помещения. */
+function roomFixPlan(r){
+  if(!r) return [];
+  const пусто = v => (v === null || v === undefined || String(v).trim() === "");
+  const план = [];
+  /* [169.4] Числа в сводной строке — точные: fmt округляет до целых, и строка
+     обещала бы «13 м²» там, где запишется 12,5. Обещание должно совпадать с
+     записью до знака, иначе человек ловит систему на вранье в мелочи. */
+  const точно = v => String(Math.round(Number(v) * 100) / 100).replace(".", ",");
+  const w = roomWalls(r);
+  if(w !== null && Math.abs(w - Number(r.wall_m2 || 0)) > 0.05)
+    план.push({ sheet:"06_Помещения", col:"Стены_м2", now:w, was:Number(r.wall_m2 || 0),
+                текст: "стены " + (пусто(r.wall_m2) ? "не заданы" : точно(r.wall_m2)) + " → " + точно(w) + " м²" });
+  const ceil = Number(r.floor_m2);
+  if(ceil > 0 && Math.abs(ceil - Number(r.ceiling_m2 || 0)) > 0.005)
+    план.push({ sheet:"06_Помещения", col:"Потолок_м2", now:ceil, was:Number(r.ceiling_m2 || 0),
+                текст: "потолок " + (пусто(r.ceiling_m2) ? "не задан" : точно(r.ceiling_m2)) + " → " + точно(ceil) + " м²" });
+  const d = elemDelta(r);
+  if(d && d.needW) план.push({ sheet:"06_Помещения", col:"Окон_шт", now:d.w, was:Number(r.windows || 0),
+                text:1, текст: "окон " + (пусто(r.windows) ? "не задано" : точно(r.windows)) + " → " + d.w + " (по схеме)" });
+  if(d && d.needD) план.push({ sheet:"06_Помещения", col:"Дверей_шт", now:d.d, was:Number(r.doors || 0),
+                text:1, текст: "дверей " + (пусто(r.doors) ? "не задано" : точно(r.doors)) + " → " + d.d + " (по схеме)" });
+  return план;
+}
+
+async function roomFixAll(code){
+  const r = roomList().find(x => x.code === code);
+  const план = roomFixPlan(r);
+  if(!r || !план.length){ toast("Всё уже сходится", "err"); return; }
+  if(ELEM_BUSY) return;
+  const согласен = await ask(
+    "Свести «" + (r.name || code) + "» к расчёту?\n\n" + план.map(p => "· " + p.текст).join("\n") +
+    "\n\nСтены и потолок считаются из обмеров, окна и двери — из схемы проёмов. Любое из этих чисел потом можно переписать руками.",
+    "Свести");
+  if(!согласен) return;
+  ELEM_BUSY = true;
+  let done = 0, fail = 0;
+  try{
+    for(const p of план){
+      try{ await writeCell(p.sheet, code, p.col, String(p.now).replace(".", ",")); done++; }
+      catch(e){ fail++; }
+    }
+    toast(fail ? ("Записано " + done + ", не удалось " + fail) : ("Записано: " + план.map(p => p.текст).join(" · ")), fail ? "err" : "");
+    await load();
+    render();
+  } finally { ELEM_BUSY = false; }
+}
+
 function roomApplyWalls(code){
   const r = roomList().find(x => x.code === code);
   if(!r) return;
@@ -10418,6 +10474,13 @@ object(){
         ';font-size:13px">Пересчитать</button></div>'
       : "";
     const todo = roomTodo(r);
+    /* [169.4] Сводная строка: одна беда — одна кнопка. */
+    const планR = roomFixPlan(r);
+    const fixLine = планR.length >= 2
+      ? '<div class="m" style="margin-top:6px;color:var(--warn)">Не сходится сразу в нескольких местах: ' +
+        планR.map(p => esc(p.текст)).join(' · ') +
+        ' <button onclick="roomFixAll(\'' + esc(r.code) + '\')" style="margin-left:6px;padding:6px 10px;border-radius:9px;border:0;background:var(--warn);color:var(--warntxt);font-weight:600;font-size:13px">Привести всё к расчёту</button></div>'
+      : "";
     return '<div class="work room' + (todo ? ' todo' : '') + '" id="room_' + esc(r.code) + '">' +
       '<div class="t">' + esc(r.name || r.code) +
         (todo ? '<span class="todoc">' + todo + ' не заполнено</span>'
@@ -10428,7 +10491,8 @@ object(){
         " · окон " + numOrDash(r.windows, "") + " · дверей " + numOrDash(r.doors, "") + "</div>" +
       ctrLine(r) +
       planCCompareLine(r) +
-      wallLine +
+      fixLine +
+      (планR.length >= 2 ? "" : wallLine) +
       /* Поле и «Нет» стоят всегда [чат 029]. До 029.2 ввод показывался только
          при пустом значении, и записанный ноль запирал карточку: «если ошибся,
          назад как вернуться?». Правка значения — такое же обычное действие,
@@ -15027,7 +15091,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "169.3";
+const BUILD = "169.4";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
