@@ -13141,9 +13141,43 @@ function showVRepair(d){
     }).join("");
     const opHead = (r.openings || []).length
       ? '<div class="vd" style="margin:8px 0 2px">Про проёмы — запишите на экране объекта, в схеме проёмов</div>' : "";
+    /* [167, Д-167-1] Поправки и оговорки, услышанные голосом. Сервер отдаёт их
+       полем mods (тип · число · цель · причина дословно), а панель до 167 это
+       поле не читала вовсе — слова «mods» в сборке 166.2 нет ни разу. Из-за
+       этого «демонтируем унитаз с сохранением» и «кафель по стенам полтора
+       метра от пола» доезжали до окна и пропадали молча. Показываем тем же
+       способом, что отказ голосом и проёмы: без галочки, потому что отмечать
+       нечего, но видимо. Запись остаётся за карточкой помещения (блок
+       «Поправки объёма»): адрес правила и его активность знает она [060]. */
+    const mdN = (m) => {
+      const v = Number(m && m.value);
+      const ч = (isFinite(v) && v) ? String(Math.round(v * 100) / 100).replace(".", ",") : "";
+      const тип = String((m && m.type) || "").trim();
+      if(тип === "область_высота") return "полоса " + ч + " м от пола";
+      if(тип === "вычет_м2")       return "−" + ч + " м²";
+      if(тип === "вычет_шт")       return "−" + ч + " шт";
+      if(тип === "коэффициент")    return "×" + ч + " к цене";
+      return тип + (ч ? " " + ч : "");
+    };
+    const md = (r.mods || []).map(m => {
+      const цель = String((m && m.target) || "").trim();
+      const вид = ((D.catalog || {}).kinds || []).find(x => String(x.code).toUpperCase() === цель.toUpperCase());
+      const куда = вид ? (цель + " · " + String(вид.name || "")) : цель;
+      const почему = String((m && m.reason) || "").trim();
+      return `
+      <div class="vitem" style="opacity:.85">
+        <div class="vchk" style="opacity:.35">◇</div>
+        <div style="flex:1;min-width:0">
+          <div class="vv">${esc(mdN(m))}${куда ? " → " + esc(куда) : ""}</div>
+          <div class="vd">${почему ? esc(почему) + " · " : ""}<span style="color:#ff9f0a">услышано, но не записано${(m && m.unsupported) ? ": такой поправки система пока не хранит" : " — запишите в карточке помещения, блок «Поправки объёма»"}</span></div>
+        </div>
+      </div>`;
+    }).join("");
+    const mdHead = (r.mods || []).length
+      ? '<div class="vd" style="margin:8px 0 2px">Поправки и оговорки — записываются в карточке помещения</div>' : "";
     const ref = (r.refused || []).length;
-    const note = [lik ? `перенесено из «${(r._like && r._like.name) || ""}»: ${lik}` : "", blk ? `названо направлением: ${blk} — не отмечено` : "", ofr ? `предложено целиком: ${ofr} — не отмечено` : "", nov ? `без объёма здесь: ${nov} — не отмечено` : "", tech ? (`по технологии добавлено: ${tech}` + (techX ? ` · из них ${techX} не отмечено: другая поверхность` : "")) : "", dup ? `уже в смете: ${dup} — не отмечено` : "", inpl ? `уже отмечено в этом помещении: ${inpl} — не отмечено` : "", ref ? `отказано: ${ref}` : "", skp ? `этапов можно пропустить: ${skp} — решается в профиле` : ""].filter(Boolean).join(" · ");
-    return `<div style="margin-bottom:12px">${head}${note ? `<div class="vd" style="margin:2px 0 6px">${esc(note)}</div>` : ""}${kl}${rfHead}${rf}${opHead}${op}
+    const note = [lik ? `перенесено из «${(r._like && r._like.name) || ""}»: ${lik}` : "", blk ? `названо направлением: ${blk} — не отмечено` : "", ofr ? `предложено целиком: ${ofr} — не отмечено` : "", nov ? `без объёма здесь: ${nov} — не отмечено` : "", tech ? (`по технологии добавлено: ${tech}` + (techX ? ` · из них ${techX} не отмечено: другая поверхность` : "")) : "", dup ? `уже в смете: ${dup} — не отмечено` : "", inpl ? `уже отмечено в этом помещении: ${inpl} — не отмечено` : "", ref ? `отказано: ${ref}` : "", (r.mods || []).length ? `поправок услышано: ${(r.mods || []).length} — не записано` : "", skp ? `этапов можно пропустить: ${skp} — решается в профиле` : ""].filter(Boolean).join(" · ");
+    return `<div style="margin-bottom:12px">${head}${note ? `<div class="vd" style="margin:2px 0 6px">${esc(note)}</div>` : ""}${kl}${rfHead}${rf}${opHead}${op}${mdHead}${md}
       </div>`;
   }).join("");
   openVSheet(`
@@ -14591,7 +14625,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "166.2";
+const BUILD = "167.1";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
