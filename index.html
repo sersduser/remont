@@ -5803,12 +5803,23 @@ function elemBlock(r){
       '<div class="m">' + fateHtml +
         (elemGap(e) ? ' · <span style="color:#ff9f0a">на плане ' + esc(e.plan) + '</span>' : '') + '</div></div>';
   }).join("");
+  /* [169.3] Кнопка называет действие и результат, а не механизм. Слова
+     Дмитрия 20.08 (снимки 1259–1260): «Вижу оранжевую надпись, попробую
+     кликнуть кнопку под ней (интуитивно неочевидно)» → «Просто кликнул — всё
+     ушло. Какой смысл был?». Кнопка «Привести к схеме» не говорила, ЧТО
+     изменится, а результат жил в тосте, который исчезает за три секунды. */
+  const чис = v => (v === null || v === undefined || String(v).trim() === "") ? 0 : Number(v);
   const numLine = d
-    ? '<div class="m" style="margin-top:6px;color:var(--warn)">По схеме окон ' + d.w + ', дверей ' + d.d +
-      ' — в обмерах ' + fmt(r.windows === null || r.windows === undefined || r.windows === "" ? 0 : r.windows) + ' и ' +
-      fmt(r.doors === null || r.doors === undefined || r.doors === "" ? 0 : r.doors) +
-      ' <button onclick="elemApplyNums(\'' + esc(r.code) + '\')" style="margin-left:6px;padding:6px 10px;border-radius:9px;border:0;background:#3a3a3c;color:#fff;font-size:13px">Привести к схеме</button></div>'
-    : "";
+    ? '<div class="m" style="margin-top:6px;color:var(--warn)">В обмерах помещения ' +
+      'окон ' + fmt(чис(r.windows)) + ', дверей ' + fmt(чис(r.doors)) +
+      ' — а в схеме проёмов окон ' + d.w + ', дверей ' + d.d +
+      ' <button onclick="elemApplyNums(\'' + esc(r.code) + '\')" style="margin-left:6px;padding:6px 10px;border-radius:9px;border:0;background:#3a3a3c;color:#fff;font-size:13px">Записать в обмеры: ' +
+      [d.needW ? 'окон ' + fmt(чис(r.windows)) + ' → ' + d.w : '', d.needD ? 'дверей ' + fmt(чис(r.doors)) + ' → ' + d.d : ''].filter(Boolean).join(' · ') +
+      '</button></div>'
+    : (list.length
+        ? '<div class="m" style="margin-top:6px;opacity:.7">Обмеры сходятся со схемой проёмов: окон ' +
+          elemCount(r.code, "окно") + ' · дверей ' + elemCount(r.code, "дверь") + '</div>'
+        : "");
   return '<div class="m" style="margin-top:8px">Проёмы: ' + list.length +
       (gaps ? ' · расходятся с планом: ' + gaps : '') +
       ' <button onclick="elemAdd(\'' + esc(r.code) + '\')" style="margin-left:6px;padding:6px 10px;border-radius:9px;border:0;background:#3a3a3c;color:#fff;font-size:13px">Добавить</button></div>' +
@@ -5842,6 +5853,19 @@ function elemEdit(id){
     /* [158.3, снимок 1189] «Надо поменять местами было в БТИ и то, что
        сейчас»: порядок читается как история — сначала что было, потом что
        стало. Прежний порядок заставлял мысленно возвращаться назад. */
+    /* [169.3] Расхождение плана и факта показывалось, но закрыть его было
+       нечем: окно говорило «по плану окно, по факту проём» и предлагало
+       единственную кнопку «Закрыть». Слова Дмитрия 20.08 (снимок 1264):
+       «Что дальше делать — не догадываюсь». Даём прямой ход: принять факт —
+       план становится равен факту, и расхождение уходит из счётчика объекта.
+       Обратное («поправить факт») уже есть блоком «Что здесь сейчас». */
+    (elemGap(e)
+      ? '<div class="stat" style="margin-top:8px"><span class="k">На плане БТИ здесь <b>' + esc(String(e.plan || "—")) +
+        '</b>, а сейчас <b>' + esc(String(e.fact || "—")) + '</b>. Это расхождение считается на экране объекта. ' +
+        'Если план устарел, а в квартире всё верно — примите факт: план станет равен факту.</span>' +
+        '<div style="margin-top:8px"><button onclick="elemSet(\'' + esc(id) + '\',\'Тип_план\',\'' + esc(String(e.fact || "")) + '\')" ' +
+        'style="padding:9px 12px;border-radius:10px;border:0;background:#0a84ff;color:#fff;font-size:14px">Принять факт: план ← ' + esc(String(e.fact || "—")) + '</button></div></div>'
+      : '') +
     '<div class="vd" style="margin-top:8px">Что было на плане БТИ</div>' +
     '<div>' + ELEM_FACTS.map(v => btn('Тип_план', v, e.plan)).join('') + '</div>' +
     '<div class="vd" style="margin-top:10px">Что здесь сейчас</div>' +
@@ -6096,7 +6120,8 @@ async function elemApplyNums(code){
   try{
     if(d.needW) await writeCell("06_Помещения", code, "Окон_шт", String(d.w));
     if(d.needD) await writeCell("06_Помещения", code, "Дверей_шт", String(d.d));
-    toast("Числа приведены к схеме");
+    /* [169.3] Тост называет числа: «приведены к схеме» не говорит, что стало. */
+    toast("В обмеры записано: " + [d.needW ? "окон " + d.w : "", d.needD ? "дверей " + d.d : ""].filter(Boolean).join(" · "));
     await load();
     render();
   }catch(e){ toast(e.message, "err"); }
@@ -15002,7 +15027,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "169.2";
+const BUILD = "169.3";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
