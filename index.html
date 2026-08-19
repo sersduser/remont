@@ -13925,9 +13925,17 @@ async function refresh(){
       if(r.status === 401 || r.status === 403){ STALE_N++; if(STALE_N >= 2) staleStop(); }
       return;
     }
-    STALE_N = 0;
     const raw = (await r.text()).trim();
-    if(!raw) return;
+    /* [170] Пустое тело при 200 — тот же протухший пропуск, что и 401.
+       Сервер отвечает Success и ничем, панель молча выходила, а счётчик
+       успевал обнулиться строкой выше — поэтому staleStop() не срабатывал
+       никогда, и цикл бил в /data каждые 15 секунд, пока окно открыто
+       (журнал прода 20.08: ровная лента Success 03:22:26, :41, :56 …).
+       Считаем пустоту отказом свежести и обнуляем счётчик только после
+       того, как тело оказалось непустым. Граблю панель знала и называла
+       рядом («Пустое тело при 200 = отказ»), но здесь не применяла. */
+    if(!raw){ STALE_N++; if(STALE_N >= 2) staleStop(); return; }
+    STALE_N = 0;
     let nd; try{ nd = JSON.parse(raw); }catch{ return; }
     if(!nd || !nd.role) return;
     const sig = _snapshot(nd);
@@ -15091,7 +15099,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "169.4";
+const BUILD = "170.1";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
