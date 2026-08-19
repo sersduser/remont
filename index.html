@@ -7426,9 +7426,16 @@ async function objectSheets(){
           body: JSON.stringify({ initData: INIT, key: KEY, sheet: s.sheet, header: s.header })
         });
         const txt = (await r.text()).trim();
-        let ok = false;
-        try{ ok = !!(txt && JSON.parse(txt).ok); }catch(e){}
-        (ok ? made : had).push(s.sheet);
+        /* [чат 172] Три исхода вместо двух. Пустое тело — это НЕ «лист уже был»:
+           немой 200 у n8n означает оборванное исполнение (приём 124), и лист при
+           этом не создан. Раньше такой ответ уезжал в had, и человек читал
+           «всё на месте» там, где сервер просто промолчал. */
+        if(!txt){ fail.push(s.sheet); }
+        else{
+          let ok = false;
+          try{ ok = !!JSON.parse(txt).ok; }catch(e){}
+          (ok ? made : had).push(s.sheet);
+        }
       }catch(e){ fail.push(s.sheet); }
     }
   } finally { OBJ_BUSY = false; }
@@ -7486,9 +7493,16 @@ async function crewSheets(){
           body: JSON.stringify({ initData: INIT, key: KEY, sheet: s.sheet, header: s.header, base: "common" })
         });
         const txt = (await r.text()).trim();
-        let ok = false;
-        try{ ok = !!(txt && JSON.parse(txt).ok); }catch(e){}
-        (ok ? made : had).push(s.sheet);
+        /* [чат 172] Три исхода вместо двух. Пустое тело — это НЕ «лист уже был»:
+           немой 200 у n8n означает оборванное исполнение (приём 124), и лист при
+           этом не создан. Раньше такой ответ уезжал в had, и человек читал
+           «всё на месте» там, где сервер просто промолчал. */
+        if(!txt){ fail.push(s.sheet); }
+        else{
+          let ok = false;
+          try{ ok = !!JSON.parse(txt).ok; }catch(e){}
+          (ok ? made : had).push(s.sheet);
+        }
       }catch(e){ fail.push(s.sheet); }
     }
   } finally { CREW_BUSY = false; }
@@ -8792,8 +8806,11 @@ async function exportBook(){
     if(!r.ok || !j || j.ok !== true){
       /* Сервер отвечает 403 и текстом причины; хвост «[line NN]» дописывает
          n8n — человеку он ничего не говорит. */
+      /* [чат 172] Пустое тело при 200 — оборванное исполнение, а не ответ:
+         «сервер ответил 200» человеку ничего не говорит. */
       const msg = (j && j.error) ? String(j.error).replace(/\s*\[line \d+\]\s*$/, "")
-                                 : ("сервер ответил " + r.status);
+                                 : ((!t || !t.trim()) ? "Сервер ответил пусто — попробуйте ещё раз"
+                                                      : ("сервер ответил " + r.status));
       toast(msg, "err");
     }else{
       const d = new Date();
@@ -15099,7 +15116,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "170.1";
+const BUILD = "172.1";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
