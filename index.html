@@ -2885,6 +2885,51 @@ function planLoad(){
   }catch(e){ return false; }
 }   // текущее помещение и план по всем помещениям: plan[код помещения][код вида] = {vol, manual}
 
+/* ── [167, Д-153-8] «В этом помещении ничего не делаем» ─────────────────────
+   У вида признак пропуска есть (skip + причина из «Пропуск_при»), у помещения
+   не было: 15.08 человек попросил это прямо — «Не обязательно во всей квартире
+   ремонт делается», а сказать было негде, и опрос продолжал спрашивать про
+   комнату, которой не касаются. Дом признака — план профиля, ключ __room_skip:
+   план уже переживает перезагрузку (116) и уезжает на сервер целиком строкой
+   (119), а ветка «Разобрать запрос (профиль)» его не разбирает — берёт plan
+   как есть и проверяет только длину (проверено чтением узла 19.08). Служебные
+   ключи плана начинаются с «__» и в перечень видов не попадают: planCodes(). */
+const ROOM_SKIP = "__room_skip";
+function planCodes(o){ return Object.keys(o || {}).filter(c => String(c).slice(0, 2) !== "__"); }
+function roomSkipReason(rc){
+  const p = (typeof PROF === "object" && PROF && PROF.plan && PROF.plan[rc]) || null;
+  const s = p && p[ROOM_SKIP];
+  return s ? String((s && s.reason) || "помещение не в работе") : "";
+}
+function roomSkipSet(rc, reason){
+  if(!rc) return;
+  if(typeof PROF !== "object" || !PROF) PROF = { room: null, plan: {} };
+  if(!PROF.plan[rc]) PROF.plan[rc] = {};
+  PROF.plan[rc][ROOM_SKIP] = { reason: String(reason || "помещение не в работе") };
+  try{ planSave(); }catch(e){}
+  try{ profilePushSoon(); }catch(e){}
+}
+function roomSkipClear(rc){
+  const p = (typeof PROF === "object" && PROF && PROF.plan && PROF.plan[rc]) || null;
+  if(!p) return;
+  delete p[ROOM_SKIP];
+  if(!Object.keys(p).length) delete PROF.plan[rc];
+  try{ planSave(); }catch(e){}
+  try{ profilePushSoon(); }catch(e){}
+  if(typeof render === "function") render(true);
+}
+/* Ход из окна разбора: сказанное не разобрано или относится к комнате, которой
+   не касаются. Ответ человека кнопкой, а не ещё одним переспросом. */
+function roomSkipFromSheet(rc){
+  const код = rc || ((typeof PROF === "object" && PROF && PROF.room) || "");
+  if(!код){ toast("Не знаю, о каком помещении речь — откройте его в профиле", "wait"); return; }
+  roomSkipSet(код, "помещение не в работе");
+  const r = ((typeof D === "object" && D && D.rooms) || []).find(x => x.code === код);
+  try{ closeVSheet(); }catch(e){}
+  toast("«" + String((r && r.name) || код) + "»: ничего не делаем — опрос про него больше не спросит", "ok");
+  if(typeof render === "function") render(true);
+}
+
 async function openProfile(){
   try{
     if(!D.catalog) toast('Загружаю справочник…');
@@ -2909,7 +2954,7 @@ function profBlankList(){
   const out = [];
   Object.keys((typeof PROF === "object" && PROF && PROF.plan) || {}).forEach(function(rc){
     const picked = PROF.plan[rc] || {};
-    Object.keys(picked).forEach(function(code){
+    planCodes(picked).forEach(function(code){
       const it = picked[code] || {};
       if(it.skip) return;                      /* пропущенный этап объёма не требует */
       if(Number(it.vol) > 0) return;
@@ -3166,7 +3211,7 @@ function skipSurface(name){
 function profFinish(rc, поверхность){
   const picked = (typeof PROF === "object" && PROF && PROF.plan && PROF.plan[rc]) || {};
   const kinds = ((D.catalog || {}).kinds) || [];
-  const коды = Object.keys(picked).filter(c => !(picked[c] || {}).skip);
+  const коды = planCodes(picked).filter(c => !(picked[c] || {}).skip);
   const виды = коды.map(c => kinds.find(x => x.code === c) || {});
   const тут = виды.filter(k => { const s = skipSurface(k.name); return s && s.имя === поверхность; });
   const по = re => k => re.test(String(k.name || ""));
@@ -3274,7 +3319,7 @@ function profSetVol(el){
 function profTotal(roomCode){                    // итог одного помещения
   const picked = (PROF.plan[roomCode || PROF.room] || {});
   let n = 0, sum = 0, blank = 0, skipped = 0;
-  for(const code of Object.keys(picked)){
+  for(const code of planCodes(picked)){
     const it = picked[code];
     n++;
     /* Пропущенный этап не стоит денег и не требует объёма — иначе кнопка
@@ -3309,7 +3354,7 @@ function profTotalAllText(){
 async function profBuild(){
   const kinds = (D.catalog || {}).kinds || [];
   const kindOf = c => kinds.find(k => k.code === c) || {};
-  const roomCodes = Object.keys(PROF.plan).filter(rc => Object.keys(PROF.plan[rc] || {}).length);
+  const roomCodes = Object.keys(PROF.plan).filter(rc => planCodes(PROF.plan[rc]).length);
   if(!roomCodes.length) { toast('Ничего не выбрано'); return; }
 
   let noVol = 0;
@@ -3322,7 +3367,7 @@ async function profBuild(){
     const room = (D.rooms || []).find(r => r.code === rc);
     if(!room) return;
     names.push(String(room.name || rc).split(' (')[0]);
-    const codes = Object.keys(PROF.plan[rc]);
+    const codes = planCodes(PROF.plan[rc]);
     // Новые коды строк: продолжаем нумерацию помещения, чтобы не столкнуться с существующими
     const used = (D.works || []).filter(w => String(w.code || '').indexOf(rc + '-') === 0)
       .map(w => parseInt(String(w.code).split('-')[1], 10) || 0);
@@ -9614,6 +9659,15 @@ profile(){
       const miss = [];
       if(empty(r.windows)) miss.push('окна');
       if(empty(r.doors)) miss.push('двери');
+      /* [167, Д-153-8] Помещение вне ремонта: приглушено, названо словами и
+         возвращается одной кнопкой — иначе признак стал бы ловушкой. */
+      const скип = roomSkipReason(r.code);
+      if(скип){
+        return '<div class="work" style="opacity:.55;border-left:3px solid #3a3a3c;padding-left:9px">' +
+          '<div class="t">⃠ ' + esc(r.name) + '</div>' +
+          '<div class="m">Ничего не делаем: ' + esc(скип) + ' · в опросе не спрашивается' +
+          ' <button onclick="event.stopPropagation(); roomSkipClear(\'' + esc(r.code) + '\')" style="margin-left:6px;padding:5px 9px;border-radius:9px;border:0;background:#3a3a3c;color:#fff;font-size:13px">Вернуть в работу</button></div></div>';
+      }
       return '<div class="work" onclick="PROF.room=\'' + esc(r.code) + '\'; render(true)" style="cursor:pointer' + (t.n ? ';border-left:3px solid #30d158;padding-left:9px' : '') + '">' +
         '<div class="t">' + (t.n ? '✅ ' : '') + esc(r.name) + '</div>' +
         '<div class="m">' + (t.n ? ('в плане ' + t.n + ' работ · ' + fmt(t.sum) + ' USD' + (t.blank ? (' · без объёма: ' + t.blank) : '') + ' · ') : '') +
@@ -10829,6 +10883,10 @@ function qzQueue(){
 
   rooms.forEach(r => {
     const rc = r.code, rn = qzName(r);
+    /* [167, Д-153-8] Помещение, о котором сказано «ничего не делаем», из обхода
+       выпадает целиком: без ремонта не нужны ни обмеры, ни судьба проёмов.
+       Признак снимается на экране профиля, и вопросы возвращаются. */
+    if(roomSkipReason(rc)) return;
 
     /* 4.1 Обмеры: контур → высота. Площадь и периметр считает код по
        контуру (052) — их не спрашиваем отдельно. */
@@ -10925,7 +10983,7 @@ function qzHasWorks(rc){
   const inEstimate = (D.works || []).some(w => String(w.code || "").indexOf(rc + "-") === 0);
   if(inEstimate) return true;
   const picked = (typeof PROF === "object" && PROF && PROF.plan && PROF.plan[rc]) || null;
-  return !!(picked && Object.keys(picked).length);
+  return !!(picked && planCodes(picked).length);
 }
 
 /* Вопросы о пропуске: вид отмечен в профиле, у вида есть условие
@@ -10936,7 +10994,7 @@ function qzSkipAsk(rc){
   const picked = (typeof PROF === "object" && PROF && PROF.plan && PROF.plan[rc]) || null;
   if(!picked) return out;
   const kinds = ((D.catalog || {}).kinds) || [];
-  Object.keys(picked).forEach(code => {
+  planCodes(picked).forEach(code => {
     const it = picked[code] || {};
     if(it.skip) return;                                  // решение уже принято
     if(it.keep) return;                                  // [131] «делаем» — сохранённое решение
@@ -11251,8 +11309,8 @@ function qzSummaryHtml(){
   const rows = rooms.map(r => {
     const rc = r.code;
     const picked = (typeof PROF === "object" && PROF && PROF.plan && PROF.plan[rc]) || {};
-    const n = Object.keys(picked).length;
-    const skipped = Object.keys(picked).filter(c => (picked[c] || {}).skip).length;
+    const n = planCodes(picked).length;
+    const skipped = planCodes(picked).filter(c => (picked[c] || {}).skip).length;
     const works = (D.works || []).filter(w => String(w.code || "").indexOf(rc + "-") === 0).length;
     return '<div class="r"><span class="k">' + esc(qzName(r)) + '</span><span class="v">' +
       (works ? works + " в смете" : (n ? n + " отмечено" : "—")) +
@@ -11261,7 +11319,7 @@ function qzSummaryHtml(){
   const planCount = (() => {
     let n = 0;
     const plan = (typeof PROF === "object" && PROF && PROF.plan) || {};
-    Object.keys(plan).forEach(rc => { n += Object.keys(plan[rc] || {}).length; });
+    Object.keys(plan).forEach(rc => { n += planCodes(plan[rc]).length; });
     return n;
   })();
   /* ══ [159.4, Д-153-15] Финал говорил «дыр не осталось» на объекте, где не
@@ -12131,10 +12189,29 @@ function showVAsk(d){
     <div class="vs">Расслышал, но не понял раздел. Выберите — разберу заново, записывать ничего не буду.</div>
     ${vAskText ? `<div class="vquote">Расслышал: <b>${esc(vAskText)}</b></div>` : ""}
     ${btns}
+    ${vRoomSkipRow()}
     <div class="vrow">
       <button class="vbtn-cancel" onclick="closeVSheet()">Закрыть</button>
       <button class="vbtn-ok" onclick="startVoice(vMode)">Сказать иначе</button>
     </div>`);
+}
+
+/* [167, Д-153-8] Ход «здесь ничего не делаем» — в тех же окнах, где человек
+   застревал: переспрос раздела и «Не разобрал». Раньше выбор был только между
+   «сказать иначе» и «закрыть», и оба возвращали к тому же вопросу. */
+function vRoomSkipRow(){
+  const rc = (typeof PROF === "object" && PROF && PROF.room) || "";
+  if(!rc) return "";
+  const r = ((typeof D === "object" && D && D.rooms) || []).find(x => x.code === rc);
+  if(!r) return "";
+  if(roomSkipReason(rc)) return "";
+  return `
+    <div class="vitem" onclick="roomSkipFromSheet('${esc(rc)}')">
+      <div style="flex:1;min-width:0">
+        <div class="vt">В помещении «${esc(String(r.name || rc))}» ничего не делаем</div>
+        <div class="vd">Опрос перестанет о нём спрашивать · вернуть можно в профиле ремонта</div>
+      </div>
+    </div>`;
 }
 
 /* Повтор разбора текстом: звук не пишем заново, шлём распознанное и явный режим.
@@ -13061,6 +13138,7 @@ function showVRepair(d){
       <div class="vh">Не разобрал</div>
       <div class="vs">Скажите, например: «в спальне потолок выровнять и покрасить, стены под обои».</div>
       ${quote}
+      ${vRoomSkipRow()}
       <div class="vrow">
         <button class="vbtn-cancel" onclick="closeVSheet()">Закрыть</button>
         <button class="vbtn-ok" onclick="startVoice('repair')">Сказать иначе</button>
@@ -14625,7 +14703,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "167.1";
+const BUILD = "167.2";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
