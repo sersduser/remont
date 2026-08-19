@@ -1754,6 +1754,159 @@ async function crewCreate(){
   finally{ CREW_NEW_BUSY = false; }
 }
 
+/* ── Своя бригада: сменить имя и передать владение [I1, остаток · чат 169] ──
+   Экран заведения обещает словами «имя можно будет сменить» с чата 110, а хода
+   не было нигде — ни в панели, ни в ветке, ни в базе. Обещание без исполнения
+   человек читает как «не нашёл кнопку», и это тот же класс, что «указатель врёт».
+   Передача владения — форма из решения 089: меняется поле crews.foreman_account_id,
+   второй роли «владелец» не заводим. Кому передать можно, решает не панель, а
+   crew_people: она же возвращает ПРИЧИНУ словами, почему конкретному человеку
+   нельзя, — панель её показывает вместо того, чтобы гасить строку молча [037]. */
+let CREW_PEOPLE = null;      /* null = ещё не грузили, [] = пусто, {err} = отказ */
+let CREW_GIVE_BUSY = false;
+let CREW_RN_BUSY = false;
+let CREW_GAVE = null;        /* след последней передачи — показывается словами */
+
+function crewCur(){ return (CREWS || []).find(c => c.crew === CREW_PICK) || null; }
+
+/* ── Смена имени ─────────────────────────────────────────────────────────── */
+function crewRenameOpen(){
+  if(!crewCur()){ toast('Сначала выберите бригаду', 'err'); return; }
+  CREW_SUGGEST = [];
+  go('crewname');
+}
+function crewRnVal(){ return String((document.getElementById('cwr_name') || {}).value || '').trim(); }
+function crewRnMsg(html){ const el = document.getElementById('cwr_msg'); if(el) el.innerHTML = html; }
+
+async function crewRenameCheck(){
+  const c = crewCur(); if(!c) return false;
+  const name = crewRnVal();
+  if(!name){ crewRnMsg('<span class="k">Введите новое имя.</span>'); return false; }
+  crewRnMsg('<span class="k">Проверяю имя…</span>');
+  const j = await crewApi({ mode: 'имя', crew: c.crew, name: name, check: true });
+  if(j.ok && j.same){ crewRnMsg('<span class="k">Это и есть нынешнее имя бригады — менять нечего.</span>'); return false; }
+  if(j.ok && j.free){ CREW_SUGGEST = []; crewRnMsg('<span class="k">Имя свободно — можно менять.</span>'); return true; }
+  if(j.taken){
+    CREW_SUGGEST = Array.isArray(j.suggest) ? j.suggest : [];
+    crewRnMsg('<span class="k">Имя занято другой бригадой.' + (CREW_SUGGEST.length ? ' Свободные рядом: ' +
+      CREW_SUGGEST.map(s => '<button onclick="crewRnUse(\'' + attr(s) + '\')" style="margin:4px 4px 0 0;padding:6px 10px;border-radius:8px;border:0;background:#3a3a3c;color:#fff;font-size:13px">' + esc(s) + '</button>').join('') : '') + '</span>');
+    return false;
+  }
+  crewRnMsg('<span class="k">' + esc(j.error || 'Не удалось проверить имя') + '</span>');
+  return false;
+}
+function crewRnUse(name){
+  const el = document.getElementById('cwr_name');
+  if(el) el.value = name;
+  CREW_SUGGEST = [];
+  crewRnMsg('<span class="k">Подставил «' + esc(name) + '». Проверьте и меняйте.</span>');
+}
+async function crewRenameSave(){
+  if(CREW_RN_BUSY) return;
+  const c = crewCur(); if(!c){ toast('Сначала выберите бригаду', 'err'); return; }
+  const name = crewRnVal();
+  if(!name){ toast('Введите новое имя', 'err'); return; }
+  CREW_RN_BUSY = true;
+  try{
+    toast('Меняю имя…', 'wait');
+    const j = await crewApi({ mode: 'имя', crew: c.crew, name: name });
+    if(!j.ok){
+      if(j.taken){ await crewRenameCheck(); toast('Имя занято — выберите свободное', 'err'); }
+      else toast(j.error || 'Не удалось сменить имя', 'err');
+      return;
+    }
+    await crewsLoad(true);
+    toast(j.same ? 'Имя и так было таким' : ('Теперь бригада зовётся «' + (j.name || name) + '»'));
+    back();
+  }catch(e){ toast(e.message, 'err'); }
+  finally{ CREW_RN_BUSY = false; }
+}
+
+/* ── Передача владения ───────────────────────────────────────────────────── */
+async function crewPeopleLoad(){
+  const c = crewCur(); if(!c){ CREW_PEOPLE = { err: 'Бригада не выбрана' }; render(); return; }
+  const j = await crewApi({ mode: 'состав', crew: c.crew });
+  CREW_PEOPLE = (j && j.ok && Array.isArray(j.people)) ? j.people : { err: (j && j.error) || 'Не удалось прочитать состав' };
+  render();
+}
+function crewGiveOpen(){
+  if(!crewCur()){ toast('Сначала выберите бригаду', 'err'); return; }
+  CREW_PEOPLE = null;
+  go('crewgive');
+  crewPeopleLoad();
+}
+async function crewGiveAsk(member, name){
+  if(CREW_GIVE_BUSY) return;
+  const c = crewCur(); if(!c) return;
+  CREW_GIVE_BUSY = true;
+  try{
+    /* Сначала спрашиваем сервер, что произойдёт, — и только потом человека.
+       Проверка ничего не меняет: p_check в crew_transfer возвращает готовность. */
+    const pre = await crewApi({ mode: 'передать', crew: c.crew, member: member, check: true });
+    if(!pre.ok){ toast(pre.error || 'Передать нельзя', 'err'); return; }
+    const кому = (pre.to && pre.to.name) || name || 'этому человеку';
+    const ok = await ask('Передать бригаду «' + (pre.crew_name || c.name) + '» — ' + кому + '?\n\n' +
+      'После передачи она уедет из ваших: распоряжаться людьми и нарядами будет ' + кому + '. ' +
+      'Вы останетесь в составе обычным участником. Роли на объектах это не меняет.', 'Передать');
+    if(!ok) return;
+    toast('Передаю…', 'wait');
+    const j = await crewApi({ mode: 'передать', crew: c.crew, member: member });
+    if(!j.ok){ toast(j.error || 'Не удалось передать', 'err'); return; }
+    CREW_GAVE = { name: (j.crew_name || c.name), to: ((j.to && j.to.name) || кому) };
+    CREW_PEOPLE = null;
+    CREW_PICK = null;
+    await crewsLoad(true);          /* бригада уехала — список перечитываем с сервера */
+    toast('Бригада «' + CREW_GAVE.name + '» теперь у ' + CREW_GAVE.to);
+    back();
+  }catch(e){ toast(e.message, 'err'); }
+  finally{ CREW_GIVE_BUSY = false; }
+}
+
+/* Экран смены имени. Отличается от заведения одним: имя уже есть, и его видно. */
+function crewNameScreen(){
+  const c = crewCur();
+  const inp = 'style="width:100%;padding:12px;border-radius:12px;border:1px solid #3a3a3c;background:#000;color:#fff;font-size:15px"';
+  if(!c) return '<div class="hello">Имя бригады</div><div class="stat"><span class="k">Бригада не выбрана. Вернитесь и выберите её в списке «Мои бригады».</span></div>';
+  return '' +
+    '<div class="hello">Имя бригады</div>' +
+    '<div class="sub">сейчас: ' + esc(c.name) + '</div>' +
+    '<div class="stat"><span class="k">Имя видно другим — оно как никнейм и уникально во всей системе. Люди увидят новое имя сразу; наряды, табель, приглашения и состав остаются при бригаде — меняется только надпись.</span></div>' +
+    '<div class="stat">' +
+      '<div class="r"><input id="cwr_name" value="' + attr(c.name) + '" placeholder="Новое имя бригады" ' + inp + '></div>' +
+      '<div class="r" id="cwr_msg" style="margin-top:8px"><span class="k">Имя проверяется до записи — как при заведении.</span></div>' +
+      '<div class="r" style="display:flex;gap:8px;margin-top:10px">' +
+        '<button onclick="crewRenameCheck()" style="flex:1;padding:12px;border-radius:12px;border:0;background:#3a3a3c;color:#fff;font-size:15px">Проверить имя</button>' +
+        '<button onclick="crewRenameSave()" style="flex:1;padding:12px;border-radius:12px;border:0;background:#0a84ff;color:#fff;font-size:15px">Сменить имя</button>' +
+      '</div>' +
+    '</div>';
+}
+
+/* Экран передачи. Кому нельзя — виден с причиной, а не спрятан: спрятанный
+   человек читается как «его нет в бригаде», и это дороже лишней строки. */
+function crewGiveScreen(){
+  const c = crewCur();
+  const head = '<div class="hello">Передать бригаду</div>';
+  if(!c) return head + '<div class="stat"><span class="k">Бригада не выбрана. Вернитесь и выберите её в списке «Мои бригады».</span></div>';
+  const sub = '<div class="sub">' + esc(c.name) + '</div>' +
+    '<div class="stat"><span class="k">Передать можно только тому, кто уже в этой бригаде, вошёл в приложение и в строю. После передачи бригада уедет из ваших: распоряжаться людьми и нарядами будет новый владелец, а вы останетесь в составе обычным участником. Роли на объектах передача не меняет — их по-прежнему выдаёт владелец объекта.</span></div>';
+  if(CREW_PEOPLE === null) return head + sub + '<div class="stat"><span class="k">Загружаю состав бригады…</span></div>';
+  if(!Array.isArray(CREW_PEOPLE)) return head + sub + '<div class="stat"><span class="k">' + esc(CREW_PEOPLE.err || 'Не удалось прочитать состав') + '</span></div>';
+  if(!CREW_PEOPLE.length) return head + sub + '<div class="stat"><span class="k">В бригаде пока никого, кроме вас. Позовите человека на экране «Бригада» — и передать станет кому.</span></div>';
+
+  const btn = 'style="padding:8px 12px;border-radius:10px;border:0;background:#0a84ff;color:#fff;font-size:14px"';
+  const rows = CREW_PEOPLE.map(p => {
+    const можно = !!p.can_own;
+    return '<div class="work"' + (можно ? '' : ' style="opacity:.55"') + '>' +
+      '<div class="t">' + (p.owner ? '👑 ' : '') + esc(p.name || '(без имени)') + '</div>' +
+      '<div class="m">' + esc(p.status || '(пусто)') + (p.why ? ' · ' + esc(p.why) : '') + '</div>' +
+      (можно ? ('<div class="m" style="margin-top:6px"><button onclick="crewGiveAsk(\'' + attr(p.member) + '\',\'' + attr(p.name || '') + '\')" ' + btn + '>Передать бригаду</button></div>') : '') +
+      '</div>';
+  }).join('');
+  const некому = !CREW_PEOPLE.some(p => p.can_own);
+  return head + sub + rows +
+    (некому ? '<div class="stat"><span class="k">Передать сейчас некому: у остальных либо нет входа в приложение, либо они не в строю. Причина у каждого написана строкой выше.</span></div>' : '');
+}
+
 /* Блок «Договор» на экране «Договор» [B3, чат 112]: состояние, позиции,
    решение второй стороны. Пустота объясняется словами, а не молчит [037]. */
 function contractBlock(){
@@ -2634,10 +2787,17 @@ function crewsBlock(){
     return '<div class="work"' + (on ? ' style="border-left:3px solid #30d158;padding-left:9px"' : '') + '>' +
       '<div class="t">' + (on ? '✅ ' : '⬜ ') + esc(c.name) + '</div>' +
       '<div class="m">людей: ' + (Number(c.members) || 0) + (c.created ? ' · заведена ' + esc(c.created) : '') + '</div>' +
-      (on ? '' : '<div class="m" style="margin-top:6px"><button onclick="crewPick(\'' + attr(c.crew) + '\')" ' + btn + '>Сделать текущей</button></div>') +
+      (on
+        ? ('<div class="m" style="display:flex;gap:8px;margin-top:8px">' +
+             '<button onclick="crewRenameOpen()" ' + btn + '>✏️ Сменить имя</button>' +
+             '<button onclick="crewGiveOpen()" ' + btn + '>👑 Передать бригаду</button>' +
+           '</div>')
+        : ('<div class="m" style="margin-top:6px"><button onclick="crewPick(\'' + attr(c.crew) + '\')" ' + btn + '>Сделать текущей</button></div>')) +
       '</div>';
   }).join('');
+  const gave = CREW_GAVE ? ('<div class="stat"><span class="k">Бригада «' + esc(CREW_GAVE.name) + '» передана: теперь ею распоряжается ' + esc(CREW_GAVE.to) + '. В ваших списках её больше нет — вы остались в её составе участником.</span></div>') : '';
   return '<div class="sub" style="margin-top:14px">Мои бригады' + (CREWS.length ? (' (' + CREWS.length + ')') : '') + '</div>' +
+    gave +
     (CREWS.length ? rows : '<div class="stat"><span class="k">Бригад пока нет. Пока её нет, звать людей «в бригаду» некуда — заведите первую.</span></div>') +
     '<div class="m" style="margin:8px 0 4px"><button onclick="crewNewOpen()" style="width:100%;padding:12px;border-radius:12px;border:0;background:#0a84ff;color:#fff;font-size:15px">➕ Новая бригада</button></div>';
 }
@@ -9246,6 +9406,10 @@ addnew(){
 
 crewnew(){ return crewNewScreen(); },
 
+crewname(){ return crewNameScreen(); },
+
+crewgive(){ return crewGiveScreen(); },
+
 /* Выбор объекта [чат 091, D4]: список известных панели ключей. */
 objsel(){ objsrvKick(); return objSelScreen(); },
 
@@ -14780,7 +14944,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "167.4";
+const BUILD = "169.1";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
