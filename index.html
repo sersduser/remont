@@ -9903,6 +9903,10 @@ works(){
           <input type="number" min="0" step="0.01" value="${w.price_alloc_usd ?? ""}" placeholder="— впишите"
             onchange="upd('01_Работы','${w.code}','Цена_аллокация_USD',this.value)">
         </div>
+        ${(w.price_base_usd || w.price_contractor_usd != null) ? `
+        <!-- [174.8] Строка «Базовая — не задана» стояла у КАЖДОЙ из 127 работ и не говорила
+             ничего: базовой цены нет, пока смета не разносилась, и это норма, а не изъян.
+             Показываем строку, только когда есть что показать. -->
         <div class="row">
           <label>Базовая</label>
           <div style="flex:1;font-size:13.5px;color:var(--hint)">
@@ -9911,7 +9915,7 @@ works(){
               : "не задана"}
             ${w.price_contractor_usd != null ? ` · Юрий: $${w.price_contractor_usd}` : ""}
           </div>
-        </div>` : `
+        </div>` : ""}` : `
         <div class="row">
           <label>Оценка</label>
           <div style="flex:1;font-weight:600;font-size:14px">
@@ -10868,7 +10872,13 @@ deal(){
     <div class="hello">Договор</div>
     <div class="sub">что входит в сумму</div>
     <div class="stat">
-      <div class="r"><span class="k">Сумма</span><span class="v">${usd(dealSum())} $</span></div>
+      <!-- [174.8, продолжение Д-172-5] Третье место, где цена объекта звалась суммой договора.
+           На главном экране и в «Финансах» это исправлено 174.3, здесь строка осталась — и она
+           хуже прочих: стоит на экране «Договор», под заголовком «Договор», а договора может
+           не быть вовсе (в пилоте его и нет — ниже прямо написано «Договоров ещё нет»). -->
+      <div class="r"><span class="k">Цена объекта</span><span class="v">${usd(dealSum())} $</span></div>
+      <div class="r"><span class="k" style="font-size:12px;opacity:.5">назначена в настройках; договор — снимок сметы, он ниже</span><span class="v"></span></div>
+      ${dealFrozenRow()}
       ${dealDelta() ? `<div class="r"><span class="k">В том числе изменения</span><span class="v">${dealDelta() > 0 ? "+" : "−"}${usd(Math.abs(dealDelta()))} $</span></div>
       <div class="r"><span class="k" style="font-size:13px;opacity:.65">${esc(dealNote())} · принятых заявок: ${chgLive().length}</span><span class="v"></span></div>` : ""}
       <div class="r"><span class="k">Выплачено</span><span class="v ok">${usd(paidSum())} $</span></div>
@@ -12639,6 +12649,31 @@ function showVAsk(d){
 /* [167, Д-153-8] Ход «здесь ничего не делаем» — в тех же окнах, где человек
    застревал: переспрос раздела и «Не разобрал». Раньше выбор был только между
    «сказать иначе» и «закрыть», и оба возвращали к тому же вопросу. */
+/* [174.8, ловушка названа слотом 3 в карте Д-172-3] Кнопка «здесь ничего не делаем»
+   ставит признак помещению из КОНТЕКСТА (voiceRoom): где человек стоит. Пока ход был
+   виден только из профиля, контекст и сказанное почти всегда совпадали; после 174.6
+   кнопка видна почти всегда — и человек, стоящий в спальне и сказавший «в туалете
+   ничего не делаем», получил бы кнопку про спальню. Поэтому: если помещение НАЗВАНО
+   в реплике — берём названное; если названо больше одного — не угадываем вовсе. */
+function roomFromSaid(текст){
+  try{
+    const t = String(текст || "").toLowerCase();
+    if(!t) return "";
+    let найдено = "";
+    for(const r of ((typeof D === "object" && D && D.rooms) || [])){
+      const имя = String(r.name || "").toLowerCase().replace(/[^a-zа-яё0-9 ]/gi, "");
+      const первое = имя.split(/\s+/)[0] || "";
+      if(первое.length < 4) continue;
+      const основа = первое.slice(0, Math.min(6, первое.length - 1) || первое.length);
+      if(основа.length >= 4 && t.indexOf(основа) >= 0){
+        if(найдено && найдено !== r.code) return "?";     // названо несколько — молчим
+        найдено = r.code;
+      }
+    }
+    return найдено;
+  }catch(e){ return ""; }
+}
+
 function vRoomSkipRow(){
   /* [174, Д-172-3] Ход был виден только из профиля помещения. Человек, сказавший
      «в туалете ничего не делаем» с главного экрана, профиля не имеет — и хода не
@@ -12646,8 +12681,10 @@ function vRoomSkipRow(){
      (rooms пуст, ask=true), значит адрес может дать только панель. Берём тот же
      контекст, который уходит Голосу: профиль → фильтр по комнате → последнее
      помещение. Неизвестно — хода нет: выдумывать адрес нельзя. */
-  const rc = (typeof voiceRoom === "function") ? voiceRoom()
-           : ((typeof PROF === "object" && PROF && PROF.room) || "");
+  const сказано = roomFromSaid(typeof vAskText !== "undefined" ? vAskText : "");
+  if(сказано === "?") return "";                  // в реплике названо несколько помещений
+  const rc = сказано || ((typeof voiceRoom === "function") ? voiceRoom()
+           : ((typeof PROF === "object" && PROF && PROF.room) || ""));
   if(!rc) return "";
   const r = ((typeof D === "object" && D && D.rooms) || []).find(x => x.code === rc);
   if(!r) return "";
@@ -12656,7 +12693,8 @@ function vRoomSkipRow(){
     <div class="vitem" onclick="roomSkipFromSheet('${esc(rc)}')">
       <div style="flex:1;min-width:0">
         <div class="vt">В помещении «${esc(String(r.name || rc))}» ничего не делаем</div>
-        <div class="vd">Опрос перестанет о нём спрашивать · вернуть можно в профиле ремонта</div>
+        <div class="vd">Опрос перестанет о нём спрашивать · вернуть можно в профиле ремонта${
+          сказано ? "" : " · помещение взято по тому, где вы сейчас"}</div>
       </div>
     </div>`;
 }
@@ -14742,6 +14780,17 @@ const UZ = {
 "Договор отклонён":"Shartnoma rad etildi",
 "Загружаю…":"Yuklanmoqda…",
 "Базовая":"Asosiy",
+/* [174] Надписи, заменённые этой ночью: ключ словаря — русская строка, и правка
+   надписи без словаря молча теряет перевод (ловушка E1, названа в 020). */
+"Цена объекта":"Obyekt narxi",
+"Остаток к оплате":"To'lanishi qolgan",
+"назначена в настройках объекта; договор — отдельная величина":"obyekt sozlamalarida belgilangan; shartnoma — alohida qiymat",
+"из настроек объекта, вместе с принятыми изменениями":"obyekt sozlamalaridan, qabul qilingan o'zgarishlar bilan",
+"назначена в настройках; договор — снимок сметы, он ниже":"sozlamalarda belgilangan; shartnoma — smeta surati, u quyida",
+"Сказали не делать":"Qilmaslik aytilgan",
+"перенесено из помещения-образца":"namuna xonadan ko'chirilgan",
+"Озвучка в этом клиенте недоступна — вопросы читайте глазами":"Bu ilovada ovoz chiqarish yo'q — savollarni o'qib chiqing",
+"«Позже» — вернусь к этому вопросу в конце · «Дальше» — пропустить и больше не спрашивать сейчас · «Хватит» — закончить опрос":"«Keyinroq» — bu savolga oxirida qaytaman · «Keyingi» — o'tkazib yuborish · «Yetarli» — so'rovni tugatish",
 "не задана":"belgilanmagan",
 "Записываю…":"Yozyapman…",
 "Введите сумму договора":"Shartnoma summasini kiriting",
@@ -15299,7 +15348,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "173.3";
+const BUILD = "174.8";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
