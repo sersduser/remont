@@ -9903,6 +9903,12 @@ works(){
           <input type="number" min="0" step="0.01" value="${w.price_alloc_usd ?? ""}" placeholder="— впишите"
             onchange="upd('01_Работы','${w.code}','Цена_аллокация_USD',this.value)">
         </div>
+        <div class="row">
+          <label>Условие</label>
+          <input type="text" value="${attr(condFromNote(w.note))}"
+            placeholder="— словами: «с сохранением», «после кухни»"
+            onchange="condSet('${w.code}', this.value)">
+        </div>
         ${(w.price_base_usd || w.price_contractor_usd != null) ? `
         <!-- [174.8] Строка «Базовая — не задана» стояла у КАЖДОЙ из 127 работ и не говорила
              ничего: базовой цены нет, пока смета не разносилась, и это норма, а не изъян.
@@ -12279,6 +12285,31 @@ function profPriceRoom(code, roomCode){
 /* [167, Д-167-2] Условие работы, названное голосом, — след в смете рядом с
    поправками объёма: тот же вопрос «почему цена и объём такие», только словами
    человека, а не числом. */
+/* [174.9, остаток Д-167-2] Условие, названное ПОСЛЕ сборки сметы, доносить было нечем:
+   `cond` живёт в плане профиля и уезжает в «Примечание» только при сборке строки. Теперь
+   у строки сметы есть своё поле: панель читает условие из примечания и пишет обратно,
+   НЕ трогая служебную часть («вид KF-04 · поправки: …»), — она нужна в споре так же,
+   как и слова человека. Пустое поле снимает условие и оставляет служебное. */
+const УСЛ_РЕ = /\s*·?\s*условие:[^·]*/i;
+function condFromNote(note){
+  const m = String(note || "").match(/условие:\s*([^·]+)/i);
+  return m ? m[1].trim() : "";
+}
+function condCompose(note, текст){
+  const без = String(note || "").replace(УСЛ_РЕ, "").trim().replace(/^·\s*/, "");
+  const t = String(текст || "").trim();
+  if(!t) return без;
+  return без ? (без + " · условие: " + t) : ("условие: " + t);
+}
+async function condSet(code, текст){
+  const w = ((typeof D === "object" && D && D.works) || []).find(x => x.code === code);
+  if(!w) return;
+  const стало = condCompose(w.note, текст);
+  if(String(стало) === String(w.note || "")) return;      // ничего не изменилось — сервер не тревожим
+  const ok = await upd("01_Работы", code, "Примечание", стало);
+  if(ok !== false){ w.note = стало; toast(текст.trim() ? "Условие записано" : "Условие снято"); }
+}
+
 function condNote(code, roomCode){
   const it = (((typeof PROF === "object" && PROF && PROF.plan) || {})[roomCode] || {})[code] || {};
   const c = String(it.cond || "").trim();
@@ -14780,6 +14811,9 @@ const UZ = {
 "Договор отклонён":"Shartnoma rad etildi",
 "Загружаю…":"Yuklanmoqda…",
 "Базовая":"Asosiy",
+"Условие":"Shart",
+"Условие записано":"Shart yozildi",
+"Условие снято":"Shart olib tashlandi",
 /* [174] Надписи, заменённые этой ночью: ключ словаря — русская строка, и правка
    надписи без словаря молча теряет перевод (ловушка E1, названа в 020). */
 "Цена объекта":"Obyekt narxi",
@@ -15348,7 +15382,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "174.8";
+const BUILD = "174.9";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
