@@ -5549,7 +5549,11 @@ async function objShowPlan(){
   const box = document.getElementById("objPlanBox");
   const p = objPlan();
   if(!box || !p) return;
-  box.innerHTML = '<div class="m">Загружаю план…</div>';
+  /* [179] У ожидания есть срок, и человек имеет право его знать: LOAD_MS = 30 с,
+     после чего fetchT прерывает запрос сам. Без этой строки «Загружаю план…»
+     неотличимо от зависшего экрана. */
+  box.innerHTML = '<div class="m">Загружаю план…</div>'
+    + '<div class="m" style="opacity:.7">Это до 30 секунд.</div>';
   try{
     const q = "draft=" + encodeURIComponent(p.id) + "&initData=" + encodeURIComponent(INIT) + "&key=" + encodeURIComponent(KEY);
     const r = await fetchT(API + "/file?" + q);
@@ -5601,7 +5605,12 @@ async function objShowPlan(){
       '</div>' +
       (scC ? '<button onclick="planRulerStart()" style="width:100%;margin-top:8px;padding:11px;border-radius:11px;border:0;background:#2c2c2e;color:#fff;font-size:15px">Линейка</button>' : "");
   }catch(e){
-    box.innerHTML = '<div class="m" style="color:#ff453a">План не открылся: ' + esc(e.message) + "</div>";
+    /* [179] У отказа появляется ход. До правки единственным способом повторить
+       попытку был уход с экрана и возврат: render() зовёт objShowPlan заново.
+       Кнопка делает то же самое, не заставляя человека угадывать этот приём. */
+    box.innerHTML = '<div class="m" style="color:#ff453a">План не открылся: ' + esc(e.message) + "</div>"
+      + '<button id="planRetryBtn" onclick="objShowPlan()" style="width:100%;margin-top:8px;padding:11px;'
+      + 'border-radius:11px;border:0;background:#2c2c2e;color:#fff;font-size:15px">Открыть заново</button>';
   }
 }
 
@@ -14695,7 +14704,7 @@ const UZ = {
 "по подтверждённым отметкам табеля":"tasdiqlangan ish vaqti belgilariga ko'ra",
 "Человекодней за 7 дней (подтверждённых)":"7 kundagi odam-kunlar (tasdiqlangan)",
 "— загляните в календарь":"— kalendarga qarang","Напишите задание":"Topshiriqni yozing",
-"Загружаю план…":"Reja yuklanmoqda…","План не открылся":"Reja ochilmadi",
+"Загружаю план…":"Reja yuklanmoqda…","План не открылся":"Reja ochilmadi","Это до 30 секунд.":"Bu 30 soniyagacha davom etadi.","Открыть заново":"Qaytadan ochish",
 "Сервер не отдал изображение":"Server suratni bermadi",
 "Проёмы":"Ochiqlar","Проём →":"Ochiq →","улица":"ko'cha","подъезд":"podyezd","судьба:":"taqdiri:","сейчас:":"hozir:","ширина:":"eni:","высота:":"balandligi:","низ:":"pastki qismi:","на плане:":"rejada:","было:":"edi:",
 "Пол, м²:":"Pol, m²:","Периметр, м:":"Perimetr, m:","Высота, м:":"Balandlik, m:","Окон:":"Deraza:","Дверей:":"Eshik:","Тип помещения:":"Xona turi:",
@@ -15413,7 +15422,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "174.10";
+const BUILD = "179.1";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
