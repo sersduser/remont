@@ -6409,6 +6409,27 @@ function dealBase(){
   const S = D.settings || {};
   return Number(S['Договор_USD'] != null ? S['Договор_USD'] : ((D.my_money || {}).contract_usd || 0)) || 0;
 }
+/* [174, Д-172-5] «Договор» на главном экране — это НЕ сумма договора.
+   dealBase() берёт `Договор_USD` из 07_Настроек: общая цена объекта, которую
+   заказчик назначил до всякого договора. Признанный договор живёт отдельно
+   (`contracts.total_usd`, приходит веткой /contracts) и на пилоте расходится
+   с ней на 144,58 $. Класс тот же, что закрывали в 167.4: число обязано
+   называть, чем меряется. Ничего не пересчитываем — только называем честно
+   и, когда договор признан и суммы разошлись, говорим об этом строкой. */
+function dealFrozenRow(){
+  try{
+    if(typeof CONTRACTS === "undefined" || !CONTRACTS) return "";   /* ветка ещё не спрошена — молчим */
+    const f = contractFrozen();
+    if(!f) return "";
+    const t = Number(f.total) || 0;
+    const разошлись = Math.abs(t - dealSum()) >= 0.01;
+    return '<div class="r"><span class="k">Договор № ' + esc(f.no) + ' (признан)</span>' +
+           '<span class="v">' + usd(t) + ' $</span></div>' +
+      (разошлись ? '<div class="r"><span class="k" style="font-size:13px;opacity:.65">' +
+         'цена объекта и сумма договора расходятся на ' + usd(Math.abs(Math.round((t - dealSum()) * 100) / 100)) +
+         ' $ — договор считан по позициям сметы</span><span class="v"></span></div>' : "");
+  }catch(e){ return ""; }
+}
 function dealDelta(){ return Math.round(chgLive().reduce((a, c) => a + (Number(c.d_usd) || 0), 0) * 100) / 100; }
 function dealSum(){ return Math.round((dealBase() + dealDelta()) * 100) / 100; }
 function paidSum(){
@@ -9648,10 +9669,12 @@ home(){
     </div>` : `
     <div class="stat">
       ${advBox}${timeBox}
-      <div class="r"><span class="k">Договор</span>
+      <div class="r"><span class="k">Цена объекта</span>
         <span class="v">${usd(dealSum())} $</span></div>
+      <div class="r"><span class="k" style="font-size:12px;opacity:.5">назначена в настройках объекта; договор — отдельная величина</span><span class="v"></span></div>
       ${dealDelta() ? `<div class="r"><span class="k" style="font-size:13px;opacity:.65">${esc(dealNote())}</span><span class="v"></span></div>` : ""}
-      <div class="r"><span class="k">Остаток по договору</span>
+      ${dealFrozenRow()}
+      <div class="r"><span class="k">Остаток к оплате</span>
         <span class="v warn">${usd(dealRest())} $</span></div>
       <div class="r"><span class="k">Готовность</span>
         <span class="v">${Math.round(p)} %</span></div>
@@ -10701,10 +10724,12 @@ money(){
     <div class="hello">Финансы</div>
     <div class="sub">все платежи по объекту</div>
     <div class="stat">
-      <div class="r"><span class="k">Договор</span><span class="v">${usd(dealSum())} $</span></div>
+      <div class="r"><span class="k">Цена объекта</span><span class="v">${usd(dealSum())} $</span></div>
+      <div class="r"><span class="k" style="font-size:12px;opacity:.5">из настроек объекта, вместе с принятыми изменениями</span><span class="v"></span></div>
       ${dealDelta() ? `<div class="r"><span class="k" style="font-size:13px;opacity:.65">${esc(dealNote())}</span><span class="v"></span></div>` : ""}
+      ${dealFrozenRow()}
       <div class="r"><span class="k">Оплачено за работу</span><span class="v ok">${usd(paidSum())} $</span></div>
-      <div class="r"><span class="k">Остаток</span><span class="v warn">${usd(dealRest())} $</span></div>
+      <div class="r"><span class="k">Остаток к оплате</span><span class="v warn">${usd(dealRest())} $</span></div>
     </div>
     <div class="card">
       <div class="lbl">Работы по приёмке</div>
@@ -15136,7 +15161,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "174.2";
+const BUILD = "174.3";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
