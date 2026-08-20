@@ -3012,6 +3012,11 @@ function planKey(){
    Набранное в этой сессии главнее серверного — то же правило, что и с
    localStorage (чат 116): восстановление не затирает сказанное только что. */
 let PROF_PULLED = 0, PROF_PUSH_T = null, PROF_PUSH_LAST = "", PROF_SRV = null;
+/* [174.10] Отказ сервера — не пустота. По ссылке с ключом (так ходит бригада) ветка
+   `/profile` отвечает 401 «нужна подпись Telegram», панель молча выходила, и экран
+   говорил «Пока не выбрано ни одной работы» — то есть выдавал отказ за факт.
+   Найдено живым проходом пилота по ключу 20.08. */
+let PROF_ERR = "";
 
 async function profileApi(body){
   let r, txt;
@@ -3032,7 +3037,13 @@ async function profilePull(){
     if(typeof D !== 'object' || !D || !D.object_id) return false;
     PROF_PULLED = 1;
     const j = await profileApi({ mode: 'get', object_id: D.object_id });
-    if(!j || !j.ok) return false;
+    if(!j || !j.ok){
+      PROF_ERR = (j && (j.code === 401 || j.code === 403)) ? "подпись"
+               : ((j && j.absent) ? "ветки нет" : "связь");
+      try{ if(typeof render === 'function') render(); }catch(e){}
+      return false;
+    }
+    PROF_ERR = "";
     const p = j.plan;
     if(!p || typeof p !== 'object' || Array.isArray(p)) return false;
     PROF_SRV = j.updated_at || null;
@@ -10121,7 +10132,15 @@ profile(){
       '</div>' +
       (all.n
         ? (all.blank ? '<div class="r"><span class="k" style="font-size:13px;color:#ff9f0a">Без объёма: ' + all.blank + ' — заполните или снимите, иначе смету не собрать.</span></div>' : '')
-        : '<div class="r"><span class="k" style="font-size:13px">Пока не выбрано ни одной работы. Откройте помещение из списка ниже и отметьте виды работ — или пройдите вопросами; кнопка сборки станет активной сама.</span></div>') +
+        : (PROF_ERR
+           ? ('<div class="r"><span class="k" style="font-size:13px;color:#ff9f0a">' +
+              (PROF_ERR === "подпись"
+                 ? 'Профиль ремонта сервер отдаёт только через Telegram: здесь он не подтверждает личность. Отмеченное раньше не пропало — откройте панель кнопкой «Смета» в чате с ботом.'
+                 : (PROF_ERR === "ветки нет"
+                    ? 'Профиль ремонта на сервере ещё не заведён — отмеченное сохраняется только на этом устройстве.'
+                    : 'Профиль ремонта не загрузился — связь с сервером не удалась. Отмеченное раньше не пропало.')) +
+              '</span></div>')
+           : '<div class="r"><span class="k" style="font-size:13px">Пока не выбрано ни одной работы. Откройте помещение из списка ниже и отметьте виды работ — или пройдите вопросами; кнопка сборки станет активной сама.</span></div>')) +
       '</div>' +
       (all.n && all.blank ? profBlankHtml() : '') +   /* [133, Д-129-5] дозаполнение прямо здесь */
       mergedNote +
@@ -15394,7 +15413,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "172.2";
+const BUILD = "174.10";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
