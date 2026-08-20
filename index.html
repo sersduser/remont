@@ -430,7 +430,15 @@ function objsSetActive(key){
    главнее локального. Ключа нет (вход по подписи, объект один) — заголовок
    остаётся прежним словом. */
 function objNowTitle(){
-  try{ return KEY ? objsTitle(KEY) : "Объект"; }catch(e){ return "Объект"; }
+  try{
+    /* [174, Д-172-6] Имя объекта с сервера главнее локального списка. По ссылке
+       с ключом панель ходит без подписи, ветку /objects звать нечем, и объект
+       назывался хвостом ключа — «Объект …95fb80». Ветка /data того же чата
+       теперь отдаёт title, и он же кладётся в список объектов при загрузке. */
+    const srv = String((typeof D !== "undefined" && D && D.title) || "");
+    if(srv) return srv;
+    return KEY ? objsTitle(KEY) : "Объект";
+  }catch(e){ return "Объект"; }
 }
 function objsTitle(key){
   const o = objsAll().find(x => x.key === key);
@@ -722,6 +730,10 @@ async function load(){
     if(D && D.need_setup){ renderSetup(D); return; }
     if(!D || !D.role) throw new Error(BAD);
     OBJ_SWITCH = null;                      /* [138.3] объект открылся */
+    /* [174, Д-172-6] Имя, пришедшее с сервера, остаётся в списке объектов:
+       иначе экран «Выбор объекта» показывает хвосты ключей у всех, кроме тех,
+       что панель когда-то получала веткой /objects (а она требует подписи). */
+    if(KEY && D.title) objsRemember(KEY, D.title);
     loadWatch(false);                       /* [156.1] данные есть — сторож не нужен */
     render();
     evApply();                              // [чат 144] ссылка возврата из сообщения бота
@@ -15161,7 +15173,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "174.3";
+const BUILD = "174.4";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
