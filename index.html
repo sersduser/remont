@@ -7535,6 +7535,16 @@ async function crewLoad(){
   try{ r = await fetchT(API + "/data?" + auth + "&crew=1", { cache: "no-store" }, LOAD_MS, "бригада"); }
   catch(e){ throw new Error((e && e.timeout) ? e.message : "нет данных бригады"); }
   const raw = (await r.text()).trim();
+  /* [174] Пропуск один на обе ветки — значит и счётчик отказов свежести общий.
+     Без этого панель, стоящая на экране бригады, продолжает бить в сервер каждые
+     30 секунд: refresh в это время молчит (busy при вводе либо уже остановлен),
+     а контур свои отказы не считал вовсе. Пустое тело при 200 — тот же протухший
+     пропуск, что и 401 (находка 170), поэтому считается наравне с ним. */
+  if(r.status === 401 || r.status === 403 || !raw){
+    STALE_N++; if(STALE_N >= 2) staleStop();
+    throw new Error(initStale() ? staleMsg() : "нет данных бригады");
+  }
+  STALE_N = 0;
   let j = null; try{ j = JSON.parse(raw); }catch(e){}
   if(!j || !j.crew) throw new Error("нет данных бригады");
   CREW_DATA = j.crew;
@@ -7563,6 +7573,8 @@ let CREW_TS = 0;
 const CREW_LIVE = ["crew", "crew_orders", "crew_time", "crew_reports", "crew_cal", "crew_my"];
 function crewFresh(){
   try{
+    if(STALE_OFF) return;   /* [174] опрос остановлен — контур бригады тоже молчит:
+                               staleStop() гасит таймер, а событие видимости звало тик мимо него */
     if(document.visibilityState !== "visible") return;
     if(!D || !D.kind) return;
     const scr = stack[stack.length - 1];
@@ -15116,7 +15128,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "172.1";
+const BUILD = "174.1";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
