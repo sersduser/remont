@@ -3117,6 +3117,21 @@ function roomSkipClear(rc){
 }
 /* Ход из окна разбора: сказанное не разобрано или относится к комнате, которой
    не касаются. Ответ человека кнопкой, а не ещё одним переспросом. */
+/* [173.3, Д-172-3] Отказ от помещения, названный голосом. Отличается от
+   roomSkipFromSheet ровно тем, из-за чего карта 172 назвала ту ловушкой:
+   помещение берётся из РАЗБОРА (что человек сказал), а не из открытого у него
+   экрана. Человек, стоящий в спальне и сказавший «в туалете ничего не делаем»,
+   пропустит туалет, а не спальню. Причина сохраняется его словами. */
+function roomSkipVoice(i){
+  const r = (typeof vRooms !== "undefined" ? vRooms : [])[i];
+  if(!r) return;
+  const rc = String(r.code || "").trim();
+  if(!rc){ toast("Такого помещения в объекте нет — заводить его ради отказа не нужно", "wait"); return; }
+  roomSkipSet(rc, ((r.room_skip && r.room_skip.reason) || "помещение не в работе"));
+  try{ closeVSheet(); }catch(e){}
+  toast("«" + String(r.name || rc) + "»: ничего не делаем — опрос его пропустит");
+  try{ render(); }catch(e){}
+}
 function roomSkipFromSheet(rc){
   const код = rc || ((typeof PROF === "object" && PROF && PROF.room) || "");
   if(!код){ toast("Не знаю, о каком помещении речь — откройте его в профиле", "wait"); return; }
@@ -13116,7 +13131,21 @@ function showVRooms(d){
         </div>
       </div>`).join("");
     const mtHead = (r.matched || []).length ? '<div class="vd" style="margin:6px 0 2px">Сверено — совпало</div>' : "";
-    return `<div style="margin-bottom:10px">${head}${fl}${mtHead}${mt}${elHead}${el}</div>`;
+    /* [173.3, Д-172-3] «В туалете ничего не делаем» приходит сюда: классификатор
+       относит такую фразу к профилю ОБЪЕКТА (проверено исполнениями 73635/73636).
+       Показываем услышанное словами человека и даём один ход — тот же механизм
+       признака, что у кнопки в профиле; новых веток записи не заводим. */
+    const skipLine = r.room_skip ? (r.code
+      ? `<div class="vitem" style="opacity:.95"><div class="vchk" style="opacity:.35">—</div><div style="flex:1;min-width:0">
+          <div class="vv">Ничего не делаем</div>
+          <div class="vd">услышано: «${esc(String((r.room_skip && r.room_skip.reason) || ""))}» · опрос перестанет спрашивать про это помещение</div>
+          <div style="margin-top:6px"><button onclick="roomSkipVoice(${i})" style="padding:7px 11px;border-radius:9px;border:0;background:var(--warn);color:var(--warntxt);font-size:13px">Пропустить помещение</button></div>
+        </div></div>`
+      : `<div class="vitem" style="opacity:.85"><div class="vchk" style="opacity:.35">—</div><div style="flex:1;min-width:0">
+          <div class="vv">Ничего не делаем</div>
+          <div class="vd"><span style="color:#ff9f0a">такого помещения в объекте нет</span> · раз в нём ничего не делаем, заводить его не нужно</div>
+        </div></div>`) : "";
+    return `<div style="margin-bottom:10px">${head}${skipLine}${fl}${mtHead}${mt}${elHead}${el}</div>`;
   }).join("");
   openVSheet(`
     <div class="vh">Обмеры помещений</div>
@@ -13795,7 +13824,7 @@ function showVRepair(d){
       ? '<div class="vd" style="margin:8px 0 2px">Поправки и оговорки — записываются в карточке помещения</div>' : "";
     const ref = (r.refused || []).length;
     const note = [lik ? `перенесено из «${(r._like && r._like.name) || ""}»: ${lik}` : "", blk ? `названо направлением: ${blk} — не отмечено` : "", ofr ? `предложено целиком: ${ofr} — не отмечено` : "", nov ? `без объёма здесь: ${nov} — не отмечено` : "", tech ? (`по технологии добавлено: ${tech}` + (techX ? ` · из них ${techX} не отмечено: другая поверхность` : "")) : "", dup ? `уже в смете: ${dup} — не отмечено` : "", inpl ? `уже отмечено в этом помещении: ${inpl} — не отмечено` : "", ref ? `сказали не делать: ${ref}` : "", (r.mods || []).length ? `поправок услышано: ${(r.mods || []).length} — не записано` : "", skp ? `этапов можно пропустить: ${skp} — решается в профиле` : ""].filter(Boolean).join(" · ");
-    return `<div style="margin-bottom:12px">${head}${note ? `<div class="vd" style="margin:2px 0 6px">${esc(note)}</div>` : ""}${kl}${rfHead}${rf}${ooHead}${oo}${opHead}${op}${mdHead}${md}
+    return `<div style="margin-bottom:12px">${head}${note ? `<div class="vd" style="margin:2px 0 6px">${esc(note)}</div>` : ""}${kl}${rfHead}${rf}${ooHead}${oo}${opHead}${op}${mdHead}${md}${(r.room_skip ? `<div class="vd" style="margin:8px 0 2px;color:#ff9f0a">Услышано: «${esc(String(r.room_skip.reason || ""))}» — помещение целиком вне работы. Отметить это можно в его карточке.</div>` : "")}
       </div>`;
   }).join("");
   openVSheet(`
@@ -14301,6 +14330,9 @@ const UZ = {
   "Позже": "Keyinroq",
   "Дальше": "Keyingi",
   "Хватит": "Yetarli",
+  /* [173.3] отказ от помещения голосом */
+  "Ничего не делаем": "Hech narsa qilmaymiz",
+  "Пропустить помещение": "Xonani o'tkazib yuborish",
   /* [173.2] названное вне прайса бригады */
   "Названо, но у бригады нет такой работы в прайсе": "Aytildi, lekin brigada narxnomasida bunday ish yo'q",
   /* [173.1] подписи под кнопками навигации опроса */
@@ -15267,7 +15299,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "173.2";
+const BUILD = "173.3";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
