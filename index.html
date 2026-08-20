@@ -653,6 +653,23 @@ const esc  = t => String(t ?? "").replace(/[&<>"']/g, c =>
   ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c]));
 const attr = t => esc(t);
 
+/* [173.1, мелочи интерфейса] В строке «Расслышал» вместе с речью человека
+   показывались служебные пометки распознавания («[шум]», «[шуршание]») и
+   протяжные междометия («а-а-а»). Ошибки самого распознавания («Обзираем»
+   вместо «обдираем») НЕ трогаем и не исправляем: по ним человек понимает,
+   что его не расслышали, и повторяет. Чистка только показа — записывается и
+   разбирается по-прежнему исходный текст. */
+function vClean(s){
+  const исходный = String(s == null ? "" : s);
+  let t = исходный;
+  t = t.replace(/\[[^\]\[]{0,40}\]/g, " ");                                   /* [шум], [шуршание] */
+  t = t.replace(/(^|[\s,.!?;:—-])[аэоумы]{1,2}(?:-[аэоумы]{1,2})+(?=$|[\s,.!?;:—-])/gi, "$1");  /* а-а-а */
+  t = t.replace(/(^|[\s,.!?;:—-])([аэоум])\2{2,}(?=$|[\s,.!?;:—-])/gi, "$1");   /* ааа, эээ */
+  t = t.replace(/\s{2,}/g, " ").replace(/\s+([,.!?;:])/g, "$1").trim();
+  t = t.replace(/^[\s,.;:—-]+/, "");
+  return t || исходный;
+}
+
 /* ── ЗАГРУЗКА ─────────────────────────────────────────────── */
 let LOAD_MS = 30000;   /* [137] срок ответа сервера данных: дольше — это отказ, а не ожидание */
 /* [142, пункт 9 смены] Общий срок для КАЖДОГО запроса, от которого зависит
@@ -3498,7 +3515,7 @@ function profSetVol(el){
 
 function profTotal(roomCode){                    // итог одного помещения
   const picked = (PROF.plan[roomCode || PROF.room] || {});
-  let n = 0, sum = 0, blank = 0, skipped = 0;
+  let n = 0, sum = 0, blank = 0, skipped = 0, noprice = 0;
   for(const code of planCodes(picked)){
     const it = picked[code];
     n++;
@@ -3507,27 +3524,33 @@ function profTotal(roomCode){                    // итог одного пом
        и решили не делать. */
     if(it.skip){ skipped++; continue; }
     if(it.vol === null || !(Number(it.vol) > 0)) { blank++; continue; }
-    sum += Number(it.vol) * profPriceRoom(code, roomCode || PROF.room);
+    /* [173.1, мелочи интерфейса] Работа с объёмом, но без ставки, давала ноль
+       и исчезала из денег молча: сводка профиля считала только «без объёма», а
+       про пустую цену говорил лишь экран договора — тремя шагами позже. */
+    const ставка = profPriceRoom(code, roomCode || PROF.room);
+    if(!(Number(ставка) > 0)) noprice++;
+    sum += Number(it.vol) * ставка;
   }
-  return { n, sum: Math.round(sum * 100) / 100, blank, skipped };
+  return { n, sum: Math.round(sum * 100) / 100, blank, skipped, noprice };
 }
 function profTotalAll(){                         // итог по всему плану
-  let n = 0, sum = 0, blank = 0, rooms = 0, skipped = 0;
+  let n = 0, sum = 0, blank = 0, rooms = 0, skipped = 0, noprice = 0;
   Object.keys(PROF.plan).forEach(rc => {
     const t = profTotal(rc);
     if(!t.n) return;
     rooms++; n += t.n; sum += t.sum; blank += t.blank; skipped += t.skipped;
+    noprice += (t.noprice || 0);
   });
-  return { rooms, n, sum: Math.round(sum * 100) / 100, blank, skipped };
+  return { rooms, n, sum: Math.round(sum * 100) / 100, blank, skipped, noprice };
 }
 function profTotalText(){
   const t = profTotal();
-  return t.n ? ('Выбрано ' + t.n + ' · на ' + fmt(t.sum) + ' USD' + (t.blank ? (' · без объёма: ' + t.blank) : '') + (t.skipped ? (' · пропущено этапов: ' + t.skipped) : '')) : 'Ничего не выбрано';
+  return t.n ? ('Выбрано ' + t.n + ' · на ' + fmt(t.sum) + ' USD' + (t.blank ? (' · без объёма: ' + t.blank) : '') + (t.noprice ? (' · без цены: ' + t.noprice) : '') + (t.skipped ? (' · пропущено этапов: ' + t.skipped) : '')) : 'Ничего не выбрано';
 }
 function profTotalAllText(){
   const t = profTotalAll();
   if(!t.n) return 'План пуст';
-  return 'В плане ' + t.n + ' работ в ' + t.rooms + ' помещ. · ' + fmt(t.sum) + ' USD' + (t.blank ? (' · без объёма: ' + t.blank) : '') + (t.skipped ? (' · пропущено этапов: ' + t.skipped) : '');
+  return 'В плане ' + t.n + ' работ в ' + t.rooms + ' помещ. · ' + fmt(t.sum) + ' USD' + (t.blank ? (' · без объёма: ' + t.blank) : '') + (t.noprice ? (' · без цены: ' + t.noprice) : '') + (t.skipped ? (' · пропущено этапов: ' + t.skipped) : '');
 }
 
 // Сборка сметы: выбранное по ВСЕМ помещениям плана превращается в строки листа 01_Работы [чат 007 · многокомнатно 017]
@@ -5806,7 +5829,13 @@ function elemBlock(r){
   const gaps = list.filter(elemGap).length;
   /* [169.4] Когда карточка уже предлагает общий ход, частная кнопка сведения
      чисел молчит: два предложения об одном и том же читаются как выбор. */
-  const d = (typeof roomFixPlan === "function" && roomFixPlan(r).length >= 2) ? null : elemDelta(r);
+  /* [173.1] Расхождение и молчание о нём — разные вещи. «дельта» говорит,
+     есть ли расхождение вообще; «d» — надо ли рассказывать о нём здесь, или
+     сводная строка уже сказала. Слить их в одно значение нельзя: ветка
+     «иначе» у numLine объявляет, что всё сходится. */
+  const дельта = elemDelta(r);
+  const своднаяВедёт = (typeof roomFixPlan === "function" && roomFixPlan(r).length >= 2);
+  const d = своднаяВедёт ? null : дельта;
   if(!list.length){
     return '<div class="m" style="margin-top:8px">Проёмы этого помещения не заведены ' +
       '<button onclick="elemAdd(\'' + esc(r.code) + '\')" style="margin-left:6px;padding:6px 10px;border-radius:9px;border:0;background:#3a3a3c;color:#fff;font-size:13px">Добавить проём</button></div>';
@@ -5838,7 +5867,7 @@ function elemBlock(r){
       ' <button onclick="elemApplyNums(\'' + esc(r.code) + '\')" style="margin-left:6px;padding:6px 10px;border-radius:9px;border:0;background:#3a3a3c;color:#fff;font-size:13px">Записать в обмеры: ' +
       [d.needW ? 'окон ' + fmt(чис(r.windows)) + ' → ' + d.w : '', d.needD ? 'дверей ' + fmt(чис(r.doors)) + ' → ' + d.d : ''].filter(Boolean).join(' · ') +
       '</button></div>'
-    : (list.length
+    : ((list.length && !дельта)
         ? '<div class="m" style="margin-top:6px;opacity:.7">Обмеры сходятся со схемой проёмов: окон ' +
           elemCount(r.code, "окно") + ' · дверей ' + elemCount(r.code, "дверь") + '</div>'
         : "");
@@ -12022,10 +12051,15 @@ function qzScreen(){
       mic + tts + answer + say +
     "</div>" +
     '<div style="display:flex;gap:8px;margin-top:12px">' +
-      '<button onclick="qzPrev()" style="flex:1;padding:11px;border-radius:11px;border:1px solid #3a3a3c;background:#1c1c1e;color:#fff;font-size:14px">Назад</button>' +
-      '<button onclick="qzLater()" style="flex:1;padding:11px;border-radius:11px;border:1px solid #3a3a3c;background:#1c1c1e;color:#fff;font-size:14px">Позже</button>' +
-      '<button onclick="qzNext()" style="flex:1;padding:11px;border-radius:11px;border:1px solid #3a3a3c;background:#1c1c1e;color:#fff;font-size:14px">Дальше</button>' +
-      '<button onclick="qzStop()" style="flex:1;padding:11px;border-radius:11px;border:1px solid #3a3a3c;background:#1c1c1e;color:#fff;font-size:14px">Хватит</button>' +
+      /* [173.1, мелочи интерфейса] Четыре кнопки стояли без объяснений, и разницы
+         между «Позже» и «Дальше» из надписей не было видно — отсюда «почему вновь
+         встречается, я же ответил» (снимок 1115). Подпись под каждой называет
+         последствие нажатия: отложенный вопрос уходит в конец, пролистанный
+         остаётся на своём месте и встретится снова. */
+      '<button onclick="qzPrev()" style="flex:1;padding:9px 4px;border-radius:11px;border:1px solid #3a3a3c;background:#1c1c1e;color:#fff;font-size:14px;line-height:1.15">Назад<span style="display:block;font-size:10px;opacity:.62;margin-top:3px;font-weight:400">на шаг назад</span></button>' +
+      '<button onclick="qzLater()" style="flex:1;padding:9px 4px;border-radius:11px;border:1px solid #3a3a3c;background:#1c1c1e;color:#fff;font-size:14px;line-height:1.15">Позже<span style="display:block;font-size:10px;opacity:.62;margin-top:3px;font-weight:400">уберу в конец</span></button>' +
+      '<button onclick="qzNext()" style="flex:1;padding:9px 4px;border-radius:11px;border:1px solid #3a3a3c;background:#1c1c1e;color:#fff;font-size:14px;line-height:1.15">Дальше<span style="display:block;font-size:10px;opacity:.62;margin-top:3px;font-weight:400">вернусь к нему</span></button>' +
+      '<button onclick="qzStop()" style="flex:1;padding:9px 4px;border-radius:11px;border:1px solid #3a3a3c;background:#1c1c1e;color:#fff;font-size:14px;line-height:1.15">Хватит<span style="display:block;font-size:10px;opacity:.62;margin-top:3px;font-weight:400">закрыть опрос</span></button>' +
     "</div>" +
     /* [174] Четыре кнопки стояли без объяснения, и разницу между «Позже» и
        «Дальше» человек угадывал. Пишем её прямо под ними — там, где выбирают. */
@@ -12578,7 +12612,7 @@ function showVAsk(d){
   openVSheet(`
     <div class="vh">К чему это отнести?</div>
     <div class="vs">Расслышал, но не понял раздел. Выберите — разберу заново, записывать ничего не буду.</div>
-    ${vAskText ? `<div class="vquote">Расслышал: <b>${esc(vAskText)}</b></div>` : ""}
+    ${vAskText ? `<div class="vquote">Расслышал: <b>${esc(vClean(vAskText))}</b></div>` : ""}
     ${btns}
     ${vRoomSkipRow()}
     <div class="vrow">
@@ -12702,7 +12736,7 @@ function showVResult(d){
     openVSheet(`
       <div class="vh">Не разобрал</div>
       <div class="vs">Не понял, какую работу или трату вы имели в виду.</div>
-      ${d.recognized ? `<div class="vquote">Расслышал: <b>${esc(d.recognized)}</b></div>` : ""}
+      ${d.recognized ? `<div class="vquote">Расслышал: <b>${esc(vClean(d.recognized))}</b></div>` : ""}
       <div class="vrow">
         <button class="vbtn-cancel" onclick="closeVSheet()">Закрыть</button>
         <button class="vbtn-ok" onclick="startVoice()">Сказать иначе</button>
@@ -12711,7 +12745,7 @@ function showVResult(d){
   }
 
   const multi = items.length > 1;
-  const quote = d.recognized ? `<div class="vquote" onclick="this.classList.toggle('op')">Расслышал: <b>${esc(d.recognized)}</b><span class="vq-more">коснитесь, чтобы развернуть или свернуть</span></div>` : "";
+  const quote = d.recognized ? `<div class="vquote" onclick="this.classList.toggle('op')">Расслышал: <b>${esc(vClean(d.recognized))}</b><span class="vq-more">коснитесь, чтобы развернуть или свернуть</span></div>` : "";
   const rows = vItems.map((it, i) => {
     const claim = it.field === "Статус" && it.value === "Готово";
     return `
@@ -12966,7 +13000,7 @@ function vrSideLabel(side, said){
 function showVRooms(d){
   const list = Array.isArray(d.rooms) ? d.rooms : [];
   vRooms = list.map(r => ({ ...r, fields: (r.fields || []).map(f => ({ ...f, _sel: !f.conflict })), elems: vrElems(r) }));
-  const quote = d.recognized ? `<div class="vquote" onclick="this.classList.toggle('op')">Расслышал: <b>${esc(d.recognized)}</b><span class="vq-more">коснитесь, чтобы развернуть или свернуть</span></div>` : "";
+  const quote = d.recognized ? `<div class="vquote" onclick="this.classList.toggle('op')">Расслышал: <b>${esc(vClean(d.recognized))}</b><span class="vq-more">коснитесь, чтобы развернуть или свернуть</span></div>` : "";
   if(!list.length){
     tg?.HapticFeedback?.notificationOccurred("warning");
     openVSheet(`
@@ -13222,7 +13256,7 @@ async function applyVoiceRooms(){
      другим путём и следа не оставляло — слова Дмитрия 13.08 01:01: «Почему
      этот листинг расходится с действительностью — из последнего ввода не всё
      в него попало?». Теперь оба пути пишут в один журнал. */
-  if(QZ.on && done) qzNote("Записано голосом: " + done + " знач. · " + chosen.map(r => r.name || r.code).filter(Boolean).join(", "));
+  if(QZ.on && done) qzNote("Записано голосом: " + done + " значений · " + chosen.map(r => r.name || r.code).filter(Boolean).join(", "));
   qzVoiceDone();                       // [чат 059]
   render();
   if(fail === 0) toast(added ? `Записано: ${done}, новых помещений: ${added}` : `Записано: ${done}`);
@@ -13604,7 +13638,7 @@ function showVRepair(d){
   }
   vRep = vRepMerge(list).map(r => vLikeFill({ ...r, kinds: (r.kinds || []).map(k => ({ ...k })) }))
              .map(r => ({ ...r, kinds: (r.kinds || []).map(k => ({ ...k, _sel: repSel(k, r.kinds) })) }));
-  const quote = d.recognized ? `<div class="vquote" onclick="this.classList.toggle('op')">Расслышал: <b>${esc(d.recognized)}</b><span class="vq-more">коснитесь, чтобы развернуть или свернуть</span></div>` : "";
+  const quote = d.recognized ? `<div class="vquote" onclick="this.classList.toggle('op')">Расслышал: <b>${esc(vClean(d.recognized))}</b><span class="vq-more">коснитесь, чтобы развернуть или свернуть</span></div>` : "";
   if(!list.length){
     tg?.HapticFeedback?.notificationOccurred("warning");
     openVSheet(`
@@ -13751,7 +13785,7 @@ function showVRepair(d){
     <div class="vh">Работы по помещениям</div>
     <div class="vs">${!repSelN
       ? (vRep.some(r => !r.isNew && (r.refused || []).length) && !vRep.some(r => !r.isNew && (r.kinds || []).length)
-          ? "Услышал отказ: эти виды делать не будем — по технологии их тоже не достраиваю."
+          ? "Услышал отказ: эти работы делать не будем. Сопутствующие им работы тоже не добавляю."
           : vRep.some(r => !r.isNew && (r.kinds || []).some(k => k.bulk))
       ? "Названо направление целиком — показываю весь набор, но ничего не отмечаю: выбирать работы за вас нельзя. Отметьте, что делаем."
       : vRep.some(r => !r.isNew && (r.kinds || []).some(k => k.offer))
@@ -13883,7 +13917,7 @@ async function applyVoiceRepair(){
   // одно помещение — открываем его сразу; несколько — общий экран со сводкой плана
   PROF.room = (rooms === 1) ? last : null;
   if(stack[stack.length - 1] !== "profile") go("profile"); else render(true);
-  if(QZ.on && n) qzNote("Отмечено в профиле: " + n + " видов · " + ready.map(r => r.name || r.code).filter(Boolean).join(", "));   /* [133, Д-129-10] */
+  if(QZ.on && n) qzNote("Отмечено в профиле: " + n + " видов работ · " + ready.map(r => r.name || r.code).filter(Boolean).join(", "));   /* [133, Д-129-10] */
   if(!n) { toast("Ничего не перенесено", "err"); return; }
   toast("Отмечено: " + n + (rooms > 1 ? (" в " + rooms + " помещ.") : "") + (noVol ? (" · без объёма: " + noVol) : ""));
 }
@@ -13931,7 +13965,7 @@ function showVHand(d){
     openVSheet(`
       <div class="vh">Не разобрал</div>
       <div class="vs">Скажите, например: «пришёл 10 минут назад», «готовность сдира потолка 50», «израсходовал 2 литра грунтовки».</div>
-      ${d.recognized ? `<div class="vquote">Расслышал: <b>${esc(d.recognized)}</b></div>` : ""}
+      ${d.recognized ? `<div class="vquote">Расслышал: <b>${esc(vClean(d.recognized))}</b></div>` : ""}
       <div class="vrow">
         <button class="vbtn-cancel" onclick="closeVSheet()">Закрыть</button>
         <button class="vbtn-ok" onclick="startVoice()">Сказать иначе</button>
@@ -13959,7 +13993,7 @@ function showVHand(d){
     </div>`; }).join("");
   openVSheet(`
     <div class="vh">${acts.length > 1 ? "Проверьте — распознано несколько" : "Проверьте и подтвердите"}</div>
-    ${d.recognized ? `<div class="vquote">Расслышал: <b>${esc(d.recognized)}</b></div>` : ""}
+    ${d.recognized ? `<div class="vquote">Расслышал: <b>${esc(vClean(d.recognized))}</b></div>` : ""}
     <div id="vlist">${rows}</div>
     <div class="vrow">
       <button class="vbtn-cancel" onclick="closeVSheet()">Отмена</button>
@@ -14250,6 +14284,11 @@ const UZ = {
   "Позже": "Keyinroq",
   "Дальше": "Keyingi",
   "Хватит": "Yetarli",
+  /* [173.1] подписи под кнопками навигации опроса */
+  "на шаг назад": "bir qadam orqaga",
+  "уберу в конец": "oxiriga qo'yaman",
+  "вернусь к нему": "yana so'rayman",
+  "закрыть опрос": "so'rovni yopish",
   "Делаем": "Bajaramiz",
   "Возвращаюсь к отложенному": "Keyinga qoldirilganga qaytyapman",
   "Записано в этом опросе": "Shu so'rovda yozilgan",
@@ -15209,7 +15248,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "174.7";
+const BUILD = "173.1";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
