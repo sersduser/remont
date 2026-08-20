@@ -13707,6 +13707,23 @@ function showVRepair(d){
         </div>
       </div>`).join("");
     const rfHead = (r.refused || []).length ? '<div class="vd" style="margin:8px 0 2px">Сказали не делать</div>' : "";
+    /* [173.2, Д-172-1] Названное, чего нет в прайсе бригады. Сервер отдаёт такие виды
+       полем `outofpool`: код в справочнике есть, цены у бригады нет — записать работу
+       нечем. До этой правки Голос молча подставлял вместо названного ближайший вид ИЗ
+       пула («в зале натяжной потолок» → `ML-12` «Потолок: покраска»), и подмена уезжала
+       в профиль как обычная выбранная работа. Показываем тем же способом, что отказ и
+       проёмы: без галочки, словами человека — молчание тут хуже всего, потому что он
+       скажет то же самое второй раз и снова получит не то. */
+    const ooHead = (r.outofpool || []).length
+      ? '<div class="vd" style="margin:8px 0 2px">Названо, но у бригады нет такой работы в прайсе</div>' : "";
+    const oo = (r.outofpool || []).map(k => `
+      <div class="vitem" style="opacity:.85">
+        <div class="vchk" style="opacity:.35">—</div>
+        <div style="flex:1;min-width:0">
+          <div class="vv">${esc(k.name || k.code)}<span style="opacity:.6"> · ${esc(k.unit || "")}</span></div>
+          <div class="vd">${esc(k.code)} · <span style="color:#ff9f0a">услышано, записать нечем: у бригады нет цены на эту работу</span></div>
+        </div>
+      </div>`).join("");
     /* [чат 160, Д-156-4] Услышанное про проёмы. Размеры и судьба проёма, названные
        в одной фразе с работами, до 160 пропадали молча: «Расслышал» показывал фразу
        целиком, а записывались только работы — человек считал размеры введёнными.
@@ -13778,7 +13795,7 @@ function showVRepair(d){
       ? '<div class="vd" style="margin:8px 0 2px">Поправки и оговорки — записываются в карточке помещения</div>' : "";
     const ref = (r.refused || []).length;
     const note = [lik ? `перенесено из «${(r._like && r._like.name) || ""}»: ${lik}` : "", blk ? `названо направлением: ${blk} — не отмечено` : "", ofr ? `предложено целиком: ${ofr} — не отмечено` : "", nov ? `без объёма здесь: ${nov} — не отмечено` : "", tech ? (`по технологии добавлено: ${tech}` + (techX ? ` · из них ${techX} не отмечено: другая поверхность` : "")) : "", dup ? `уже в смете: ${dup} — не отмечено` : "", inpl ? `уже отмечено в этом помещении: ${inpl} — не отмечено` : "", ref ? `сказали не делать: ${ref}` : "", (r.mods || []).length ? `поправок услышано: ${(r.mods || []).length} — не записано` : "", skp ? `этапов можно пропустить: ${skp} — решается в профиле` : ""].filter(Boolean).join(" · ");
-    return `<div style="margin-bottom:12px">${head}${note ? `<div class="vd" style="margin:2px 0 6px">${esc(note)}</div>` : ""}${kl}${rfHead}${rf}${opHead}${op}${mdHead}${md}
+    return `<div style="margin-bottom:12px">${head}${note ? `<div class="vd" style="margin:2px 0 6px">${esc(note)}</div>` : ""}${kl}${rfHead}${rf}${ooHead}${oo}${opHead}${op}${mdHead}${md}
       </div>`;
   }).join("");
   openVSheet(`
@@ -14284,6 +14301,8 @@ const UZ = {
   "Позже": "Keyinroq",
   "Дальше": "Keyingi",
   "Хватит": "Yetarli",
+  /* [173.2] названное вне прайса бригады */
+  "Названо, но у бригады нет такой работы в прайсе": "Aytildi, lekin brigada narxnomasida bunday ish yo'q",
   /* [173.1] подписи под кнопками навигации опроса */
   "на шаг назад": "bir qadam orqaga",
   "уберу в конец": "oxiriga qo'yaman",
@@ -15248,7 +15267,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "173.1";
+const BUILD = "173.2";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
