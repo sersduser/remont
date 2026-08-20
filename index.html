@@ -9335,6 +9335,7 @@ function render(toTop){
   let navAimNow = 0;
   if(NAV_WANT){ NAV_WANT = 0; toTop = true; navAimNow = 1; }
   planSave();
+  voiceRoomRemember();            /* [174] помещение, о котором сейчас речь */
   profilePushSoon();                              /* [119] и на сервер, с задержкой */
   const k = stack[stack.length - 1];
   const keep = scrollNow();                       // где человек стоял до перерисовки
@@ -12483,6 +12484,27 @@ function stopVoice(send){
   if(!send) closeVSheet();
 }
 
+/* [174, Д-172-2] О каком помещении речь, когда человек говорит свободно.
+   Разворот направления («вся электрика») работает, когда сервер знает помещение:
+   с контекстом активного вопроса (q) модель разбирает такую реплику идеально,
+   а без него возвращает пустой rooms и «не разобрал» — проверено боевыми пробами
+   слота 3 (Д-172-2). Панель помещение обычно знает: открыт профиль, стоит фильтр
+   по комнате, или человек только что работал с ней. Отдаём то, что знаем; сказанное
+   вслух всё равно главнее — сервер подставляет room, только если помещение не названо. */
+let LAST_ROOM = "";
+function voiceRoomRemember(){
+  try{
+    if(typeof PROF === "object" && PROF && PROF.room) LAST_ROOM = String(PROF.room);
+    else if(typeof fRoom === "string" && fRoom) LAST_ROOM = fRoom;
+  }catch(e){}
+}
+function voiceRoom(){
+  try{
+    if(typeof PROF === "object" && PROF && PROF.room) return String(PROF.room);
+    if(typeof fRoom === "string" && fRoom) return fRoom;
+    return LAST_ROOM || "";
+  }catch(e){ return ""; }
+}
 async function onRecStop(){
   if(!mediaRec._send){ return; }
   const blob = new Blob(chunks, { type: (chunks[0] && chunks[0].type) || "audio/webm" });
@@ -12495,7 +12517,7 @@ async function onRecStop(){
     fd.append("initData", INIT);
     fd.append("key", KEY);                       // legacy / отладка вне Telegram
     fd.append("mode", vMode);                    // сценарий разбора на сервере [чат 016]
-    fd.append("room", (typeof PROF === "object" && PROF && PROF.room) ? PROF.room : "");   // открытое помещение профиля: подставится, если его не назвали вслух [чат 017]
+    fd.append("room", voiceRoom());   // [174] профиль → фильтр по комнате → последнее помещение; названное вслух главнее [чат 017]
     fd.append("lang", LANG);                     // язык интерфейса → язык транскрипции: без него движок относит узбекскую речь к чужому языку [чат 022]
     if(vQ) fd.append("q", vQ);                   // контекст активного вопроса опроса [чат 059]: сервер сужает промпт и не зовёт классификатор
     const r = await fetch(`${API}/voice`, { method: "POST", body: fd });
@@ -12592,7 +12614,7 @@ async function vRetry(mode){
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         initData: INIT, key: KEY, text: text, mode: vMode,
-        room: (typeof PROF === "object" && PROF && PROF.room) ? PROF.room : "",
+        room: voiceRoom(),   // [174] то же помещение, что и у записи голосом
         lang: LANG
       })
     });
@@ -15173,7 +15195,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "174.4";
+const BUILD = "174.5";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
