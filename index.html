@@ -506,7 +506,7 @@ function objsMerge(list){
 }
 
 async function objsrvLoad(){
-  const r = await fetch(API + "/objects", { method: "POST", headers: { "Content-Type": "application/json" },
+  const r = await fetchT(API + "/objects", { method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ initData: INIT, key: KEY }) });
   const txt = await r.text();
   let j = null; try{ j = JSON.parse(txt); }catch(e){}
@@ -908,7 +908,7 @@ async function invCheck(){
     }
     /* Ветки ещё не на проде — старый двухфазный разговор с /register. */
     const old = code.toUpperCase();
-    const r = await fetch(API + "/register", { method: "POST", headers: { "Content-Type": "application/json" },
+    const r = await fetchT(API + "/register", { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ initData: INIT, code: old }) });
     const t = (await r.text()).trim();
     let j = null; try{ j = JSON.parse(t); }catch(e){}
@@ -922,7 +922,7 @@ async function invConfirm(){
   if(INV_BUSY) return;
   INV_BUSY = true;
   try{
-    const r = await fetch(API + "/register", { method: "POST", headers: { "Content-Type": "application/json" },
+    const r = await fetchT(API + "/register", { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ initData: INIT, code: INV_CODE, confirm: "1" }) });
     const t = (await r.text()).trim();
     let j = null; try{ j = JSON.parse(t); }catch(e){}
@@ -1127,7 +1127,7 @@ let CONTRACT_BUSY = false;   // замок от двойного тапа по �
 async function contractApi(body){
   let r, txt;
   try{
-    r = await fetch(API + '/contract', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    r = await fetchT(API + '/contract', { method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(Object.assign({ initData: INIT, key: KEY }, body || {})) });
     txt = (await r.text()).trim();
   }catch(e){ return { ok: false, error: 'Нет связи с сервером — попробуйте ещё раз.' }; }
@@ -1573,7 +1573,7 @@ let PLAN = null, PLAN_LOAD = false, PLAN_BUSY = false, PLAN_OPEN = {}, PLAN_ABSE
 async function planApi(body){
   let r, txt;
   try{
-    r = await fetch(API + '/plan', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    r = await fetchT(API + '/plan', { method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(Object.assign({ initData: INIT, key: KEY }, body || {})) });
     txt = (await r.text()).trim();
   }catch(e){ return { ok: false, error: 'Нет связи с сервером — попробуйте ещё раз.' }; }
@@ -1719,7 +1719,7 @@ let CREW_SUGGEST = [];
 async function crewApi(body){
   let r, txt;
   try{
-    r = await fetch(API + '/crew', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    r = await fetchT(API + '/crew', { method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(Object.assign({ initData: INIT, key: KEY }, body || {})) });
     txt = (await r.text()).trim();
   }catch(e){ return { ok: false, error: 'Нет связи с сервером — попробуйте ещё раз.' }; }
@@ -2188,7 +2188,7 @@ async function unmrgAsk(code){
 /* Один вход в ветку помещений для режимов merge/unmerge: тело собирается
    в одном месте, чтобы подпись и ключ не разъезжались по вызовам. */
 async function roomsApi(body){
-  const r = await fetch(API + "/rooms", { method: "POST", headers: { "Content-Type": "application/json" },
+  const r = await fetchT(API + "/rooms", { method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify(Object.assign({ initData: INIT, key: KEY }, body || {})) });
   const raw = (await r.text()).trim();
   if(!raw) return { ok: false, error: 'сервер ответил пусто' };
@@ -3016,7 +3016,7 @@ let PROF_PULLED = 0, PROF_PUSH_T = null, PROF_PUSH_LAST = "", PROF_SRV = null;
 async function profileApi(body){
   let r, txt;
   try{
-    r = await fetch(API + '/profile', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    r = await fetchT(API + '/profile', { method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(Object.assign({ initData: INIT, key: KEY }, body || {})) });
     txt = (await r.text()).trim();
   }catch(e){ return { ok: false, error: 'нет связи' }; }
@@ -3631,7 +3631,7 @@ async function profBuild(){
     '\nПомещения: ' + names.join(', '))){ toast('Отменено'); return; }
 
   try{
-    const r = await fetch(API + '/append', {
+    const r = await fetchT(API + '/append', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ initData: INIT, key: KEY, sheet: '01_Работы', rows: rows })
     });
@@ -5541,7 +5541,7 @@ async function objShowPlan(){
   box.innerHTML = '<div class="m">Загружаю план…</div>';
   try{
     const q = "draft=" + encodeURIComponent(p.id) + "&initData=" + encodeURIComponent(INIT) + "&key=" + encodeURIComponent(KEY);
-    const r = await fetch(API + "/file?" + q);
+    const r = await fetchT(API + "/file?" + q);
     if(!r.ok){ console.warn("file: HTTP " + r.status); throw new Error("Сервер не отдал изображение"); }
     const raw = await r.blob();
     const hdr = fileCT(r);
@@ -5774,7 +5774,7 @@ async function objUpload(file){
     fd.append("key", KEY);
     fd.append("kind", "план");
     fd.append("title", "план БТИ объекта");
-    const r = await fetch(API + "/upload", { method: "POST", body: fd });
+    const r = await fetchT(API + "/upload", { method: "POST", body: fd });
     const t = (await r.text()).trim();
     let ok = false; try{ ok = !!(t && JSON.parse(t).ok); }catch(e){}
     if(!r.ok || !ok) throw new Error("Сервер не принял снимок");
@@ -6621,7 +6621,7 @@ async function chgSubmit(){
   };
   toast('Отправляю на согласование…', 'wait');
   try{
-    const r = await fetch(API + '/append', {
+    const r = await fetchT(API + '/append', {
       method:'POST', headers:{ 'Content-Type':'application/json' },
       body: JSON.stringify({ initData:INIT, key:KEY, sheet:'11_Изменения', rows:[row] })
     });
@@ -6677,7 +6677,7 @@ async function chgApply(id, quiet){
     if(k === 'добавить'){
       const p = String(c.now || '').split('|').map(x => x.trim());
       const vol = Number(p[4]) || 0, rate = Number(p[5]) || 0;
-      const r = await fetch(API + '/append', {
+      const r = await fetchT(API + '/append', {
         method:'POST', headers:{ 'Content-Type':'application/json' },
         body: JSON.stringify({ initData:INIT, key:KEY, sheet:'01_Работы', rows:[{
           'Код': c.code, 'Помещение': p[1] || '', 'Раздел': p[2] || 'Изменение', 'Работа': p[0] || '',
@@ -6871,7 +6871,7 @@ async function dscSubmit(){
   }));
   toast('Отправляю пакет на согласование…', 'wait');
   try{
-    const r = await fetch(API + '/append', {
+    const r = await fetchT(API + '/append', {
       method:'POST', headers:{ 'Content-Type':'application/json' },
       body: JSON.stringify({ initData:INIT, key:KEY, sheet:'11_Изменения', rows:rows })
     });
@@ -7115,7 +7115,7 @@ async function matSubmit(){
   });
   toast('Записываю материалы…', 'wait');
   try{
-    const r = await fetch(API + '/append', {
+    const r = await fetchT(API + '/append', {
       method:'POST', headers:{ 'Content-Type':'application/json' },
       body: JSON.stringify({ initData:INIT, key:KEY, sheet:'03_Материалы', rows:rows })
     });
@@ -7255,7 +7255,7 @@ async function refSubmit(){
   };
   toast('Отправляю точку отсчёта на подтверждение…', 'wait');
   try{
-    const r = await fetch(API + '/append', {
+    const r = await fetchT(API + '/append', {
       method:'POST', headers:{ 'Content-Type':'application/json' },
       body: JSON.stringify({ initData:INIT, key:KEY, sheet:'11_Изменения', rows:[row] })
     });
@@ -7300,7 +7300,7 @@ async function refDispute(id){
 }
 
 async function writeCell(sheet, code, field, value){
-  const r = await fetch(API + '/update', {
+  const r = await fetchT(API + '/update', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ initData: INIT, key: KEY, sheet: sheet, code: code, field: field, value: value })
   });
@@ -7389,7 +7389,7 @@ async function upd(sheet, code, field, value, opts){
   if(claimed && !accepting) value = crewSide() ? "Заявлено" : "На приёмке у работника";
   toast(accepting ? "Подтверждаю приёмку…" : (claimed ? "Отправляю на приёмку…" : "Сохраняю…"), "wait");
   try{
-    const r = await fetch(`${API}/update`, {
+    const r = await fetchT(`${API}/update`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ initData: INIT, key: KEY, sheet, code, field, value })
@@ -7410,7 +7410,7 @@ async function upd(sheet, code, field, value, opts){
        прошёл — перечитываем правду сервера, чтобы расхождение не осталось невидимым. */
     if(sheet === "01_Работы" && field === "Статус" && value === "Готово"){
       try{
-        const rp = await fetch(`${API}/update`, {
+        const rp = await fetchT(`${API}/update`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ initData: INIT, key: KEY, sheet, code, field: "Готовность_%", value: 100 })
@@ -7503,10 +7503,16 @@ async function objectSheets(){
   OBJ_BUSY = true;
   toast("Готовлю листы…", "wait");
   const made = [], had = [], fail = [];
+  /* [чат 172] Ранний выход: 13 листов по 30 с таймаута — это 6,5 минуты
+     «Готовлю листы…». Порог ОДИН обрыв, а не два, как у STALE_N в refresh():
+     там второй запрос отделяет моргнувшую сеть от протухшего пропуска и стоит
+     15 секунд, здесь он стоит полный таймаут. Листы идут на один адрес: не
+     ответил первый — не ответит и тринадцатый. */
+  let подрядСбой = 0;
   try{
     for(const s of OBJ_SHEETS){
       try{
-        const r = await fetch(API + "/sheet", {
+        const r = await fetchT(API + "/sheet", {
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ initData: INIT, key: KEY, sheet: s.sheet, header: s.header })
         });
@@ -7519,9 +7525,9 @@ async function objectSheets(){
         else{
           let ok = false;
           try{ ok = !!JSON.parse(txt).ok; }catch(e){}
-          (ok ? made : had).push(s.sheet);
+          (ok ? made : had).push(s.sheet); подрядСбой = 0;
         }
-      }catch(e){ fail.push(s.sheet); }
+      }catch(e){ fail.push(s.sheet); if(++подрядСбой >= 1) break; }
     }
   } finally { OBJ_BUSY = false; }
   const note = document.getElementById("setupnote");
@@ -7570,10 +7576,16 @@ async function crewSheets(){
   CREW_BUSY = true;
   toast("Готовлю листы…", "wait");
   const made = [], had = [], fail = [];
+  /* [чат 172] Ранний выход: 13 листов по 30 с таймаута — это 6,5 минуты
+     «Готовлю листы…». Порог ОДИН обрыв, а не два, как у STALE_N в refresh():
+     там второй запрос отделяет моргнувшую сеть от протухшего пропуска и стоит
+     15 секунд, здесь он стоит полный таймаут. Листы идут на один адрес: не
+     ответил первый — не ответит и тринадцатый. */
+  let подрядСбой = 0;
   try{
     for(const s of CREW_SHEETS){
       try{
-        const r = await fetch(API + "/sheet", {
+        const r = await fetchT(API + "/sheet", {
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ initData: INIT, key: KEY, sheet: s.sheet, header: s.header, base: "common" })
         });
@@ -7586,9 +7598,9 @@ async function crewSheets(){
         else{
           let ok = false;
           try{ ok = !!JSON.parse(txt).ok; }catch(e){}
-          (ok ? made : had).push(s.sheet);
+          (ok ? made : had).push(s.sheet); подрядСбой = 0;
         }
-      }catch(e){ fail.push(s.sheet); }
+      }catch(e){ fail.push(s.sheet); if(++подрядСбой >= 1) break; }
     }
   } finally { CREW_BUSY = false; }
   CREW_DONE = !fail.length;
@@ -7704,7 +7716,7 @@ document.addEventListener("visibilitychange", () => { if(document.visibilityStat
 /* Тихая запись ячейки контура: без локального patch (данные в CREW_DATA
    правим сами по месту). Пустое тело при 200 = отказ (граблина 6).   */
 async function crewCell(sheet, code, field, value){
-  const r = await fetch(API + "/update", { method: "POST", headers: { "Content-Type": "application/json" },
+  const r = await fetchT(API + "/update", { method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ initData: INIT, key: KEY, sheet: sheet, code: code, field: field, value: value }) });
   const t = (await r.text()).trim();
   if(!r.ok || !t) throw srvFail(t, "Не удалось сохранить (" + field + ")");
@@ -7752,7 +7764,7 @@ function srvFail(txt, fallback){
 }
 
 async function crewAppend(sheet, rows){
-  const r = await fetch(API + "/append", { method: "POST", headers: { "Content-Type": "application/json" },
+  const r = await fetchT(API + "/append", { method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ initData: INIT, key: KEY, sheet: sheet, rows: rows }) });
   const t = (await r.text()).trim();
   let ok = false; try{ ok = !!(t && JSON.parse(t).ok); }catch(e){}
@@ -8894,7 +8906,7 @@ async function exportBook(){
   if(EXPORT.busy) return;
   EXPORT.busy = true; render();
   try{
-    const r = await fetch(API + "/export", {
+    const r = await fetchT(API + "/export", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ initData: INIT, key: KEY })
     });
@@ -9227,7 +9239,7 @@ async function mkObject(){
     const sum  = String(NOBJ.f.contract || "").trim().replace(",", ".");
     if(addr) body.address = addr;
     if(sum && !isNaN(Number(sum))) body.contract = Number(sum);
-    const r = await fetch(API + "/object", {
+    const r = await fetchT(API + "/object", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body)
     });
@@ -11568,7 +11580,7 @@ async function qzSay(){
     const body = { initData: INIT, key: KEY, text: text, mode: vMode, lang: LANG,
       room: q.room || ((typeof PROF === "object" && PROF && PROF.room) ? PROF.room : "") };
     if(vQ) body.q = vQ;
-    const r = await fetch(`${API}/voice`, {
+    const r = await fetchT(`${API}/voice`, {
       method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify(body)
     });
@@ -12617,7 +12629,7 @@ async function onRecStop(){
     fd.append("room", voiceRoom());   // [174] профиль → фильтр по комнате → последнее помещение; названное вслух главнее [чат 017]
     fd.append("lang", LANG);                     // язык интерфейса → язык транскрипции: без него движок относит узбекскую речь к чужому языку [чат 022]
     if(vQ) fd.append("q", vQ);                   // контекст активного вопроса опроса [чат 059]: сервер сужает промпт и не зовёт классификатор
-    const r = await fetch(`${API}/voice`, { method: "POST", body: fd });
+    const r = await fetchT(`${API}/voice`, { method: "POST", body: fd });
     const raw = (await r.text()).trim();
     if(r.status === 401 || r.status === 403) throw new Error(initStale() ? staleMsg() : "Доступ не подтверждён.");
     if(!raw) throw new Error(initStale() ? staleMsg() : "Не удалось разобрать запись. Попробуйте ещё раз.");
@@ -12741,7 +12753,7 @@ async function vRetry(mode){
   openVSheet(`<div class="vh">Разбираю заново…</div><div class="vspin"></div>
     <div class="vs" style="text-align:center">${esc(VASK[mode] ? VASK[mode].t : "")}</div>`);
   try{
-    const r = await fetch(`${API}/voice`, {
+    const r = await fetchT(`${API}/voice`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -12783,7 +12795,7 @@ async function roomsSend(){
   if(!names.length) return;
   openVSheet('<div class="vh">Завожу…</div><div class="vspin"></div>');
   try{
-    const r = await fetch(API + "/rooms", { method:"POST", headers:{"Content-Type":"application/json"},
+    const r = await fetchT(API + "/rooms", { method:"POST", headers:{"Content-Type":"application/json"},
       body: JSON.stringify({ initData: INIT, key: KEY, names: names }) });
     const raw = (await r.text()).trim();
     let d=null; try{ d=JSON.parse(raw); }catch(e){}
@@ -15382,7 +15394,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "174.9";
+const BUILD = "172.2";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
