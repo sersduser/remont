@@ -4262,6 +4262,21 @@ function elemVol(code, src, role, side, unit){
     }
     return Math.round(s * 100) / 100;
   }
+  /* [181] Погонные метры — третья мера, заведена решением «гибрид»: окна
+     считаются метрами контура, двери остаются комплектом. Откос идёт по краю
+     проёма, поэтому у окна это полный периметр, а у двери и проёма до пола —
+     ширина плюс две высоты: снизу порог, откоса там нет.
+     Размеров нет — участок даёт ноль, и подсказка говорит об этом словами:
+     выдуманный периметр хуже честного нуля [урок 180.8]. */
+  if(/п\.?\s*м|м\.?\s*п|погон/i.test(String(unit || ""))){
+    let s = 0;
+    for(const e of list){
+      const w = Number(e.w), h = Number(e.h);
+      if(!(w > 0 && h > 0)) continue;
+      s += (elemType(e) === "окно") ? (2 * (w + h)) : (w + 2 * h);
+    }
+    return Math.round(s * 100) / 100;
+  }
   /* Штуки — по проёмам, а не по участкам: заложить Г-образный проём это одна
      работа, хотя участков у него два [чат 180]. */
   return elemGroups(list).length;
@@ -4283,6 +4298,18 @@ function elemVolHint(kind, room){
   const q = elemBase(kind && kind.base);
   if(!q || !room) return "";
   if(!elemOf(room.code).length) return "схемы проёмов нет — объём по числу";
+  /* [181] У меры «погонные метры» человек должен видеть, что считается контур,
+     а у составного проёма — что оценка верхняя. */
+  if(/п\.?\s*м|м\.?\s*п|погон/i.test(String((kind && kind.unit) || ""))){
+    const сп = elemPick(room.code, q.src, q.role, q.side);
+    const групп = elemGroups(сп);
+    const составных = групп.filter(g => g.length > 1).length;
+    const безРазмеров = сп.filter(e => !(Number(e.w) > 0 && Number(e.h) > 0)).length;
+    let t = "по контуру проёма: у окна периметр, у двери низ не считается";
+    if(составных) t += " · составной проём: контур по участкам, оценка верхняя";
+    if(безРазмеров) t += " · без размеров: " + безРазмеров + " — в объём не вошли";
+    return t;
+  }
   const want = ELEM_SRC[q.src];
   const all = elemMine(room.code).filter(e => want === null || elemType(e) === want).length;
   const n = elemPick(room.code, q.src, q.role, q.side).length;
@@ -15887,7 +15914,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "180.9";
+const BUILD = "181.1";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
