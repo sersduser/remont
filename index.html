@@ -13173,6 +13173,30 @@ function vrSide(x){
   const byGroup = roomList().find(r => vrGroup(r.name) === g);
   return byGroup ? String(byGroup.code) : "";
 }
+/* [чат 180, Б.1/Б.2 стенда 177] Сколько помещений подходит под сказанную
+   сторону. vrSide отдаёт первое совпадение и о конкуренции молчит — из-за
+   этого «третья комната» уезжала в первое попавшееся ребро. Считаем той же
+   логикой (код · имя · группа) и, когда подходит несколько, ничего не пишем:
+   выбор за человеком. Как именно предлагать выбор — развилка Дмитрия, здесь
+   она не решается. */
+function vrCandList(x){
+  const said = vrNorm((x && (x.side_code || x.side)) || "");
+  if(!said) return [];
+  if(/улиц|двор|наружу|снаруж|подъезд|лестнич|тамбур|площадк/.test(said)) return ["наружу"];
+  const списк = roomList();
+  const поКоду = списк.filter(r => vrNorm(r.code) === said);
+  if(поКоду.length) return поКоду.map(r => String(r.name || r.code));
+  const поИмени = списк.filter(r => {
+    const n = vrNorm(r.name);
+    return n && (n === said || n.indexOf(said) === 0 || said.indexOf(n) === 0);
+  });
+  if(поИмени.length) return поИмени.map(r => String(r.name || r.code));
+  const g = vrGroup(said);
+  if(g < 0) return [];
+  return списк.filter(r => vrGroup(r.name) === g).map(r => String(r.name || r.code));
+}
+function vrCand(x){ return vrCandList(x).length; }
+
 function vrElems(r) {
   const list = Array.isArray(r.elements) ? r.elements : [];
   const res = list.map(x => {
@@ -13182,8 +13206,12 @@ function vrElems(r) {
        «Коридор ↔ Туалет: ширина и высота?» человек отвечает числами, без стороны. */
     const byEl = x.el ? elemAll().find(e => String(e.id) === String(x.el)) : null;
     const side = byEl ? elemSide(byEl, r.code) : vrSide(x);
+    /* [чат 180] Неоднозначность бывает двух видов: несколько РЁБЕР с одной
+       стороной и несколько ПОМЕЩЕНИЙ под одним сказанным словом. Второй вид
+       до этой правки проходил незамеченным — vrSide брал первое совпадение. */
+    const кандидатов = byEl ? 1 : vrCand(x);
     const near = byEl ? [byEl] : (side ? elemOf(r.code).filter(e => elemSide(e, r.code) === side) : []);
-    const cur = near.length === 1 ? near[0] : null;
+    const cur = (кандидатов <= 1 && near.length === 1) ? near[0] : null;
     const ch = [];
     const put = (col, key, val) => {
       if (!val) return;
@@ -13234,7 +13262,7 @@ function vrElems(r) {
     const числа = Array.isArray(x.nums) ? x.nums.filter(n => n != null) : [];
     return {
       said: String(x.side || x.side_code || ''), side: side,
-      id: cur ? cur.id : '', many: near.length > 1,
+      id: cur ? cur.id : '', many: near.length > 1 || кандидатов > 1, cand: кандидатов, candList: (byEl ? [] : vrCandList(x)),
       isNew: fresh, unknown: !side,
       pair: cur ? elemPairLabel(cur) : '',
       shape: форма, nums: числа,
@@ -13402,7 +13430,20 @@ function showVRooms(d){
         </div></div>`;
       }
       if(e.unknown) return `<div class="vitem"><div class="vchk" style="opacity:.3">?</div><div style="flex:1;min-width:0"><div class="vv" style="color:#ff9f0a">Не понял, куда ведёт проём: ${esc(e.said)}</div></div></div>`;
-      if(e.many) return `<div class="vitem"><div class="vchk" style="opacity:.3">?</div><div style="flex:1;min-width:0"><div class="vv" style="color:#ff9f0a">Проёмов → ${where} несколько — поправьте в карточке помещения</div></div></div>`;
+      if(e.many){
+        /* [чат 180] Человек должен видеть, ЧТО именно неоднозначно: несколько
+           проёмов в одну сторону — одно, несколько помещений под одним словом
+           («третья комната» → две спальни) — другое, и лечится по-разному. */
+        const кто = (e.candList || []).map(n => esc(n)).join(" · ");
+        const чем = (e.cand > 1)
+          ? ("под «" + esc(e.said || where) + "» подходит несколько: " + кто + " — назовите точнее или поправьте в карточке помещения")
+          : ("проёмов → " + where + " несколько — поправьте в карточке помещения");
+        const числа = (e.changes || []).filter(c => c.key === 'w' || c.key === 'h').map(c => String(c.now)).join(" × ");
+        return `<div class="vitem"><div class="vchk" style="opacity:.3">?</div><div style="flex:1;min-width:0">
+          <div class="vv" style="color:#ff9f0a">${чем}</div>
+          ${числа ? `<div class="vd">услышано: ${esc(числа)} м — не записано, пока адрес не назван однозначно</div>` : ""}
+        </div></div>`;
+      }
       /* Разметка разводит интерфейс и данные по разным текстовым узлам:
          «Проём →» и «судьба:» — словарь, «Кухня» и «заложить» — значения.
          Слой переводит узлами, и слипшаяся строка «Проём → Кухня — судьба:»
@@ -14096,20 +14137,75 @@ function showVRepair(d){
       const h = o && o.h != null ? String(o.h).replace(".", ",") : "";
       return (w && h) ? (w + " × " + h + " м") : (w ? ("ширина " + w + " м") : (h ? ("высота " + h + " м") : ""));
     };
-    const op = (r.openings || []).map(o => {
+    /* [чат 180, хвост Д-156-4] Адрес проёма разбирается тем же способом, что в
+       окне обмеров: vrSide по стороне из речи, потом поиск ребра среди проёмов
+       этого помещения. Однозначный адрес — запишем по галочке; неоднозначный
+       остаётся прежней строкой без галочки (это развилка Дмитрия, не наша). */
+    /* Сколько помещений вообще подходят под сказанное. vrSide возвращает первое
+       совпадение и о конкуренции молчит — это дефект Б.1 стенда 177 и предмет
+       развилки Дмитрия. Здесь мы её не решаем: считаем кандидатов сами и при
+       нескольких не пишем ничего. */
+    const opCand = (o) => {
+      const said = (typeof vrNorm === "function") ? vrNorm((o && (o.side_code || o.side)) || "") : "";
+      if(!said) return 0;
+      if(/улиц|двор|наружу|снаруж|подъезд|лестнич|тамбур|площадк/.test(said)) return 1;
+      const списк = (typeof roomList === "function") ? roomList() : [];
+      const поКоду = списк.filter(x => vrNorm(x.code) === said);
+      if(поКоду.length) return поКоду.length;
+      const поИмени = списк.filter(x => {
+        const n = vrNorm(x.name);
+        return n && (n === said || n.indexOf(said) === 0 || said.indexOf(n) === 0);
+      });
+      if(поИмени.length) return поИмени.length;
+      const g = (typeof vrGroup === "function") ? vrGroup(said) : -1;
+      if(g < 0) return 0;
+      return списк.filter(x => vrGroup(x.name) === g).length;
+    };
+    const opAim = (o) => {
+      const сколькоПодходит = opCand(o);
+      if(сколькоПодходит > 1) return { вид: "двое", сколько: сколькоПодходит };
+      const side = (typeof vrSide === "function") ? vrSide(o || {}) : "";
+      if(!side) return { вид: "нет адреса" };
+      const near = (typeof elemOf === "function")
+        ? elemOf(r.code).filter(e => elemSide(e, r.code) === side) : [];
+      if(near.length === 1) return { вид: "правка", side: side, el: near[0] };
+      if(near.length === 0) return { вид: "новое", side: side };
+      return { вид: "двое", side: side, сколько: near.length };
+    };
+    const op = (r.openings || []).map((o, oi) => {
       const куда = String((o && (o.side || o.side_code)) || "").trim();
       const что  = [o && o.fact ? ("сейчас " + o.fact) : "", o && o.fate ? o.fate : "", opN(o)].filter(Boolean).join(" · ");
-      return `
+      const цель = opAim(o);
+      o._aim = цель;
+      const можно = (цель.вид === "правка" || цель.вид === "новое") && (opN(o) !== "");
+      if(o._sel === undefined) o._sel = можно;
+      if(!можно){
+        const почему = цель.вид === "двое"
+          ? ("под «" + esc(куда) + "» подходит несколько (" + цель.сколько + ") — выберите в схеме проёмов")
+          : "услышано, но не записано";
+        return `
       <div class="vitem" style="opacity:.85">
         <div class="vchk" style="opacity:.35">◇</div>
         <div style="flex:1;min-width:0">
           <div class="vv">${esc(r.name || "")}${куда ? " ↔ " + esc(куда) : ""}</div>
-          <div class="vd">${esc(что)} · <span style="color:#ff9f0a">услышано, но не записано</span></div>
+          <div class="vd">${esc(что)} · <span style="color:#ff9f0a">${почему}</span></div>
+        </div>
+      </div>`;
+      }
+      const обещание = цель.вид === "новое"
+        ? "нет в схеме проёмов — заведу"
+        : ("запишу в схему проёмов: " + esc(String(цель.el.id)));
+      return `
+      <div class="vitem${o._sel ? " sel" : ""}" data-op="${vRep.indexOf(r)}-${oi}" onclick="toggleVOpening(${vRep.indexOf(r)},${oi})">
+        <div class="vchk">✓</div>
+        <div style="flex:1;min-width:0">
+          <div class="vv">${esc(r.name || "")}${куда ? " ↔ " + esc(куда) : ""}</div>
+          <div class="vd">${esc(что)} · <span style="color:#30d158">${обещание}</span></div>
         </div>
       </div>`;
     }).join("");
     const opHead = (r.openings || []).length
-      ? '<div class="vd" style="margin:8px 0 2px">Про проёмы — запишите на экране объекта, в схеме проёмов</div>' : "";
+      ? '<div class="vd" style="margin:8px 0 2px">Проёмы из сказанного — отмеченные запишу в схему проёмов</div>' : "";
     /* [167, Д-167-1] Поправки и оговорки, услышанные голосом. Сервер отдаёт их
        полем mods (тип · число · цель · причина дословно), а панель до 167 это
        поле не читала вовсе — слова «mods» в сборке 166.2 нет ни разу. Из-за
@@ -14227,8 +14323,67 @@ function toggleVRep(i, j){
 
 /* Перенос в профиль: отмечаем виды и считаем объём из обмеров помещения.
    В лист сейчас не пишется ничего — человек смотрит цифры и жмёт «Добавить в смету». */
+/* [чат 180] Запись отмеченных проёмов из окна работ. Возвращает счёт, а не
+   молчит: человек должен видеть, что именно ушло. */
+async function applyVoiceOpenings(){
+  let записано = 0, отказ = 0;
+  for(const r of (vRep || [])){
+    for(const o of (r.openings || [])){
+      if(!o || !o._sel || !o._aim) continue;
+      const w = (o.w != null && o.w !== "") ? String(o.w).replace(".", ",") : "";
+      const h = (o.h != null && o.h !== "") ? String(o.h).replace(".", ",") : "";
+      if(!w && !h) continue;
+      try{
+        if(o._aim.вид === "правка"){
+          const id = String(o._aim.el.id);
+          if(w) await writeCell("13_Элементы", id, "Ширина_м", w);
+          if(h) await writeCell("13_Элементы", id, "Высота_м", h);
+          записано++;
+        }else if(o._aim.вид === "новое"){
+          const id = elemNextId();
+          const имя = (((roomList().find(x => String(x.code) === r.code) || {}).name) || r.code) +
+                      " ↔ " + vrSideLabel(o._aim.side, o.side || o.side_code);
+          await crewAppend("13_Элементы", [{
+            "id": id, "Сторона_A": r.code, "Сторона_B": o._aim.side,
+            "Тип_план": "", "Тип_факт": String(o.fact || "дверь"), "Судьба": String(o.fate || ""),
+            "Название": имя, "Ширина_м": w, "Высота_м": h,
+            "Примечание": "назван голосом в разборе работ", "Обновлено": chgStamp(),
+          }]);
+          (D.elements = D.elements || []).push({ id: id, a: r.code, b: o._aim.side,
+            plan: "", fact: String(o.fact || "дверь"), fate: String(o.fate || ""), w: o.w, h: o.h });
+          записано++;
+        }
+        o._sel = false;
+      }catch(e){ отказ++; }
+    }
+  }
+  return { записано: записано, отказ: отказ };
+}
+
+/* [чат 180] Отметка строки проёма в окне работ. Отдельная от toggleVElem:
+   там строка — правка полей ребра, здесь — целый проём из реплики. */
+function toggleVOpening(i, j){
+  const r = vRep[i]; if(!r) return;
+  const o = (r.openings || [])[j]; if(!o) return;
+  if(!o._aim || (o._aim.вид !== "правка" && o._aim.вид !== "новое")) return;
+  o._sel = !o._sel;
+  const el = document.querySelector(`.vitem[data-op="${i}-${j}"]`);
+  if(el) el.classList.toggle("sel", !!o._sel);
+}
+
 async function applyVoiceRepair(){
+  /* [чат 180, хвост Д-156-4] Проёмы, отмеченные в окне работ, записываются тем
+     же нажатием, что и работы: человек подтвердил — значит сохраняем. Делаем
+     это ДО веток «ничего не отмечено» и допсоглашения: размеры проёма к смете
+     отношения не имеют и теряться из-за неё не должны. */
+  const opDone = await applyVoiceOpenings();
   const ready = vRep.filter(r => !r.isNew && r.kinds.some(k => k._sel));
+  if(!ready.length && opDone.записано){
+    closeVSheet(); await load(); render();
+    toast("Записано проёмов: " + opDone.записано + (opDone.отказ ? (" · не удалось: " + opDone.отказ) : ""),
+          opDone.отказ ? "err" : "");
+    return;
+  }
   if(!ready.length){ toast("Ничего не отмечено — коснитесь строки, чтобы отметить", "wait"); return; }
   /* [140] Разбор, начатый с экрана допсоглашения, туда и возвращается: смета
      остаётся нетронутой. Иначе продиктованное дважды попало бы и в смету, и
@@ -15645,7 +15800,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "180.4";
+const BUILD = "180.6";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
