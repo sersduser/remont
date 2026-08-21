@@ -13942,6 +13942,23 @@ function vLikeNote(){
    Показывается ТОЛЬКО когда место объёма пусто (справочник ещё едет): иначе
    причина уже сказана там, и две фразы об одном читаются как шум — поймано
    живым взглядом на первой же сборке 145.2. */
+/* [чат 180] Чего именно нет, когда расчёт дал ноль. Слова берутся из базы
+   объёма: она уже несёт и источник («двери»), и роль («установить»). */
+const NOL_SRC = { "двери": "дверей", "окна": "окон", "проёмы": "проёмов" };
+const NOL_ROLE = {
+  "установить": "к установке", "демонтировать": "к демонтажу", "заменить": "к замене",
+  "перенести": "к переносу", "заложить": "к закладке", "пробить": "к пробивке",
+  "не трогаем": "без работ"
+};
+function nolWhat(kind){
+  const q = elemBase(kind && kind.base);
+  if(!q) return "";
+  const s = NOL_SRC[q.src] || "проёмов";
+  const r = NOL_ROLE[q.role] || "";
+  const side = q.side === "наруж" ? " наружных" : (q.side === "внутр" ? " внутренних" : "");
+  return (s + side + (r ? " " + r : "")).trim();
+}
+
 function novolNote(roomCode, k){
   try{
     const kinds = ((D && D.catalog) || {}).kinds || [];
@@ -13949,6 +13966,12 @@ function novolNote(roomCode, k){
     const room = ((D && D.rooms) || []).find(x => x.code === roomCode);
     const why = (kind && room) ? profVolWhy(kind, room) : null;
     if(why && why.вид === 'обмеры') return 'сначала обмеры: не заданы ' + why.чего.join(', ');
+    /* [чат 180] Ноль по расчёту — это ответ, а не пробел: вписывать нечего. */
+    const v0 = (kind && room) ? profVol(kind, room) : null;
+    if(v0 !== null && v0 !== undefined && Number(v0) === 0){
+      const что = nolWhat(kind);
+      return что ? ('по расчёту ноль: ' + что + ' в этом помещении нет') : 'по расчёту ноль';
+    }
     return 'объём впишете руками — расчёта у этого вида нет';
   }catch(e){ return 'объём в этом помещении не считается'; }
 }
@@ -13973,6 +13996,12 @@ function vRepVol(roomCode, code, k){
       const why = profVolWhy(kind, room);
       if(why && why.вид === 'обмеры')
         return ' · <span style="color:var(--warn)">нет обмеров: ' + esc(why.чего.join(', ')) + '</span>';
+      /* [чат 180] Ноль по расчёту отличается от пробела и цветом: он не долг,
+         а ответ, и оранжевым звать к нему незачем. */
+      if(v !== null && v !== undefined && Number(v) === 0){
+        const что = nolWhat(kind);
+        return ' · <span style="opacity:.7">по расчёту ноль' + (что ? ': ' + esc(что) + ' нет' : '') + '</span>';
+      }
       return ' · <span style="color:var(--warn)">объём впишете руками</span>';
     }
     const calc = Math.round(Number(v) * 100) / 100;
@@ -15806,7 +15835,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "180.7";
+const BUILD = "180.8";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
