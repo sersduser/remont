@@ -3257,6 +3257,9 @@ function profVol(kind, room){
       if(q.src === 'окна')  return room.windows;
       return null;
     }
+    /* [чат 180, Д-153-9] Признак выключает не только вопросы, но и расчёт:
+       иначе потолок подставится из пола и работа по нему приедет в смету. */
+    if((b === 'пол' || b === 'потолок') && typeof roomNoFloor === 'function' && roomNoFloor(room.code)) return null;
     if(b === 'пол')       return room.floor_m2;
     /* [153, Д-153-2] Потолок и стены брались ТОЛЬКО из полей записи помещения.
        Поля заполняются отдельным действием «пересчитать», и пока человек его
@@ -6530,7 +6533,7 @@ function roomFixPlan(r){
   if(w !== null && Math.abs(w - Number(r.wall_m2 || 0)) > 0.05)
     план.push({ sheet:"06_Помещения", col:"Стены_м2", now:w, was:Number(r.wall_m2 || 0),
                 текст: "стены " + (пусто(r.wall_m2) ? "не заданы" : точно(r.wall_m2)) + " → " + точно(w) + " м²" });
-  const ceil = Number(r.floor_m2);
+  const ceil = (typeof roomNoFloor === 'function' && roomNoFloor(r.code)) ? 0 : Number(r.floor_m2);
   if(ceil > 0 && Math.abs(ceil - Number(r.ceiling_m2 || 0)) > 0.005)
     план.push({ sheet:"06_Помещения", col:"Потолок_м2", now:ceil, was:Number(r.ceiling_m2 || 0),
                 текст: "потолок " + (пусто(r.ceiling_m2) ? "не задан" : точно(r.ceiling_m2)) + " → " + точно(ceil) + " м²" });
@@ -10844,6 +10847,15 @@ object(){
           inpFor("Дверей_шт", "dr_" + r.code, подпись("дверь", r.doors, "дверей"));
       })() +
       elemBlock(r) +
+      /* [чат 180, Д-153-9] Признак ставится здесь же, в карточке помещения, и
+         называет последствия до нажатия, а не после. */
+      ((function(){
+        const нет = (typeof roomNoFloor === 'function') && roomNoFloor(r.code);
+        return '<div class="m" style="margin-top:8px">' +
+          (нет ? 'Пола и потолка нет: высоту не спрашиваем, работы по полу и потолку не предлагаем. ' : '') +
+          '<button onclick="roomNoFloorToggle(\'' + esc(r.code) + '\')" style="padding:6px 10px;border-radius:9px;border:0;background:#3a3a3c;color:#fff;font-size:13px">' +
+          (нет ? 'Вернуть пол и потолок' : 'У этого помещения нет пола и потолка') + '</button></div>';
+      })()) +
       modBlock(r) +
       '<div class="m" style="margin-top:8px">Из чего попадаем в помещение:</div><div>' + adjChips(r.code) + outChips(r.code) + "</div>" +
       /* Объединение помещений [M3 разбора 39, чат 126]: кнопка стоит в карточке
@@ -11503,6 +11515,43 @@ function qzElemName(e, code){
    куда пишется ответ». Новая тема добавляет строку правил, а не правит
    движок (§2 п. 6). Текст — озвучиваемая форма: одна строка, с примером
    там, где формат ответа неочевиден. */
+/* ── [чат 180, Д-153-9] «У этого помещения нет пола и потолка» ─────────────
+   Слова Дмитрия про Шахту (1089): «в нём нет пола и потолка». Дом признака —
+   план профиля, ключи `__no_floor` и `__no_ceiling`: та же форма, что у
+   `__room_skip` (167), которую он уже принял. Схема базы не трогается, накат
+   не нужен, решение обратимо одним нажатием.
+   Признак ставит человек, а не угадывает панель: маленькая площадь ещё не
+   значит «не комната», и «умное» угадывание тут стоит дороже вопроса. */
+const NO_FLOOR = "__no_floor";
+const NO_CEIL  = "__no_ceiling";
+function roomNo(rc, ключ){
+  const p = (typeof PROF === "object" && PROF && PROF.plan && PROF.plan[rc]) || null;
+  return !!(p && p[ключ]);
+}
+function roomNoFloor(rc){ return roomNo(rc, NO_FLOOR); }
+function roomNoCeil(rc){ return roomNo(rc, NO_CEIL); }
+function roomNoFloorSet(rc, вкл){
+  if(!rc) return;
+  if(typeof PROF !== "object" || !PROF) PROF = { room: null, plan: {} };
+  if(!PROF.plan[rc]) PROF.plan[rc] = {};
+  if(вкл){ PROF.plan[rc][NO_FLOOR] = 1; PROF.plan[rc][NO_CEIL] = 1; }
+  else {
+    delete PROF.plan[rc][NO_FLOOR]; delete PROF.plan[rc][NO_CEIL];
+    if(!Object.keys(PROF.plan[rc]).length) delete PROF.plan[rc];
+  }
+  try{ planSave(); }catch(e){}
+  try{ profilePushSoon(); }catch(e){}
+}
+function roomNoFloorToggle(rc){
+  const было = roomNoFloor(rc);
+  roomNoFloorSet(rc, !было);
+  const r = ((typeof D === "object" && D && D.rooms) || []).find(x => x.code === rc) || {};
+  toast(было
+    ? ("«" + String(r.name || rc) + "»: пол и потолок снова считаются")
+    : ("«" + String(r.name || rc) + "»: пола и потолка нет — обмеры высоты не спрашиваем, работы по полу и потолку не предлагаем"));
+  try{ render(true); }catch(e){}
+}
+
 function qzQueue(){
   const out = [];
   const rooms = qzRooms();
@@ -11523,17 +11572,20 @@ function qzQueue(){
        выпадает целиком: без ремонта не нужны ни обмеры, ни судьба проёмов.
        Признак снимается на экране профиля, и вопросы возвращаются. */
     if(roomSkipReason(rc)) return;
+    /* [чат 180, Д-153-9] У помещения без пола и потолка высота ни к чему:
+       ни обмеры, ни расчёт её не используют. Контур тоже — он про пол. */
+    const безПола = roomNoFloor(rc);
 
     /* 4.1 Обмеры: контур → высота. Площадь и периметр считает код по
        контуру (052) — их не спрашиваем отдельно. */
-    if(qzNeed(r.floor_m2) && qzNeed(r.perimeter_m)){
+    if(qzNeed(r.floor_m2) && qzNeed(r.perimeter_m) && !безПола){
       out.push({
         id: "contour:" + rc, room: rc, mode: "rooms", input: "voice",
         text: "Мы в помещении «" + rn + "». Пройдём по полу от двери: диктуйте длину каждой стены в сантиметрах, а где огибаете внешний угол — так и скажите: «огибаю внешний угол»",
         hint: "Прямоугольная комната — достаточно двух сторон: «пять двадцать на три семнадцать». Отмечать нужно только внешний угол — тот, где стена выступает внутрь комнаты; обычные углы не называйте"
       });
     }
-    if(qzNeed(r.height_m)){
+    if(qzNeed(r.height_m) && !безПола){
       const last = qzLastHeight(rc);
       out.push({
         id: "height:" + rc, room: rc, mode: "rooms", input: "num",
@@ -15835,7 +15887,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "180.8";
+const BUILD = "180.9";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
