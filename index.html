@@ -4062,7 +4062,104 @@ function elemSideName(e, code){
    определение «решено» разъехалось между сервером и панелью). */
 const elemGap   = (e) => !!(e.plan && e.fact && e.plan !== e.fact);
 const elemGaps  = () => elemAll().filter(elemGap);
-const elemCount = (code, fact) => elemOf(code).filter(e => e.fact === fact).length;
+/* ── Участки одного проёма [чат 180, решение «проём — объект»] ───────────
+   Проём бывает непрямоугольным (Г-образный) и составным (низ заложен,
+   середина люк, верх зашит). Он описывается несколькими строками с кодом
+   «основа.номер»: EL-02 и EL-02.2 — один проём из двух участков.
+   Правило счёта: ШТУКИ считаются по проёмам (группам), ПЛОЩАДЬ — по участкам.
+   Иначе Г-образный проём становится двумя дверями, а закладка — двумя
+   работами вместо одной. */
+const elemKey = (id) => String(id == null ? "" : id).split(".")[0];
+function elemGroups(list){
+  const map = new Map();
+  for(const e of (list || [])){
+    const k = elemKey(e.id);
+    if(!map.has(k)) map.set(k, []);
+    map.get(k).push(e);
+  }
+  return [...map.values()];
+}
+/* Части этого проёма, включая его самого, в порядке номеров. */
+/* ── Названная форма проёма → участки [чат 180, шаг 2, Д-164-2] ──────────
+   Человек называет стороны подряд, обходя контур: «237, 196, 152, 131 …
+   огибаем внутренний угол … 85, 65». Оси при таком обходе чередуются, а знаки
+   восстанавливаются условием замыкания. Дальше контур режется по уникальным
+   координатам, занятые ячейки склеиваются в прямоугольники — и получается
+   ровно то, что умеет схема проёмов после шага 1: участки.
+   Ничего не выдумываем: не замкнулось — возвращаем null, и панель говорит
+   прежнее «услышано, но не записано». */
+function shapeRound(v){ return Math.round(v * 1000) / 1000; }
+
+function shapeCells(pts){
+  const xs = [...new Set(pts.map(p => p[0]))].sort((a, b) => a - b);
+  const ys = [...new Set(pts.map(p => p[1]))].sort((a, b) => a - b);
+  if(xs.length < 2 || ys.length < 2 || xs.length > 4 || ys.length > 4) return null;
+  const внутри = (px, py) => {
+    let c = false;
+    for(let i = 0, j = pts.length - 1; i < pts.length; j = i++){
+      const xi = pts[i][0], yi = pts[i][1], xj = pts[j][0], yj = pts[j][1];
+      if(((yi > py) !== (yj > py)) && (px < (xj - xi) * (py - yi) / (yj - yi) + xi)) c = !c;
+    }
+    return c;
+  };
+  const полосы = [];
+  for(let j = 0; j < ys.length - 1; j++){
+    let нач = null;
+    for(let i = 0; i < xs.length - 1; i++){
+      const есть = внутри((xs[i] + xs[i+1]) / 2, (ys[j] + ys[j+1]) / 2);
+      if(есть && нач === null) нач = i;
+      const конец = (i === xs.length - 2) || !внутри((xs[i+1] + xs[i+2]) / 2, (ys[j] + ys[j+1]) / 2);
+      if(есть && конец){ полосы.push({ w: shapeRound(xs[i+1] - xs[нач]), h: shapeRound(ys[j+1] - ys[j]) }); нач = null; }
+      if(!есть) нач = null;
+    }
+  }
+  /* Соседние полосы одинаковой ширины склеиваем обратно: лишняя координата не
+     должна дробить обычный прямоугольник на два участка. */
+  const out = [];
+  for(const r of полосы){
+    const п = out[out.length - 1];
+    if(п && Math.abs(п.w - r.w) < 0.011) п.h = shapeRound(п.h + r.h);
+    else out.push({ w: r.w, h: r.h });
+  }
+  return out.length ? out : null;
+}
+
+function shapeRects(nums){
+  const raw = (nums || []).map(Number).filter(n => n > 0);
+  if(raw.length < 4 || raw.length > 8 || raw.length % 2) return null;
+  const k = Math.max.apply(null, raw) > 10 ? 0.01 : 1;   /* сантиметры узнаются по величине */
+  const s = raw.map(n => n * k);
+  if(s.length === 4){
+    return (Math.abs(s[0] - s[2]) < 0.011 && Math.abs(s[1] - s[3]) < 0.011)
+      ? [{ w: shapeRound(s[0]), h: shapeRound(s[1]) }] : null;
+  }
+  const n = s.length;
+  for(let m = 0; m < (1 << (n - 2)); m++){
+    const шаги = [];
+    for(let i = 0; i < n; i++){
+      const знак = (i < 2) ? 1 : (((m >> (i - 2)) & 1) ? -1 : 1);
+      шаги.push(i % 2 === 0 ? [знак * s[i], 0] : [0, знак * s[i]]);
+    }
+    let x = 0, y = 0; const pts = [[0, 0]];
+    for(const шаг of шаги){ x += шаг[0]; y += шаг[1]; pts.push([x, y]); }
+    if(Math.abs(x) > 1e-9 || Math.abs(y) > 1e-9) continue;
+    pts.pop();
+    const r = shapeCells(pts);
+    if(r && r.length >= 2) return r;
+  }
+  return null;
+}
+
+function shapeArea(rects){
+  return shapeRound((rects || []).reduce((s, r) => s + r.w * r.h, 0));
+}
+
+function elemParts(id){
+  const k = elemKey(id);
+  return elemAll().filter(e => elemKey(e.id) === k);
+}
+const elemCount = (code, fact) =>
+  elemGroups(elemOf(code).filter(e => e.fact === fact)).length;
 
 /* Площадь настоящих проёмов помещения: свои размеры, если заданы, иначе
    типовые. Пока схемы нет — null, и стены считаются прежней формулой. */
@@ -4162,7 +4259,9 @@ function elemVol(code, src, role, side, unit){
     }
     return Math.round(s * 100) / 100;
   }
-  return list.length;
+  /* Штуки — по проёмам, а не по участкам: заложить Г-образный проём это одна
+     работа, хотя участков у него два [чат 180]. */
+  return elemGroups(list).length;
 }
 
 /* Разбор базы: «источник:роль:сторона». null — уточнения нет вовсе, значит
@@ -5861,7 +5960,10 @@ function roomTodo(r){
 
 function elemBlock(r){
   const list = elemOf(r.code);
-  const gaps = list.filter(elemGap).length;
+  /* [чат 180] Считаем проёмами, а не строками: у составного и Г-образного
+     проёма участков несколько, но проём один — и человек должен видеть один. */
+  const группы = elemGroups(list);
+  const gaps = группы.filter(g => g.some(elemGap)).length;
   /* [169.4] Когда карточка уже предлагает общий ход, частная кнопка сведения
      чисел молчит: два предложения об одном и том же читаются как выбор. */
   /* [173.1] Расхождение и молчание о нём — разные вещи. «дельта» говорит,
@@ -5875,19 +5977,35 @@ function elemBlock(r){
     return '<div class="m" style="margin-top:8px">Проёмы этого помещения не заведены ' +
       '<button onclick="elemAdd(\'' + esc(r.code) + '\')" style="margin-left:6px;padding:6px 10px;border-radius:9px;border:0;background:#3a3a3c;color:#fff;font-size:13px">Добавить проём</button></div>';
   }
-  const rows = list.map(e => {
+  const мера = v => { const n = Number(v); return n > 0 ? String(Math.round(n * 100) / 100).replace(".", ",") : ""; };
+  const rows = группы.map(g => {
+    const e = g[0];
     const fate = e.fate ? e.fate : (e.fact === "нет" ? "нечего делать" : "судьба не задана");
     const fateHtml = (!e.fate && e.fact !== "нет")
       ? '<span style="color:var(--warn)">' + esc(fate) + '</span>' : esc(fate);
     /* [158.2, снимок 1185] Проём без судьбы обведён: человек видит не только
        что не заполнено, но и куда ткнуть. Заложенному проёму («нечего делать»)
        рамка не нужна — он не долг. */
-    const надо = (!e.fate && e.fact !== "нет");
+    const надо = g.some(x => !x.fate && x.fact !== "нет");
+    /* [чат 180] У проёма с участками показываем сам проём и перечень участков:
+       каждый со своими размерами и своей судьбой. Один клик по участку ведёт
+       в ту же правку, что и раньше, — участок это обычная строка элементов. */
+    const участки = (g.length > 1)
+      ? '<div class="m" style="margin-top:4px;opacity:.85">' + g.length + ' ' +
+        (g.length === 2 ? "участка" : (g.length < 5 ? "участка" : "участков")) + ': ' +
+        g.map((x, i) => '<span onclick="event.stopPropagation();elemEdit(\'' + esc(x.id) + '\')" style="cursor:pointer;text-decoration:underline dotted">' +
+          (i + 1) + ') ' + (мера(x.w) && мера(x.h) ? мера(x.w) + " × " + мера(x.h) + " м" : "размеры не заданы") +
+          (x.fate ? ' · ' + esc(x.fate) : '') + '</span>').join(' · ') + '</div>'
+      : '';
+    const ходУчастка = '<div class="m" style="margin-top:4px">' +
+      '<button onclick="event.stopPropagation();elemAddPart(\'' + esc(e.id) + '\')" style="padding:5px 9px;border-radius:9px;border:0;background:#3a3a3c;color:#fff;font-size:12px">' +
+      (g.length > 1 ? "Добавить участок" : "Проём непрямоугольный — добавить участок") + '</button></div>';
     return '<div onclick="elemEdit(\'' + esc(e.id) + '\')" style="margin-top:6px;padding:8px 10px;border-radius:10px;background:rgba(255,255,255,.06);cursor:pointer' +
       (надо ? ';border:1px solid rgba(245,166,35,.55)' : '') + '">' +
       '<div>' + esc(String(e.fact || "?")) + ' · ' + esc(elemSideName(e, r.code)) + '</div>' +
       '<div class="m">' + fateHtml +
-        (elemGap(e) ? ' · <span style="color:#ff9f0a">на плане ' + esc(e.plan) + '</span>' : '') + '</div></div>';
+        (g.some(elemGap) ? ' · <span style="color:#ff9f0a">на плане ' + esc(e.plan) + '</span>' : '') + '</div>' +
+      участки + ходУчастка + '</div>';
   }).join("");
   /* [169.3] Кнопка называет действие и результат, а не механизм. Слова
      Дмитрия 20.08 (снимки 1259–1260): «Вижу оранжевую надпись, попробую
@@ -5906,7 +6024,7 @@ function elemBlock(r){
         ? '<div class="m" style="margin-top:6px;opacity:.7">Обмеры сходятся со схемой проёмов: окон ' +
           elemCount(r.code, "окно") + ' · дверей ' + elemCount(r.code, "дверь") + '</div>'
         : "");
-  return '<div class="m" style="margin-top:8px">Проёмы: ' + list.length +
+  return '<div class="m" style="margin-top:8px">Проёмы: ' + группы.length +
       (gaps ? ' · расходятся с планом: ' + gaps : '') +
       ' <button onclick="elemAdd(\'' + esc(r.code) + '\')" style="margin-left:6px;padding:6px 10px;border-radius:9px;border:0;background:#3a3a3c;color:#fff;font-size:13px">Добавить</button></div>' +
     rows + numLine;
@@ -6003,6 +6121,36 @@ function elemAdd(code){
         esc(rn(o)) + '</button>').join('') + '</div>' +
     '<div class="vd" style="margin-top:8px">Тип и судьбу зададите следующим шагом.</div>' +
     '<div class="vrow"><button class="vbtn-cancel" onclick="closeVSheet()">Отмена</button></div>');
+}
+
+/* Новый участок существующего проёма [чат 180]. Код — основа плюс следующий
+   номер, начиная со второго: первый участок сохраняет исходный код, поэтому
+   ссылки вида «size:EL-02» и записанные вопросы продолжают работать. */
+async function elemAddPart(id){
+  if(typeof ELEM_BUSY !== "undefined" && ELEM_BUSY) return;
+  const части = elemParts(id);
+  const e = части[0];
+  if(!e) return;
+  const осн = elemKey(id);
+  let mx = 1;
+  части.forEach(x => { const m = String(x.id || "").match(/\.(\d+)$/); if(m) mx = Math.max(mx, Number(m[1])); });
+  const nid = осн + "." + (mx + 1);
+  if(typeof ELEM_BUSY !== "undefined") ELEM_BUSY = true;
+  try{
+    await crewAppend("13_Элементы", [{
+      "id": nid, "Сторона_A": e.a, "Сторона_B": e.b,
+      "Тип_план": e.plan || "", "Тип_факт": e.fact || "проём", "Судьба": e.fate || "",
+      "Название": (e.name || ""), "Ширина_м": "", "Высота_м": "",
+      "Примечание": "участок проёма " + осн, "Обновлено": chgStamp(),
+    }]);
+    (D.elements = D.elements || []).push({ id: nid, a: e.a, b: e.b, plan: e.plan,
+      fact: e.fact, fate: e.fate, w: "", h: "" });
+    toast("Участок добавлен — задайте его размеры");
+    await load();
+    render();
+    elemEdit(nid);
+  }catch(err){ toast(err.message, "err"); }
+  finally{ if(typeof ELEM_BUSY !== "undefined") ELEM_BUSY = false; }
 }
 
 function elemNextId(){
@@ -8865,7 +9013,7 @@ function navSave(){
        Найдено живым взглядом в Telegram Web: уход в профиль, прокрутка вниз,
        обновление — и главный экран открывается в самом низу. */
     const lastK = stack[stack.length - 1];
-    localStorage.setItem(NAV_LS, JSON.stringify({ s: s, p: SCROLL, y: scrollNow(), f: NAV_SKIP[lastK] ? 1 : 0, t: Date.now() }));
+    localStorage.setItem(NAV_LS, JSON.stringify({ s: s, p: SCROLL, y: scrollNow(), f: NAV_SKIP[lastK] ? 1 : 0, t: Date.now(), obj: (typeof KEY === 'string' ? KEY : '') }));
   }catch(e){}
 }
 function navSaveSoon(){
@@ -8881,6 +9029,10 @@ function navRestore(){
     if(Date.now() - (Number(o.t) || 0) > NAV_TTL) return false;
     const s = o.s.filter(k => typeof k === "string" && SCREENS[k] && !NAV_SKIP[k]);
     if(!s.length || s[0] !== "home" || s.length > 4) return false;
+    /* [180] Место принадлежит объекту, а не устройству: сохранённый экран
+       чужого объекта открывал человека в середине чужих данных. Записи без
+       адреса — старого формата, их тоже не восстанавливаем. */
+    if(String(o.obj || '') !== String(typeof KEY === 'string' ? KEY : '')) return false;
     stack = s;
     if(o.p && typeof o.p === "object"){
       Object.keys(o.p).forEach(k => { const v = Number(o.p[k]); if(v > 0) SCROLL[k] = v; });
@@ -9042,7 +9194,7 @@ function objSelScreen(){
       (мимо && !on ? ';border:1px solid #3a3a3c' : '') + '">' +
       '<div style="font-size:15px">' + esc(objsTitle(o.key)) + (on ? " · открыт" : "") + '</div>' +
       '<div style="font-size:12px;opacity:.65;margin-top:3px">' + (role ? esc(role) + ' · ' : '') +
-        'ключ …' + esc(String(o.key).slice(-6)) + '</div>' +
+        (on ? 'открыт сейчас' : 'доступ есть') + '</div>' +
       (мимо ? '<div style="font-size:12px;margin-top:6px;color:var(--warn)">Сервер эту строку не подтвердил — она осталась в памяти этого устройства</div>' +
         '<button onpointerdown="event.stopPropagation()" onpointerup="event.stopPropagation()"' +
         ' onclick="event.stopPropagation(); objsForget(\'' + esc(o.key) + '\')"' +
@@ -9803,9 +9955,9 @@ home(){
       <button class="tile" onclick="go('object')" style="${(D.kind === 'admin' || D.kind === 'owner') ? '' : 'display:none'}">
         <span class="ic">🏠</span><span class="nm">Объект</span>
         <div class="h">план БТИ и обмеры${roomGap().length ? ' · пробелы' : ''}</div></button>
-      <button class="tile" onclick="openProfile()">
+      <button class="tile ${(D.works || []).length ? '' : 'warnpri'}" onclick="openProfile()">
         <span class="ic">📐</span><span class="nm">Профиль ремонта</span>
-        <div class="h">собрать смету по помещениям</div></button>
+        <div class="h">${(D.works || []).length ? 'собрать смету по помещениям' : 'сметы ещё нет — начните отсюда'}</div></button>
       <button class="tile" onclick="openTerms()">
         <span class="ic">📅</span><span class="nm">Сроки</span>
         <div class="h">критический путь и отставание</div></button>
@@ -10715,6 +10867,10 @@ object(){
         '<div class="h">' + (долгВсего ? (долгВсего + " не заполнено — спросит по одному") : "система спросит сама") + "</div></button>" +
       '<button class="tile" onclick="startVoice(\'rooms\')"><span class="ic">🎤</span><span class="nm">Продиктовать<br>размеры</span><div class="h">пол, потолок, окна, двери</div></button>' +
       '<button class="tile" onclick="objPick()"><span class="ic">🗺️</span><span class="nm">' + (plan ? "Заменить план" : "Загрузить план") + '</span><div class="h">фото плана БТИ</div></button>' +
+      /* [180] Ход к смете прямо отсюда: «Профиль ремонта» жил только на главном,
+         и человек, закончивший обмеры, должен был догадаться вернуться назад. */
+      '<button class="tile" onclick="openProfile()"><span class="ic">📐</span><span class="nm">Собрать<br>смету</span>' +
+        '<div class="h">' + ((D.works || []).length ? "смета уже собрана — дополнить" : "по обмерам и прайсу") + '</div></button>' +
     "</div>" +
     planBox +
     schemaBox +
@@ -13057,7 +13213,11 @@ function vrElems(r) {
       isNew: fresh, unknown: !side,
       pair: cur ? elemPairLabel(cur) : '',
       shape: форма, nums: числа,
-      changes: ch, _sel: fresh
+      /* [чат 180, шаг 2] Названный контур раскладывается на участки — теперь
+         записывать есть куда. Не разобралось — rects пуст, и строка остаётся
+         прежней: «услышано, но не записано». */
+      rects: (числа.length >= 4 ? shapeRects(числа) : null),
+      changes: ch, _sel: fresh || !!(числа.length >= 4 && shapeRects(числа))
     };
   }).filter(e => e.changes.length || e.unknown || e.many || e.shape || (e.nums || []).length);
 
@@ -13199,6 +13359,16 @@ function showVRooms(d){
       /* [160.2] Отмечать нечего — но услышанное видно, и сказано, почему оно
          не записано. Тот же способ, что у отказа голосом и у проёмов в окне
          работ: строка без галочки, приглушённая, с оранжевым пояснением. */
+      /* [чат 180, шаг 2] Контур разобран — показываем участки и площадь, и
+         ставим галочку: человек видит, что именно ляжет в схему проёмов. */
+      if(e.rects && e.rects.length){
+        const мера = v => String(Math.round(Number(v) * 100) / 100).replace(".", ",");
+        const уч = e.rects.map((кус, k) => (k + 1) + ") " + мера(кус.w) + " × " + мера(кус.h) + " м").join(" · ");
+        return `<div class="vitem${e._sel ? " sel" : ""}" data-e="${i}-${j}" onclick="toggleVElem(${i},${j})"><div class="vchk">✓</div><div style="flex:1;min-width:0">
+          <div class="vv">${адрес} · <b>${esc(уч)}</b></div>
+          <div class="vd">${esc(e.shape || "форма сложнее прямоугольника")} · разобрано в ${e.rects.length} ${e.rects.length === 2 ? "участка" : "участков"}, площадь ${esc(мера(shapeArea(e.rects)))} м²</div>
+        </div></div>`;
+      }
       if(e.shape || (e.nums || []).length){
         const чис = (e.nums || []).map(n => String(Math.round(Number(n) * 100) / 100).replace(".", ",")).join(" · ");
         return `<div class="vitem" style="opacity:.85"><div class="vchk" style="opacity:.35">◇</div><div style="flex:1;min-width:0">
@@ -13274,7 +13444,9 @@ function showVRooms(d){
 function toggleVElem(i, j){
   const e = vRooms[i].elems[j];
   if(e.unknown || e.many) return;                  // выбирать не из чего
-  const on = e.isNew ? !e._sel : !e.changes.some(c => c._sel);
+  /* [чат 180, шаг 2] У разобранной формы правок в changes нет — переключаем
+     её собственную отметку, иначе строка «залипала» бы выбранной. */
+  const on = (e.rects && e.rects.length) ? !e._sel : (e.isNew ? !e._sel : !e.changes.some(c => c._sel));
   e._sel = on;
   e.changes.forEach(c => { c._sel = on; });
   const el = document.querySelector(`.vitem[data-e="${i}-${j}"]`);
@@ -13354,6 +13526,32 @@ async function applyVoiceRooms(){
     for(const e of (r.elems || [])){
       const sel = e.changes.filter(c => c._sel);
       try{
+        /* [чат 180, шаг 2] Разобранная форма пишется участками: первый берёт
+           код проёма (иначе поедут записанные адреса вида «size:EL-02»),
+           остальные получают суффиксы «.2», «.3». */
+        if(e.rects && e.rects.length && e._sel){
+          const осн = e.id || elemNextId();
+          const имя = (((roomList().find(x => String(x.code) === r.code) || {}).name) || r.name || r.code) + " ↔ " + vrSideLabel(e.side, e.said);
+          for(let i = 0; i < e.rects.length; i++){
+            const кусок = e.rects[i];
+            const код = i === 0 ? осн : (осн + "." + (i + 1));
+            if(i === 0 && e.id){
+              await writeCell("13_Элементы", код, "Ширина_м", String(кусок.w));
+              await writeCell("13_Элементы", код, "Высота_м", String(кусок.h));
+            }else{
+              await crewAppend("13_Элементы", [{
+                "id": код, "Сторона_A": r.code, "Сторона_B": e.side,
+                "Тип_план": "", "Тип_факт": "проём", "Судьба": "",
+                "Название": имя, "Ширина_м": String(кусок.w), "Высота_м": String(кусок.h),
+                "Примечание": (i === 0 ? "форма названа голосом" : "участок проёма " + осн), "Обновлено": chgStamp(),
+              }]);
+              (D.elements = D.elements || []).push({ id: код, a: r.code, b: e.side,
+                plan: "", fact: "проём", fate: "", w: кусок.w, h: кусок.h });
+            }
+            done++;
+          }
+          continue;
+        }
         if(e.isNew){
           /* Новому проёму нужна сторона A — без кода помещения его завести
              нечем, и это честный отказ, а не молчание [160.1]. */
@@ -15422,7 +15620,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "179.1";
+const BUILD = "180.3";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
