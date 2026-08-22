@@ -10181,7 +10181,7 @@ home(){
   return `
     <div class="hello">${esc(D.who)}, добрый день</div>
     <div class="sub">${new Date().toLocaleDateString("ru-RU",{day:"numeric",month:"long"})} · ${esc(objNowTitle())}</div>
-    ${head}${cheki}
+    ${head}${cheki}${voiceKeptBox()}
     <div class="grid">
       <button class="tile pri" onclick="startVoice()">
         <span class="ic">🎤</span><span class="nm">Записать<br>голосом</span>
@@ -11795,6 +11795,40 @@ function qzElemName(e, code){
    не нужен, решение обратимо одним нажатием.
    Признак ставит человек, а не угадывает панель: маленькая площадь ещё не
    значит «не комната», и «умное» угадывание тут стоит дороже вопроса. */
+/* [181, Д-181-5] Похоже ли помещение на техническую полость.
+   Два признака, и достаточно любого: имя из списка (шахта, короб, стояк, ниша,
+   антресоль) ИЛИ площадь пола меньше 1,5 м² — жилых помещений такой площади не
+   бывает, а шахта на Юнусабаде — 0,81 м². Порог назван числом, а не «маленькая»,
+   чтобы его можно было оспорить одним замером, а не спором о словах. */
+const ПОЛОСТЬ_ИМЕНА = /шахт|короб|стояк|ниш[аи]|антресол/i;
+const ПОЛОСТЬ_М2 = 1.5;
+function roomLooksTech(rc){
+  try{
+    const r = (D.rooms || []).find(x => x.code === rc || x.name === rc || x.title === rc);
+    if(!r) return false;
+    if(ПОЛОСТЬ_ИМЕНА.test(String(r.name || r.title || ""))) return true;
+    const s = Number(r.floor_m2);
+    return isFinite(s) && s > 0 && s < ПОЛОСТЬ_М2;
+  }catch(e){ return false; }
+}
+/* Строка-предложение: показывается только там, где подозрение есть, признак ещё
+   не стоит и человеку прямо сейчас предлагают работы по полу или потолку. */
+function roomTechHint(rc){
+  try{
+    if(!roomLooksTech(rc)) return "";
+    if(typeof roomNoFloor === 'function' && roomNoFloor(rc)) return "";
+    return '<div class="vd" style="margin:6px 0 2px;color:#ff9f0a">' +
+      'Похоже на техническую полость: пола и потолка у неё может не быть. ' +
+      '<button onclick="event.stopPropagation(); roomNoFloorToggle(\'' + esc(rc) + '\'); showVRepairAgain()" ' +
+      'style="padding:5px 9px;border-radius:9px;border:0;background:#0a84ff;color:#fff;font-size:13px">' +
+      'Здесь нет пола и потолка</button></div>';
+  }catch(e){ return ""; }
+}
+/* Перерисовка окна тем же разбором — после смены признака объёмы другие. */
+function showVRepairAgain(){
+  try{ if(typeof VREP_D !== 'undefined' && VREP_D) showVRepair(VREP_D); }catch(e){}
+}
+
 const NO_FLOOR = "__no_floor";
 const NO_CEIL  = "__no_ceiling";
 function roomNo(rc, ключ){
@@ -14388,8 +14422,65 @@ function voiceModWrite(i){
   modAddUI();
 }
 
+/* ── Разбор голоса переживает выход [181, Д-181-4] ─────────────────────────
+   Слова Дмитрия из живого прохода 23.08: «Вышел из этого окна и вернуться
+   невозможно — подтвердить данные не могу». Окно строилось из памяти вкладки,
+   и выход из Mini App уносил всё наговорённое.
+
+   Три решения, каждое от того, как человек на самом деле выходит:
+   (1) кладём в тот же миг, когда окно СТРОИТСЯ, а не по кнопке «Отмена»:
+       из Mini App выходят кнопкой Telegram, до нашей кнопки дело не доходит;
+   (2) ключ несёт хвост ключа доступа — как у плана профиля (PLAN_LS), иначе
+       разбор одного объекта всплыл бы на другом;
+   (3) живёт сутки: разбор позавчерашнего разговора предлагать вреднее, чем
+       не предлагать вовсе — человек примет его за сегодняшний. */
+const VOICE_LS = "REMONT_VOICE";
+function voiceKeepKey(){
+  try{ return VOICE_LS + "_" + String(KEY || localStorage.getItem(OBJK_LS) || "-").slice(-12); }
+  catch(e){ return VOICE_LS + "_-"; }
+}
+function voiceKeep(d){
+  try{
+    if(!d || !Array.isArray(d.rooms) || !d.rooms.length) return;
+    localStorage.setItem(voiceKeepKey(), JSON.stringify({ at: Date.now(), d: d }));
+  }catch(e){}
+}
+function voiceKept(){
+  try{
+    const s = localStorage.getItem(voiceKeepKey());
+    if(!s) return null;
+    const v = JSON.parse(s);
+    if(!v || !v.d || !Array.isArray(v.d.rooms) || !v.d.rooms.length) return null;
+    if(!(Date.now() - Number(v.at) < 24 * 60 * 60 * 1000)) return null;   // старше суток — молчим
+    return v;
+  }catch(e){ return null; }
+}
+function voiceForget(){ try{ localStorage.removeItem(voiceKeepKey()); }catch(e){} }
+function voiceRestore(){
+  const v = voiceKept();
+  if(!v){ toast('Последнего разбора нет — он живёт сутки', 'err'); return; }
+  showVRepair(v.d);
+}
+/* Плашка на главном: человек возвращается именно туда, а не в окно. */
+function voiceKeptBox(){
+  const v = voiceKept();
+  if(!v) return "";
+  const мин = Math.round((Date.now() - Number(v.at)) / 60000);
+  const когда = мин < 1 ? "только что" : (мин < 60 ? (мин + " мин назад") : (Math.round(мин / 60) + " ч назад"));
+  const скольких = v.d.rooms.length;
+  const слово = скольких === 1 ? "помещению" : "помещениям";
+  const сказано = String(v.d.recognized || "").slice(0, 90);
+  return '<div class="warnbox">Последний разбор голоса — по ' + скольких + ' ' + слово + ', ' + esc(когда) + '.' +
+    (сказано ? '<br><span style="color:var(--hint);font-size:13px">«' + esc(сказано) + '…»</span>' : '') +
+    '<div style="margin-top:10px;display:flex;gap:8px">' +
+      '<button onclick="voiceRestore()" style="flex:1;padding:12px;border-radius:12px;border:0;background:#0a84ff;color:#fff;font-size:15px">Вернуться к разбору</button>' +
+      '<button onclick="voiceForget(); render()" style="padding:12px 14px;border-radius:12px;border:0;background:#3a3a3c;color:#fff;font-size:15px">Убрать</button>' +
+    '</div></div>';
+}
+
 function showVRepair(d){
   const list = Array.isArray(d.rooms) ? d.rooms : [];
+  voiceKeep(d);                                  // [181] кладём сразу, а не по кнопке
   VMODS = [];
   /* Справочник нужен, чтобы посчитать объём. Его может не быть — тогда
      окно рисуется сразу (ждать нельзя), а с приходом справочника
@@ -14419,7 +14510,10 @@ function showVRepair(d){
      фильтр опустошал окно. */
   const repSelN = vRep.reduce((s, r) => s + (r.isNew ? 0 : (r.kinds || []).filter(k => k._sel).length), 0);
   const rows = vRep.map((r, i) => {
-    const head = `<div class="vt">${esc(r.name || "помещение")}${r.isNew ? ' <span style="color:#ff9f0a">· нет в объекте</span>' : ""}</div>`;
+    const head = `<div class="vt">${esc(r.name || "помещение")}${r.isNew ? ' <span style="color:#ff9f0a">· нет в объекте</span>' : ""}</div>`
+      /* [181, Д-181-5] «Всё верно, кроме шахты» — предложение стоит там, где
+         возникает вопрос, а не на экране «Объект», куда человек не пойдёт. */
+      + ((!r.isNew && typeof roomTechHint === 'function') ? roomTechHint(r.code || r.name) : "");
     if(r.isNew){
       return `<div style="margin-bottom:10px">${head}<div class="vd" style="margin-top:4px">Такого помещения в объекте нет. Заведите его на экране «Объект» — тогда объёмы посчитаются из обмеров.</div></div>`;
     }
@@ -14732,6 +14826,10 @@ function toggleVOpening(i, j){
 }
 
 async function applyVoiceRepair(){
+  /* [181] Перенесённое в профиль больше не «последний разбор»: плашка,
+     которая предлагает вернуться к уже применённому, хуже её отсутствия. */
+  const _забыть = () => { try{ voiceForget(); }catch(e){} };
+  setTimeout(_забыть, 0);
   /* [чат 180, хвост Д-156-4] Проёмы, отмеченные в окне работ, записываются тем
      же нажатием, что и работы: человек подтвердил — значит сохраняем. Делаем
      это ДО веток «ничего не отмечено» и допсоглашения: размеры проёма к смете
@@ -16160,7 +16258,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "181.5";
+const BUILD = "181.7";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
