@@ -3511,6 +3511,44 @@ function rateHint(k){
   return parts.join(' · ');
 }
 
+/* ── Отклонение цены от средней [181, заказ Дмитрия 23.08] ────────────────
+   «Возле цены стрелка вверх или вниз и проценты… выше — красные, ниже — зелёные».
+
+   Источник сравнения ищется в таком порядке:
+     1) средняя по приложению — поле `avg_usd` вида, когда сервер начнёт её
+        отдавать (ежедневная вёрстка по оплаченным работам за период);
+     2) ориентир справочника — типовая ставка или середина вилки.
+   Порядок именно такой, а не наоборот: живая статистика приложения вернее
+   статичного справочника, наполненного однажды в 108.
+
+   Молчим в трёх случаях: цены нет, сравнивать не с чем, отклонение меньше
+   процента. Последнее — чтобы стрелка не мигала от копеечных расхождений
+   округления: «▲ 0 %» хуже, чем ничего. */
+function priceBase(code){
+  const k = ((D.catalog || {}).kinds || []).find(x => x.code === code);
+  if(!k) return null;
+  const ср = Number(k.avg_usd) || 0;
+  if(ср > 0) return { v: ср, что: 'средней по приложению' };
+  const ор = (typeof rateNum === 'function') ? rateNum(k) : 0;
+  if(ор > 0) return { v: ор, что: 'ориентира рынка' };
+  return null;
+}
+function priceDelta(code){
+  const p = ((D.catalog || {}).price || []).find(x => x.code === code && x.active !== false);
+  const цена = Number(p && p.price_usd) || 0;
+  if(!(цена > 0)) return '';
+  const база = priceBase(code);
+  if(!база) return '';
+  const проц = Math.round((цена - база.v) / база.v * 100);
+  if(!проц) return '';
+  const вверх = проц > 0;
+  const цвет = вверх ? '#ff453a' : '#30d158';
+  const знак = вверх ? '▲' : '▼';
+  return '<span style="color:' + цвет + ';font-weight:600" title="на ' + Math.abs(проц) +
+    ' % ' + (вверх ? 'дороже ' : 'дешевле ') + esc(база.что) + '">' +
+    знак + ' ' + Math.abs(проц) + ' %</span>';
+}
+
 function profPrice(code){
   const p = ((D.catalog || {}).price || []).find(x => x.code === code);
   if(p && Number(p.price_usd) > 0) return Number(p.price_usd);
@@ -10464,7 +10502,10 @@ book(){
     return '<div class="work"' + (isOff ? ' style="opacity:.55"' : '') + '>' +
       '<div class="t">' + esc(p.name || k.name || p.code) + '</div>' +
       '<div class="m">' + esc(p.code) + ' · за ' + esc(k.unit || p.unit || 'ед') + ' · ' + esc(hint) +
-        (dupN > 1 ? (' · строк с этим кодом: ' + dupN + ' (правка применится ко всем)') : '') + '</div>' +
+        (dupN > 1 ? (' · строк с этим кодом: ' + dupN + ' (правка применится ко всем)') : '') +
+        /* [181] Отклонение от средней — рядом с ценой, а не в отдельной колонке:
+           человек читает цену и сразу видит, куда она отклонилась. */
+        (isOff ? '' : (function(){ const d = priceDelta(p.code); return d ? (' · ' + d) : ''; })()) + '</div>' +
       '<div class="m" style="margin-top:6px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">' +
         (isOff ? '' :
           '<input type="number" step="0.01" inputmode="decimal" data-code="' + esc(p.code) + '" value="' + esc(val) + '"' +
@@ -11158,6 +11199,18 @@ object(){
       elemBlock(r) +
       /* [чат 180, Д-153-9] Признак ставится здесь же, в карточке помещения, и
          называет последствия до нажатия, а не после. */
+      /* [181] Выход наружу — рядом с признаком «нет пола и потолка»: оба про то,
+         чем это помещение отличается от обычной комнаты. */
+      ((function(){
+        const есть = (typeof roomHasExit === 'function') && roomHasExit(r.code);
+        const руч = (typeof roomNo === 'function') && roomNo(r.code, EXIT_KEY);
+        return '<div class="m" style="margin-top:8px">' +
+          (есть ? '<span style="color:#30d158">🚪 Выход наружу</span>' +
+                  (руч ? ' · отмечено вами' : ' · видно по схеме проёмов') + ' · ' : '') +
+          '<button onclick="roomExitToggle(\'' + esc(r.code) + '\')" ' +
+          'style="padding:6px 10px;border-radius:9px;border:0;background:#3a3a3c;color:#fff;font-size:13px">' +
+          (руч ? 'Снять пометку выхода' : (есть ? 'Это не выход' : 'Отсюда есть выход наружу')) + '</button></div>';
+      })()) +
       ((function(){
         const нет = (typeof roomNoFloor === 'function') && roomNoFloor(r.code);
         return '<div class="m" style="margin-top:8px">' +
@@ -11868,6 +11921,45 @@ function roomTechHint(rc){
 /* Перерисовка окна тем же разбором — после смены признака объёмы другие. */
 function showVRepairAgain(){
   try{ if(typeof VREP_D !== 'undefined' && VREP_D) showVRepair(VREP_D); }catch(e){}
+}
+
+/* ── Выход наружу [181, ответ Дмитрия «5.1 помечать помещение с выходом наружу»] ──
+   Выход — дверь или открытый проём во внешнюю сторону. Окно на улицу выходом
+   не считается: через него не входят, и входной двери оно не заменяет. Стороны
+   «подъезд» и «улица» приходят из разбора голоса и схемы проёмов — там они
+   заведены давно, а вот у ПОМЕЩЕНИЯ признака не было.
+
+   Дом ручной пометки — план профиля, ключ `__exit`: та же форма, что у
+   `__no_floor` (180), и по той же причине — схема базы не трогается, решение
+   обратимо одним нажатием. */
+const EXIT_KEY = "__exit";
+const ВНЕШНИЕ = /подъезд|улиц|двор|лестни|тамбур/i;
+
+function roomHasExit(rc){
+  try{
+    /* Ручная пометка сильнее вычисленной: человек видит квартиру, мы — данные. */
+    if(typeof roomNo === "function" && roomNo(rc, EXIT_KEY)) return true;
+    const r = (D.rooms || []).find(x => x.code === rc || x.name === rc || x.title === rc);
+    const имя = r ? String(r.name || r.title || "") : String(rc || "");
+    const свои = (typeof elemAll === "function" ? elemAll() : []).filter(e =>
+      String(e.a || "") === имя || String(e.b || "") === имя ||
+      String(e.a || "") === rc || String(e.b || "") === rc);
+    return свои.some(e => {
+      const другой = (String(e.a||"") === имя || String(e.a||"") === rc) ? String(e.b||"") : String(e.a||"");
+      if(!ВНЕШНИЕ.test(другой)) return false;
+      const факт = String(e.fact || "").trim();
+      return факт === "дверь" || факт === "проём";      // окно — не выход
+    });
+  }catch(e){ return false; }
+}
+function roomExitSet(rc, вкл){
+  try{ if(typeof roomNoSet === "function") return roomNoSet(rc, EXIT_KEY, вкл); }catch(e){}
+}
+function roomExitToggle(rc){
+  const было = (typeof roomNo === "function") && roomNo(rc, EXIT_KEY);
+  roomExitSet(rc, !было);
+  toast(было ? "Пометка выхода снята" : "Помечено: из этого помещения есть выход наружу");
+  try{ render(); }catch(e){}
 }
 
 const NO_FLOOR = "__no_floor";
@@ -16370,7 +16462,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "181.9";
+const BUILD = "181.11";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
