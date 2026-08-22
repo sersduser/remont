@@ -2986,6 +2986,151 @@ async function bookActive(code, on){
   }catch(e){ toast(e.message, 'err'); }
 }
 
+/* ── Правка разделом целиком [чат 181, слова Дмитрия: «или группам работ»] ──
+   У пилота 84 запрещённых строки и 181 строка прайса: правка по одной — это
+   восемьдесят четыре нажатия там, где смысл один. Раздел справочника и есть
+   та группа, которой бригадир мыслит: «сантехнику не делаю», «малярку по два».
+
+   Три отказа, которые план обязан назвать вслух, а не проглотить:
+     kindOff — сам вид погашен в справочнике: строку вернёшь, а в смету она
+               всё равно не попадёт (bookFillPlan её тоже пропускает);
+     twin    — у кода уже есть активная строка: возврат создаст дубль в прайсе;
+     same    — строка и так в нужном состоянии.
+   Считаем СТРОКИ, а не коды [грабля 109]: правка адресуется по коду и накрывает
+   все строки этого кода, поэтому «12 кодов» и «14 строк» — разные числа, и
+   человеку важнее второе. */
+function bookGroupPlan(section, mode){
+  const cat    = D.catalog || { kinds: [], price: [] };
+  const byCode = {}; (cat.kinds || []).forEach(k => { byCode[k.code] = k; });
+  const all    = (cat.price || []);
+  const активен = c => all.some(p => p.code === c && p.active !== false);
+  const из = { rows: 0, codes: 0, kindOff: 0, twin: 0, same: 0, codeList: [], sum: 0 };
+  const виден = {};
+  all.forEach(p => {
+    const k = byCode[p.code] || {};
+    if((k.section || 'Прочее') !== section) return;
+    const вкл = p.active !== false;
+    if(mode === 'on'){
+      if(вкл){ из.same++; return; }
+      if(!byCode[p.code] || byCode[p.code].active === false){ из.kindOff++; return; }
+      if(активен(p.code)){ из.twin++; return; }
+    } else if(mode === 'off'){
+      if(!вкл){ из.same++; return; }
+    } else {                                   // 'price' — только по активным строкам
+      if(!вкл){ из.same++; return; }
+    }
+    из.rows++;
+    из.sum += Number(p.price_usd) || 0;
+    if(!виден[p.code]){ виден[p.code] = 1; из.codes++; из.codeList.push(p.code); }
+  });
+  return из;
+}
+
+/* Предпросмотр до записи [образец 093]: человек видит число строк, число кодов
+   и причины пропуска — иначе «вернул раздел, а ничего не изменилось». */
+function bookGroupAsk(section, mode){
+  const p = bookGroupPlan(section, mode);
+  const имя = mode === 'on' ? 'Вернуть в прайс' : 'Запретить себе';
+  if(!p.rows){
+    const почему = [];
+    if(p.same)    почему.push('уже ' + (mode === 'on' ? 'в прайсе' : 'запрещено') + ': ' + p.same);
+    if(p.kindOff) почему.push('вид погашен в справочнике: ' + p.kindOff);
+    if(p.twin)    почему.push('такой код уже есть в прайсе: ' + p.twin);
+    toast('Нечего менять в разделе «' + section + '»' + (почему.length ? ' — ' + почему.join(' · ') : ''), 'err');
+    return;
+  }
+  const пояснение = [];
+  if(p.kindOff) пояснение.push('<div class="m">Пропущу — вид погашен в справочнике: <b>' + p.kindOff + '</b> (вернуть можно, но в смету не попадёт)</div>');
+  if(p.twin)    пояснение.push('<div class="m">Пропущу — такой код уже есть в прайсе: <b>' + p.twin + '</b> (вышел бы дубль строки)</div>');
+  if(p.same)    пояснение.push('<div class="m">Уже в нужном состоянии: <b>' + p.same + '</b></div>');
+  bookGroupBox(имя + ': ' + section,
+    '<div class="m">Строк: <b>' + p.rows + '</b>' + (p.codes !== p.rows ? (' (кодов ' + p.codes + ' — часть задвоена)') : '') + '</div>' +
+    пояснение.join(''),
+    () => bookGroupRun(section, mode, null));
+}
+
+/* Цена разделом. Число одно, а строк много — поэтому спрашиваем его в самом
+   окне подтверждения: отдельный экран ради одного поля человек не заслужил. */
+function bookGroupPriceAsk(section){
+  const p = bookGroupPlan(section, 'price');
+  if(!p.rows){ toast('В разделе «' + section + '» нет активных строк', 'err'); return; }
+  bookGroupBox('Цена разделу: ' + section,
+    '<div class="m">Активных строк: <b>' + p.rows + '</b>' + (p.codes !== p.rows ? (' (кодов ' + p.codes + ')') : '') +
+      ' · сейчас в сумме ' + (Math.round(p.sum * 100) / 100) + ' USD</div>' +
+    '<div class="m" style="margin-top:8px">Ровная ставка всем строкам раздела:</div>' +
+    '<input id="bgVal" type="number" step="0.01" inputmode="decimal" placeholder="например 2.50" ' +
+      'style="width:100%;padding:12px;border-radius:12px;border:1px solid #3a3a3c;background:#000;color:#fff;font-size:16px;margin-top:6px">' +
+    '<div class="m" style="margin-top:10px;opacity:.7">Или наценка процентом к тому, что уже стоит:</div>' +
+    '<input id="bgPct" type="number" step="1" inputmode="decimal" placeholder="например 15 или -10" ' +
+      'style="width:100%;padding:12px;border-radius:12px;border:1px solid #3a3a3c;background:#000;color:#fff;font-size:16px;margin-top:6px">',
+    () => {
+      const v = Number(String((document.getElementById('bgVal') || {}).value || '').replace(',', '.'));
+      const c = Number(String((document.getElementById('bgPct') || {}).value || '').replace(',', '.'));
+      if(v > 0)            return bookGroupRun(section, 'price', { value: v });
+      if(c && isFinite(c)) return bookGroupRun(section, 'price', { pct: c });
+      toast('Введите ставку или процент', 'err');
+      return false;                              // окно не закрываем: поле пустое
+    });
+}
+
+/* Общее окно подтверждения: одно на все три хода группы. */
+function bookGroupBox(title, body, onYes){
+  const box = document.createElement('div');
+  box.style.cssText = 'position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;padding:18px';
+  box.innerHTML =
+    '<div style="background:#1c1c1e;color:#fff;border-radius:16px;padding:18px;max-width:440px;width:100%;max-height:80vh;overflow:auto;font-size:15px">' +
+      '<div style="font-weight:700;margin-bottom:8px">' + esc(title) + '</div>' +
+      '<div style="margin:8px 0;padding:8px 10px;background:rgba(255,255,255,.07);border-radius:10px">' + body + '</div>' +
+      '<div style="display:flex;gap:8px;margin-top:12px">' +
+        '<button id="bgNo" style="flex:1;padding:13px;border-radius:12px;border:0;background:#3a3a3c;color:#fff;font-size:15px">Отмена</button>' +
+        '<button id="bgYes" style="flex:1;padding:13px;border-radius:12px;border:0;background:#0a84ff;color:#fff;font-size:15px">Применить</button>' +
+      '</div>' +
+    '</div>';
+  document.body.appendChild(box);
+  if(typeof uzApply === 'function') uzApply(box);
+  box.querySelector('#bgNo').onclick  = () => box.remove();
+  box.querySelector('#bgYes').onclick = () => { if(onYes() !== false) box.remove(); };
+}
+
+/* Запись плана: по одной строке, с прогрессом и честным итогом — как bookFillRun.
+   Адресация по коду, поэтому пишем один раз на код, а локально правим все строки. */
+async function bookGroupRun(section, mode, arg){
+  const cat    = D.catalog || { kinds: [], price: [] };
+  const byCode = {}; (cat.kinds || []).forEach(k => { byCode[k.code] = k; });
+  const plan   = bookGroupPlan(section, mode);
+  const коды   = plan.codeList.slice();
+  if(!коды.length){ toast('Нечего записывать', 'err'); return; }
+  const box = document.createElement('div');
+  box.style.cssText = 'position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;padding:18px;color:#fff;font-size:16px';
+  box.innerHTML = '<div style="background:#1c1c1e;border-radius:16px;padding:20px;min-width:240px;text-align:center">Меняю раздел…<div id="bgN" style="opacity:.7;font-size:14px;margin-top:8px">0 из ' + коды.length + '</div></div>';
+  document.body.appendChild(box);
+  let ok = 0, fail = 0;
+  for(const code of коды){
+    try{
+      if(mode === 'price'){
+        const строки = (cat.price || []).filter(p => p.code === code && p.active !== false);
+        let v = arg && arg.value;
+        if(!v && arg && arg.pct){
+          const тек = Number((строки[0] || {}).price_usd) || rateNum(byCode[code]) || 0;
+          v = Math.round(тек * (1 + arg.pct / 100) * 100) / 100;
+        }
+        if(!(v > 0)) { fail++; continue; }
+        await writeCell('Прайс_исполнителя', code, 'Цена_за_ед', String(v));
+        строки.forEach(p => { p.price_usd = v; });
+      } else {
+        const on = (mode === 'on');
+        await writeCell('Прайс_исполнителя', code, 'Активно', on ? 'да' : 'нет');
+        (cat.price || []).forEach(p => { if(p.code === code) p.active = on; });
+      }
+      ok++;
+    }catch(e){ fail++; }
+    const el = box.querySelector('#bgN'); if(el) el.textContent = (ok + fail) + ' из ' + коды.length;
+  }
+  box.remove();
+  toast(fail ? ('Изменено кодов ' + ok + ', не удалось ' + fail) : ('Изменено кодов: ' + ok + ' · строк: ' + plan.rows), fail ? 'err' : 'ok');
+  render();
+}
+
 /* ══════════════════════════════════════════════════════════════
    ПРОФИЛЬ РЕМОНТА — сборка сметы из обмеров и прайса [чат 007]
    К помещению применяются виды работ; объём считается из его размеров
@@ -10267,17 +10412,48 @@ book(){
 
   const groups = {};
   rows.forEach(p => { const g = (byCode[p.code] || {}).section || 'Прочее'; (groups[g] = groups[g] || []).push(p); });
+  /* [181] Кнопки группы у заголовка: раздел — та единица, которой бригадир
+     мыслит свой ассортимент. Число строк в подписи, а не кодов [грабля 109]. */
+  const ряд = (g, кнопки) =>
+    '<div class="m" style="margin:6px 0 8px;display:flex;gap:8px;flex-wrap:wrap">' + кнопки + '</div>';
+  const кн = (текст, вызов, цвет) =>
+    '<button onclick="' + вызов + '" style="padding:7px 11px;border-radius:10px;border:0;background:' +
+    цвет + ';color:#fff;font-size:13px">' + текст + '</button>';
   const blocks = Object.keys(groups).sort((a, b) => a.localeCompare(b, 'ru')).map(g =>
-    '<div class="sub" style="margin-top:14px">' + esc(g) + '</div>' + groups[g].map(p => item(p, false)).join('')).join('');
+    '<div class="sub" style="margin-top:14px">' + esc(g) + ' <span style="opacity:.55;font-weight:400">· ' + groups[g].length + '</span></div>' +
+    ряд(g,
+      кн('✏️ Цену разделу', 'bookGroupPriceAsk(\'' + esc(g) + '\')', '#0a84ff') +
+      кн('🚫 Запретить раздел', 'bookGroupAsk(\'' + esc(g) + '\', \'off\')', '#3a3a3c')) +
+    groups[g].map(p => item(p, false)).join('')).join('');
 
   /* Блок запрещённых. Список длинный (у бригадира пилота их семь десятков),
      поэтому показывается началом — иначе экран становится нечитаемым. */
-  const offShown = off.slice(0, 40);
+  /* [181] Свалкой из 84 строк блок нечитаем — группируем так же, как активные,
+     и у каждого раздела даём возврат целиком. В подписи раздела — сколько строк
+     реально вернётся: у части вид погашен в справочнике, у части есть активный
+     близнец, и возврат таких строк не даст ничего, кроме дубля. */
+  const offGroups = {};
+  off.forEach(p => { const g = (byCode[p.code] || {}).section || 'Прочее'; (offGroups[g] = offGroups[g] || []).push(p); });
+  const offKeys = Object.keys(offGroups).sort((a, b) => a.localeCompare(b, 'ru'));
+  let показано = 0;
+  const offBody = offKeys.map(g => {
+    const pl = bookGroupPlan(g, 'on');
+    const хвост = pl.rows
+      ? ('вернётся ' + pl.rows + (pl.kindOff || pl.twin ? (', пропущу ' + (pl.kindOff + pl.twin)) : ''))
+      : 'возвращать нечего' + (pl.kindOff ? (' — вид погашен в справочнике (' + pl.kindOff + ')') : '') +
+        (pl.twin ? (' — код уже есть в прайсе (' + pl.twin + ')') : '');
+    const строки = offGroups[g].filter(() => показано++ < 40);
+    return '<div class="sub" style="margin-top:14px">' + esc(g) +
+             ' <span style="opacity:.55;font-weight:400">· ' + offGroups[g].length + ' · ' + esc(хвост) + '</span></div>' +
+           (pl.rows ? ряд(g, кн('↩︎ Вернуть раздел (' + pl.rows + ')', 'bookGroupAsk(\'' + esc(g) + '\', \'on\')', '#0a84ff')) : '') +
+           строки.map(p => item(p, true)).join('');
+  }).join('');
   const offBlock = off.length ? (
     '<div class="sub" style="margin-top:18px">Запрещено для себя' +
       (off.length > 40 ? (' (первые 40 из ' + off.length + ')') : (' (' + off.length + ')')) + '</div>' +
-    '<div class="stat"><span class="k">Эти виды не попадут в профиль ремонта и в смету, пока вы их не вернёте.</span></div>' +
-    offShown.map(p => item(p, true)).join('')) : '';
+    '<div class="stat"><span class="k">Эти виды не попадут в профиль ремонта и в смету, пока вы их не вернёте. ' +
+      'Запрет — ваш выбор ассортимента: им обозначают работы, которых не делают, или ставят на них цену аутсорса.</span></div>' +
+    offBody) : '';
 
   /* Кнопка стартового прайса. Когда заполнять нечего — говорим словами,
      а не прячем кнопку молча [правило 037: пустое действие объясняется]. */
@@ -15954,7 +16130,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "181.3";
+const BUILD = "181.4";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
