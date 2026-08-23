@@ -4691,8 +4691,17 @@ const S_WIN = 3.1, S_DOOR = 1.7;
    и видна с обеих сторон — та же логика, что у двустороннего графа
    смежности (решение 016). Разбор — 02_Разборы/16.
    ══════════════════════════════════════════════════════════════ */
-const ELEM_FACTS = ["дверь", "окно", "проём", "нет"];
+/* [181, Д-153-10] «люк» — ревизионный люк санузла. Он уменьшает площадь
+   облицовки, о чём спрашивал Дмитрий («тут будет минус кафель на площадь
+   люка»), и потому живёт среди элементов помещения наравне с проёмами. */
+const ELEM_FACTS = ["дверь", "окно", "проём", "люк", "нет"];
 const ELEM_FATES = ["не трогаем", "заменить", "демонтировать", "заложить", "пробить", "перенести", "установить"];
+/* [181, Д-153-10] У люка типовой площади НЕТ намеренно: ревизионные люки
+   бывают от 200×300 до 600×800 мм — разброс вчетверо, и средняя соврала бы
+   в объёме кафеля. Без своих размеров он не вычитается вовсе, а панель
+   говорит об этом словами (см. `elemLuki`). То же правило, что «ставку
+   новому виду не выдумываем» (033) и «выдуманный периметр хуже честного
+   нуля» (180.8). */
 const ELEM_AREA  = { "дверь": S_DOOR, "окно": S_WIN, "проём": S_DOOR };
 
 const elemAll  = () => (D.elements || []);
@@ -4818,6 +4827,14 @@ function elemArea(code){
     s += (w > 0 && h > 0) ? (w * h) : (ELEM_AREA[e.fact] || 0);
   }
   return Math.round(s * 100) / 100;
+}
+
+/* [181, Д-153-10] Люки помещения без заданных размеров: их площадь в вычет
+   не пошла, и человек обязан это знать до закупки кафеля. Возвращает число
+   таких люков — ноль означает, что вычитать нечего или всё посчитано. */
+function elemLuki(code){
+  return elemOf(code).filter(e => String(e.fact || "").trim() === "люк"
+    && !(Number(e.w) > 0 && Number(e.h) > 0)).length;
 }
 
 /* Что схема говорит про числа проёмов помещения. Числа в 06_Помещения
@@ -6763,10 +6780,18 @@ function elemBlock(r){
         ? '<div class="m" style="margin-top:6px;opacity:.7">Обмеры сходятся со схемой проёмов: окон ' +
           elemCount(r.code, "окно") + ' · дверей ' + elemCount(r.code, "дверь") + '</div>'
         : "");
+  /* [181, Д-153-10] Люк без размеров молча не вычитается — и молчать об этом
+     нельзя: человек увидит правильную с виду площадь и узнает о недостаче
+     кафеля уже на объекте. */
+  const лючки = elemLuki(r.code);
+  const лючкиСтрока = лючки
+    ? ('<div class="m" style="margin-top:6px;color:var(--warn)">Люков без размеров: ' + лючки +
+       ' — их площадь из облицовки не вычтена. Задайте ширину и высоту у каждого, иначе кафеля выйдет больше, чем нужно.</div>')
+    : '';
   return '<div class="m" style="margin-top:8px">Проёмы: ' + группы.length +
       (gaps ? ' · расходятся с планом: ' + gaps : '') +
       ' <button onclick="elemAdd(\'' + esc(r.code) + '\')" style="margin-left:6px;padding:6px 10px;border-radius:9px;border:0;background:#3a3a3c;color:#fff;font-size:13px">Добавить</button></div>' +
-    rows + numLine;
+    rows + numLine + лючкиСтрока;
 }
 
 /* [158.3] Что означает каждая судьба — человеческим языком, от того, что
@@ -17031,6 +17056,7 @@ const UZ = {
 "раздел не указан":"bo'lim ko'rsatilmagan",
 "Справочник видов ещё не загружен, поэтому технологические паузы (стяжка сохнет 28 дн, штукатурка 7 дн…) в расчёт пока не вошли — срок ниже настоящего. Секунду.":"Turlar ma'lumotnomasi hali yuklanmagan, shuning uchun texnologik pauzalar (styajka 28 kun, shuvoq 7 kun quriydi…) hisobga kirmadi — muddat haqiqiydan past. Bir soniya.",
 "Технологические паузы в расчёт не вошли: у видов, к которым привязаны работы, паузы в справочнике не заданы.":"Texnologik pauzalar hisobga kirmadi: ishlar bog'langan turlarda ma'lumotnomada pauzalar berilmagan.",
+"люк":"lyuk",
 "Фронтов на раздел":"Bo'lim uchun frontlar","Записать фронты":"Frontlarni yozish","Фронты записаны":"Frontlar yozildi",
 "Фронтов должно быть не меньше одного":"Frontlar soni birdan kam bo'lmasligi kerak",
 "Фронты пока не заданы в настройках объекта — считаю по одному. Это умолчание, а не измерение.":"Frontlar obyekt sozlamalarida hali berilmagan — bittadan hisoblayapman. Bu o'lchov emas, balki standart qiymat.",
@@ -17617,6 +17643,8 @@ const UZ_RULES = [
   [/^вилка ([\d\s.,]+–[\d\s.,]+)$/, "oralig'i $1"],
   [/^ориентир по рынку ([\d\s.,]+–[\d\s.,]+)$/, "bozor bo'yicha mo'ljal $1"],
   [/^Проёмы: (\d+)$/, "Ochiqlar: $1"],
+  [/^Люков без размеров: (\d+) — их площадь из облицовки не вычтена\. Задайте ширину и высоту у каждого, иначе кафеля выйдет больше, чем нужно\.$/,
+   "O'lchamsiz lyuklar: $1 — ularning maydoni qoplamadan chiqarilmagan. Har biriga eni va bo'yini kiriting, aks holda kafel keragidan ko'p chiqadi."],
   [/^Проёмы: (\d+) · расходятся с планом: (\d+)$/, "Ochiqlar: $1 · reja bilan farq qiladi: $2"],
   [/^Расходятся с планом БТИ: (\d+) — (.+)$/, "BTI rejasi bilan farq qiladi: $1 — $2"],
   [/^Судьба задана у (\d+) из (\d+)\. Объём работ по дверям и окнам считается по этим проёмам\.$/,
@@ -17988,7 +18016,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "181.72";
+const BUILD = "181.73";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
