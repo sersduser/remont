@@ -1103,6 +1103,28 @@ async function openBook(){
   }catch(e){ toast(e.message, 'err'); }
 }
 
+/* ── [181, Д-181-42] Текст шапки прайса — в одном месте ──────────────────
+   Собирался в двух: при отрисовке экрана (полный) и при сохранении цены
+   (короткий, без «нет в прайсе» и «запрещено»). Расхождение видно человеку
+   сразу после записи цены: половина сведений исчезает.
+   И главное — «всё заполнено» говорится только тогда, когда заполнять
+   действительно нечего: ни пустых строк, ни незаведённых видов. */
+function bookCapText(){
+  const st = bookStats();
+  const gap = (typeof bookGap === 'function') ? bookGap() : { сЦеной: [] };
+  /* «Запрещено» — только осознанный выбор бригадира (bookOffSplit().свой),
+     а не все выключенные строки: среди них есть служебный мусор прежнего
+     слоя, и считать его запретами человека нельзя [181.16]. */
+  const разбор = (typeof bookOffSplit === 'function') ? bookOffSplit() : { свой: [] };
+  const off = (разбор.свой || []);
+  const нетСтрок = (gap.сЦеной || []).length;
+  const части = ['Задано ' + st.set + ' из ' + st.all];
+  if(st.empty) части.push('не задано ' + st.empty);
+  if(нетСтрок) части.push('нет в прайсе ' + нетСтрок);
+  if(!st.empty && !нетСтрок) части.push('всё заполнено');
+  if(off.length) части.push('запрещено ' + off.length);
+  return части.join(' · ');
+}
 function bookStats(){
   const rows = ((D.catalog || {}).price || []).filter(p => p.active !== false); // [чат 011] только активные строки прайса
   const set  = rows.filter(p => Number(p.price_usd) > 0);
@@ -1118,9 +1140,8 @@ async function savePrice(el){
     await writeCell('Прайс_исполнителя', code, 'Цена_за_ед', v);
     const row = ((D.catalog || {}).price || []).find(p => p.code === code);
     if(row) row.price_usd = v === '' ? null : Number(v);
-    const st = bookStats();
     const cap = document.getElementById('bookCap');
-    if(cap) cap.textContent = 'Задано ' + st.set + ' из ' + st.all + (st.empty ? (' · не задано ' + st.empty) : ' · всё заполнено');
+    if(cap) cap.textContent = bookCapText();
     el.style.borderColor = '#30d158';
     toast('Сохранено');
   }catch(e){ toast(e.message, 'err'); }
@@ -11452,9 +11473,7 @@ book(){
 
   return '' +
     '<div class="hello">Прайс исполнителя</div>' +
-    '<div class="sub" id="bookCap">Задано ' + st.set + ' из ' + st.all + (st.empty ? (' · не задано ' + st.empty) : ' · всё заполнено') +
-      (gap.сЦеной.length ? (' · нет в прайсе ' + gap.сЦеной.length) : '') +
-      (off.length ? (' · запрещено ' + off.length) : '') + '</div>' +
+    '<div class="sub" id="bookCap">' + esc(bookCapText()) + '</div>' +
     '<div class="stat"><span class="k">Цена ставится за единицу вида работы и хранится в общей базе, а не в этом объекте: на следующем объекте задавать её заново не нужно. Объём подставится из профиля помещения.</span></div>' +
     fillBox +
     gapBlock +
@@ -17496,7 +17515,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "181.50";
+const BUILD = "181.51";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
