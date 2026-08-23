@@ -11932,15 +11932,22 @@ money(){
   const S = D.settings;
 
   if(D.role === "worker"){
-    const m = D.my_money;
+    /* [181, Д-181-22] Блока `my_money` в ответе может не быть — у нового
+       работника, при отказе ветки, при неполном ответе. Раньше экран падал на
+       первом же обращении к полю и человек видел белое поле вместо денег.
+       Отсутствие блока — не ноль: «получено 0» значит «вам не платили»,
+       а «сервер не прислал» значит «я не знаю, платили ли вам». */
+    const m = D.my_money || {};
+    const немДеньги = !D.my_money;
     return `
       <div class="hello">Мои деньги</div>
       <div class="sub">на ${new Date().toLocaleDateString("ru-RU")}</div>
+      ${немДеньги ? `<div class="stat"><span class="k">Сервер не прислал ваши выплаты — показать, сколько получено, нечем. Остальные числа на экране посчитаны из сметы и приёмки, они верны. Обновите экран; если строка останется, скажите бригадиру: выплаты заводит он.</span></div>` : ""}
 
       <div class="card">
         <div class="lbl">За работу</div>
         <div class="li"><div class="n">Договор${dealDelta() ? `<div class="d">${esc(dealNote())}</div>` : ""}</div><div class="v">${usd(dealSum())} $</div></div>
-        <div class="li"><div class="n">Получено</div><div class="v ok" style="color:var(--ok)">${fmt(m.received_usd)} $</div></div>
+        <div class="li"><div class="n">Получено</div><div class="v ok" style="color:var(--ok)">${немДеньги ? "—" : fmt(m.received_usd) + " $"}</div></div>
         <div class="li"><div class="n"><b>Осталось получить</b></div><div class="v">${usd(dealRest())} $</div></div>
       </div>
 
@@ -17069,7 +17076,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "181.29";
+const BUILD = "181.30";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
