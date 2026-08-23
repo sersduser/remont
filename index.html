@@ -8316,6 +8316,27 @@ const refIsClient = () => ['admin','owner'].includes(D.role);
    что происходит на встрече, когда пара договаривается «за всё столько-то».
    Работы без цены в дележе не участвуют: делить между «16 м²» и «3 шт»
    нечего, и выдумывать им вес — значит назначить цену наугад. */
+/* [181] Д-181-62: одно правило дележа на оба пути к нему.
+   Пропорция, округление и добор хвоста живут здесь, а выборка целей остаётся
+   у зовущего: у разнесения договора это все живые работы с ценой, у кнопки
+   «Разнести сумму» на экране прайса — ещё и режим «только пустым».
+   До этой правки правило было переписано во второй раз от руки и разошлось
+   с первым на цент: 333,33 × 3 против 333,33 + 333,33 + 333,34. */
+function allocRows(targets, sum){
+  const цель = Math.round((Number(sum) || 0) * 100) / 100;
+  const база = Math.round((targets || []).reduce((s, w) => s + (Number(w.price_alloc_usd) || 0), 0) * 100) / 100;
+  if(!(цель > 0) || !targets || !targets.length || !(база > 0)) return { rows: [], base: база, k: 0, tail: 0 };
+  const k = цель / база;
+  const rows = targets.map(w => ({
+    code: w.code, name: w.name, room: w.room,
+    was: Math.round(Number(w.price_alloc_usd) * 100) / 100,
+    now: Math.round(Number(w.price_alloc_usd) * k * 100) / 100
+  }));
+  const вышло = Math.round(rows.reduce((s, r) => s + r.now, 0) * 100) / 100;
+  const хвост = Math.round((цель - вышло) * 100) / 100;
+  if(хвост !== 0 && rows.length) rows[rows.length - 1].now = Math.round((rows[rows.length - 1].now + хвост) * 100) / 100;
+  return { rows: rows, base: база, k: k, tail: хвост };
+}
 function allocPlan(total){
   const sum = Math.round((Number(total) || 0) * 100) / 100;
   const live = (D.works || []).filter(w => w.code && w.status !== 'Снято' && w.status !== 'Пропущен');
@@ -8562,12 +8583,15 @@ function spreadPrices(onlyEmpty){
   const inp = document.getElementById('spSum');
   const sum = Number(String(inp ? inp.value : '').replace(',', '.'));
   if (!(sum > 0)) { toast('Введите сумму больше нуля', 'err'); return; }
-  const targets = (D.works || []).filter(w => onlyEmpty ? !(Number(w.price_contractor_usd) > 0) : true);
-  const base = targets.reduce((s, w) => s + (Number(w.price_alloc_usd) || 0), 0);
-  if (!(base > 0)) { toast('Не от чего считать пропорцию', 'err'); return; }
-  const list = targets.map(w => ({ code: w.code, name: w.name,
-    value: Math.round(sum * (Number(w.price_alloc_usd) || 0) / base * 100) / 100 })).filter(x => x.value > 0);
-  const total = list.reduce((s, x) => s + x.value, 0);
+  /* [181] Д-181-62: делит общее правило, а не своё. Снятые и пропущенные
+     исключены здесь же — раньше этот путь брал их в делёж, а соседний нет. */
+  const targets = (D.works || [])
+    .filter(w => w.code && w.status !== 'Снято' && w.status !== 'Пропущен')
+    .filter(w => onlyEmpty ? !(Number(w.price_contractor_usd) > 0) : true);
+  const рас = allocRows(targets, sum);
+  if (!рас.rows.length) { toast('Не от чего считать пропорцию', 'err'); return; }
+  const list = рас.rows.filter(r => r.now > 0).map(r => ({ code: r.code, name: r.name, value: r.now }));
+  const total = Math.round(list.reduce((s, x) => s + x.value, 0) * 100) / 100;
   const box = document.createElement('div');
   box.style.cssText = 'position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;padding:18px';
   box.innerHTML =
@@ -18025,7 +18049,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "181.75";
+const BUILD = "181.76";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
