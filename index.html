@@ -9111,11 +9111,17 @@ function invCopy(code, type){
 }
 
 /* ── Список приглашений ────────────────────────────────────────────── */
+/* [181, Д-181-44] Отказ ветки — не пустой список. Раньше INVS ставился в [],
+   исключение всплывало наружу и гасло в тосте, а экран уверенно писал «Пока
+   ни одного»: бригадир выписывал второе приглашение или считал, что отзывать
+   нечего. Ошибку помним отдельно и показываем на экране. */
+let INV_ERR = "";
 async function invLoad(){
   const j = await invApi("/invites", {});
-  if(j.absent){ INVS = []; return; }
-  if(j.error){ INVS = []; throw new Error(j.error); }
+  if(j.absent){ INVS = []; INV_ERR = ""; return; }
+  if(j.error){ INVS = []; INV_ERR = String(j.error); throw new Error(j.error); }
   INVS = Array.isArray(j.list) ? j.list : (Array.isArray(j.payload) ? j.payload : (Array.isArray(j.invites) ? j.invites : []));
+  INV_ERR = "";
 }
 async function openInvites(){
   if(INV_LOAD) return;
@@ -10903,6 +10909,14 @@ invites(){
       '<div class="stat"><span class="k">Пока код приглашения генерирует само приложение, у приглашения нет ни записи, ни состояния — показывать и отзывать нечего. Список появится вместе с серверными ветками приглашений.</span></div>';
   const rows = INVS;
   if(!rows) return head + '<div class="sub">Загружаю…</div>';
+  /* [181, Д-181-44] Сначала — не смогли ли мы узнать. «Ничего нет» говорится
+     только тогда, когда сервер это подтвердил. */
+  if(typeof INV_ERR === 'string' && INV_ERR)
+    return head + '<div class="sub">список не удалось получить</div>' +
+      '<div class="stat"><span class="k">Сервер ответил: ' + esc(INV_ERR) + '. ' +
+      'Это не значит, что приглашений нет — значит, спросить не удалось. ' +
+      'Прежде чем выписывать новое, обновите список: выписанное вторым кодом придётся отзывать отдельно.</span></div>' +
+      '<button class="tile" style="width:100%" onclick="openInvites()"><span class="nm">🔄 Ещё раз</span></button>';
   if(!rows.length)
     return head + '<div class="sub">Пока ни одного</div>' +
       '<div class="stat"><span class="k">Приглашение выписывается на экране «Бригада»: выберите, куда зовёте человека, и перешлите ему ссылку.</span></div>' +
@@ -17533,7 +17547,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "181.53";
+const BUILD = "181.54";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
