@@ -4124,6 +4124,8 @@ async function profBuild(){
     });
     const txt = (await r.text()).trim();
     if(!r.ok || !txt) throw new Error('Не удалось добавить работы');
+    /* [181, Д-181-34] Код 200 и непустое тело — ещё не запись. */
+    { const _о = srvОтказ(txt); if(_о) throw new Error(_о); }
     toast('Добавлено работ: ' + rows.length + ' в ' + names.length + ' помещ.');
     PROF = { room: null, plan: {} };
     await load();
@@ -7552,6 +7554,8 @@ async function chgSubmit(){
     });
     const t = (await r.text()).trim();
     if(!r.ok || !t) throw new Error('Не удалось отправить заявку');
+    /* [181, Д-181-34] Код 200 и непустое тело — ещё не запись. */
+    { const _о = srvОтказ(t); if(_о) throw new Error(_о); }
     toast('Заявлено — ждёт ответа второй стороны');
     await load();
     back();
@@ -7616,6 +7620,8 @@ async function chgApply(id, quiet){
       });
       const t = (await r.text()).trim();
       if(!r.ok || !t) throw new Error('Не удалось добавить работу в смету');
+      /* [181, Д-181-34] Код 200 и непустое тело — ещё не запись. */
+      { const _о = srvОтказ(t); if(_о) throw new Error(_о); }
     }else if(k === 'убрать'){
       await writeCell('01_Работы', c.code, 'Статус', 'Снято');
     }else if(k === 'цена'){
@@ -7802,6 +7808,8 @@ async function dscSubmit(){
     });
     const t = (await r.text()).trim();
     if(!r.ok || !t) throw new Error('Не удалось отправить пакет');
+    /* [181, Д-181-34] Код 200 и непустое тело — ещё не запись. */
+    { const _о = srvОтказ(t); if(_о) throw new Error(_о); }
     toast('Скидка заявлена — ' + rows.length + ' '
       + скл(rows.length, 'работа ждёт', 'работы ждут', 'работ ждут') + ' ответа второй стороны');
     await load();
@@ -8047,6 +8055,8 @@ async function matSubmit(){
     });
     const t = (await r.text()).trim();
     if(!r.ok || !t) throw new Error('Не удалось записать материалы');
+    /* [181, Д-181-34] Код 200 и непустое тело — ещё не запись. */
+    { const _о = srvОтказ(t); if(_о) throw new Error(_о); }
     toast('Записано материалов: ' + rows.length);
     await load();
     back();
@@ -8189,6 +8199,8 @@ async function refSubmit(){
     });
     const t = (await r.text()).trim();
     if(!r.ok || !t) throw new Error('Не удалось отправить точку отсчёта');
+    /* [181, Д-181-34] Код 200 и непустое тело — ещё не запись. */
+    { const _о = srvОтказ(t); if(_о) throw new Error(_о); }
     toast('Предложено — ждёт подтверждения второй стороны');
     await load();
   }catch(e){ toast(e.message, 'err'); }
@@ -8475,7 +8487,10 @@ async function upd(sheet, code, field, value, opts){
           body: JSON.stringify({ initData: INIT, key: KEY, sheet, code, field: "Готовность_%", value: 100 })
         });
         const tp = (await rp.text()).trim();
-        if(!rp.ok || !tp) load(); else patch(sheet, code, "Готовность_%", 100);
+        /* [181, Д-181-34] Досыл «Готовность 100» шёл тем же глухим путём:
+           тело-отказ при 200 считалось успехом, и в памяти вставало 100 там,
+           где сервер записи не принял. */
+        if(!rp.ok || !tp || srvОтказ(tp)) load(); else patch(sheet, code, "Готовность_%", 100);
       }catch(e){ load(); }
     }
     tg?.HapticFeedback?.notificationOccurred("success");
@@ -8813,6 +8828,8 @@ async function crewCell(sheet, code, field, value){
     body: JSON.stringify({ initData: INIT, key: KEY, sheet: sheet, code: code, field: field, value: value }) });
   const t = (await r.text()).trim();
   if(!r.ok || !t) throw srvFail(t, "Не удалось сохранить (" + field + ")");
+  /* [181, Д-181-34] Код 200 и непустое тело — ещё не запись. */
+  { const _о = srvОтказ(t); if(_о) throw srvFail(t, "Не удалось сохранить (" + field + ")"); }
   return true;
 }
 /* ══════════════════════════════════════════════════════════════
@@ -17346,7 +17363,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "181.42";
+const BUILD = "181.43";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
