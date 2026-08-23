@@ -11227,7 +11227,16 @@ accept(){
       <div class="work">
         <div class="t">${esc(w.name)}</div>
         <div class="m">${esc(w.room.split(" (")[0])} · ${esc(w.section)}</div>
-        <div class="m" style="color:var(--warn)">${worker ? "Заказчик заявил готовность" : "Работник заявил готовность"}${w.price_contractor_usd != null ? ` · $${w.price_contractor_usd}` : ""}</div>
+        <div class="m" style="color:var(--warn)">${worker ? "Заказчик заявил готовность" : "Работник заявил готовность"}${(function(){
+          /* [181, Д-181-37] Цены двух сторон живут раздельно затем, чтобы
+             каждый видел своё: заказчик платит по договорной, работник
+             получает свою. Раньше здесь обеим сторонам печаталась цена
+             работника — заказчик сверял приёмку с чужим числом и заодно
+             видел маржу бригадира. */
+          const цена = worker ? w.price_contractor_usd : w.price_alloc_usd;
+          if(цена === null || цена === undefined || !(чис(цена) > 0)) return "";
+          return " · $" + fmt(чис(цена)) + (worker ? " ваша цена" : " по договору");
+        })()}</div>
         <div class="row" style="gap:8px;margin-top:10px">
           <button style="flex:1;padding:12px;border:0;border-radius:10px;background:var(--ok);color:#fff;font-weight:600;font-size:15px" onclick="acceptWork('${w.code}')">Принять</button>
           <button style="flex:1;padding:12px;border:0;border-radius:10px;background:var(--bad);color:#fff;font-weight:600;font-size:15px" onclick="disputeWork('${w.code}')">Оспорить</button>
@@ -17402,7 +17411,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "181.45";
+const BUILD = "181.46";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
