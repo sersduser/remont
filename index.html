@@ -3653,8 +3653,12 @@ let BOOK_SVC = false, BOOK_GAP = false;
 function bookSvcToggle(){ BOOK_SVC = !BOOK_SVC; render(true); }
 function bookGapToggle(){ BOOK_GAP = !BOOK_GAP; render(true); }
 
-/* Из чего состоит очередь опроса — двумя-тремя словами для плитки. */
-function qzWhatLeft(){
+/* Из чего состоит очередь опроса. Отдаёт И ЧИСЛО, И РАЗБИВКУ одним проходом —
+   потому что 181.17 показал, что бывает иначе: число бралось из roomTodo
+   (незаполненные поля обмеров), а расшифровка из qzQueue (вопросы опроса), и
+   плитка говорила «9 вопросов: 6 · 1 · 7». Слагаемые и сумма обязаны считаться
+   вместе, иначе они расходятся молча и на глазах у человека. */
+function qzLeftParts(){
   const очередь = (typeof qzQueue === 'function') ? (qzQueue() || []) : [];
   const счёт = { fate: 0, size: 0, works: 0 };
   очередь.forEach(q => {
@@ -3667,8 +3671,9 @@ function qzWhatLeft(){
   if(счёт.fate)  части.push(счёт.fate + ' ' + скл(счёт.fate, 'судьба проёма', 'судьбы проёмов', 'судеб проёмов'));
   if(счёт.size)  части.push(счёт.size + ' ' + скл(счёт.size, 'размер проёма', 'размера проёмов', 'размеров проёмов'));
   if(счёт.works) части.push(счёт.works + ' ' + скл(счёт.works, 'помещение', 'помещения', 'помещений') + ' по работам');
-  return части.length ? части.join(' · ') : 'спросит по одному';
+  return { всего: очередь.length, текст: части.join(' · ') };
 }
+function qzWhatLeft(){ const p = qzLeftParts(); return p.текст || 'спросит по одному'; }
 
 function profPrice(code){
   const p = ((D.catalog || {}).price || []).find(x => x.code === code);
@@ -11382,6 +11387,7 @@ object(){
      что помечено оранжевым в карточках (roomTodo — семь полей обмеров плюс
      судьба каждого проёма), и красим плитку, пока долг есть. */
   const долгВсего = rooms.reduce((s, r) => s + roomTodo(r), 0);
+  const спрос = (typeof qzLeftParts === 'function') ? qzLeftParts() : { всего: 0, текст: '' };
   const rows  = rooms.map(r => {
     const w    = roomWalls(r);
     const need = (v) => (v === null || v === undefined || v === "");
@@ -11525,11 +11531,14 @@ object(){
         ? (rooms.length + " помещений" + (gap.length ? (" · в " + gap.length + " не заданы проёмы") : " · обмеры полны"))
         : "помещений нет — начните с опроса") + "</div>" +
     '<div class="grid">' +
-      '<button class="tile ' + (долгВсего ? "warnpri" : "pri") + '" onclick="qzStart()"><span class="ic">🧭</span><span class="nm">Пройти<br>вопросами</span>' +
+      '<button class="tile ' + ((спрос.всего || долгВсего) ? "warnpri" : "pri") + '" onclick="qzStart()"><span class="ic">🧭</span><span class="nm">Пройти<br>вопросами</span>' +
         /* [181] «N не заполнено» рядом с «обмеры полны» читается как спор двух
            чисел. Спора нет: шапка про размеры помещений, плитка про очередь
-           вопросов. Чтобы это было видно, плитка называет, ЧЕГО не хватает. */
-        '<div class="h">' + (долгВсего ? (долгВсего + " вопросов: " + qzWhatLeft()) : "система спросит сама") + "</div></button>" +
+           вопросов. Чтобы это было видно, плитка называет, ЧЕГО не хватает —
+           и число берёт из ТОЙ ЖЕ очереди, что и расшифровку [181.18]. */
+        '<div class="h">' + (спрос.всего
+            ? (спрос.всего + " " + скл(спрос.всего, "вопрос", "вопроса", "вопросов") + ": " + спрос.текст)
+            : (долгВсего ? (долгВсего + " " + скл(долгВсего, "поле обмеров не заполнено", "поля обмеров не заполнены", "полей обмеров не заполнены")) : "система спросит сама")) + "</div></button>" +
       '<button class="tile" onclick="startVoice(\'rooms\')"><span class="ic">🎤</span><span class="nm">Продиктовать<br>размеры</span><div class="h">пол, потолок, окна, двери</div></button>' +
       '<button class="tile" onclick="objPick()"><span class="ic">🗺️</span><span class="nm">' + (plan ? "Заменить план" : "Загрузить план") + '</span><div class="h">фото плана БТИ</div></button>' +
       /* [180] Ход к смете прямо отсюда: «Профиль ремонта» жил только на главном,
@@ -16723,7 +16732,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "181.17";
+const BUILD = "181.18";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
