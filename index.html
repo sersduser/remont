@@ -12413,10 +12413,22 @@ function qzLastHeight(skipCode){
 const QZ_ПОВЕРХНОСТИ = ['Малярка', 'Полы', 'Кафель', 'Утепление'];
 const QZ_ИНЖЕНЕРКА   = ['Электрика', 'Сантехника', 'Отопление', 'Вентиляция и климат', 'Слаботочные системы'];
 
+/* Работы помещения — только те, что в ремонте остаются: «Снято» значит, что
+   работы нет, и считать её описанием помещения нельзя. */
+function qzRoomWorks(rc){
+  return (D.works || []).filter(w =>
+    String(w.code || '').indexOf(rc + '-') === 0 &&
+    String(w.status || '') !== 'Снято');
+}
+/* Коды ВИДОВ, названные для помещения. Прежде здесь возвращались коды РАБОТ
+   (KR-01, KR-02 …), и qzDepth искал их в справочнике видов — не находил
+   никогда. Вид работы живёт в примечании словами «вид DM-10»; ровно для этого
+   в панели с чата 013 есть workKind(w) [дефект найден живым проходом 181]. */
 function qzRoomCodes(rc){
   const из = [];
-  (D.works || []).forEach(w => {
-    if(String(w.code || '').indexOf(rc + '-') === 0) из.push(String(w.kind_code || w.code || ''));
+  qzRoomWorks(rc).forEach(w => {
+    const вид = (typeof workKind === 'function') ? workKind(w) : '';
+    из.push(String(вид || w.kind_code || w.code || ''));
   });
   try{
     const picked = (typeof PROF === 'object' && PROF && PROF.plan && PROF.plan[rc]) || null;
@@ -12428,11 +12440,16 @@ function qzDepth(rc){
   const kinds = ((D.catalog || {}).kinds) || [];
   const раздел = {}; kinds.forEach(k => { раздел[k.code] = String(k.section || ''); });
   let пов = 0, инж = 0;
-  qzRoomCodes(rc).forEach(c => {
-    const s = раздел[c] || раздел[String(c).split('-').slice(0,2).join('-')] || '';
+  const учесть = s => {
     if(QZ_ПОВЕРХНОСТИ.indexOf(s) >= 0) пов++;
     else if(QZ_ИНЖЕНЕРКА.indexOf(s) >= 0) инж++;
-  });
+  };
+  /* Первый источник — раздел САМОЙ работы: он приходит с сервера готовым и не
+     зависит ни от справочника, ни от разбора примечания. Справочник остаётся
+     вторым источником — для видов, отмеченных в профиле текущего сеанса,
+     у которых строки сметы ещё нет. */
+  qzRoomWorks(rc).forEach(w => учесть(String(w.section || '')));
+  qzRoomCodes(rc).forEach(c => учесть(раздел[c] || ''));
   if(пов && инж) return 2;
   if(пов) return 1;
   return 0;
@@ -16732,7 +16749,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "181.18";
+const BUILD = "181.19";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
