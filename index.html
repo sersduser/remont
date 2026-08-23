@@ -679,6 +679,11 @@ let fRoom = "";                     // активный фильтр по ком
 let hideDone = false;               // глобальный фильтр «скрыть готовое»
 const app = document.getElementById("app");
 const fmt = n => (Number(n) || 0).toLocaleString("ru-RU", { maximumFractionDigits: 0 });
+/* [181, Д-181-45] Итоговые суммы округляются до целых — это верно: копейки в
+   смете на тысячи долларов только мешают. Но ЦЕНА ЗА ЕДИНИЦУ — другое дело:
+   4,89 и 5,00 округляются в одно число, а сумма считается по точному. Человек
+   умножает показанное на объём и идёт искать ошибку там, где её нет. */
+const ставка2 = n => (Number(n) || 0).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
 /* Бот пишет в таблицу произвольные названия материалов. Одна кавычка в имени
    сломала бы разметку — поэтому всё, что пришло с сервера, экранируем.        */
@@ -3479,7 +3484,7 @@ function profBlankHtml(){
     return '<div class="work">' +
       '<div class="t">' + esc(k.name || x.code) + '</div>' +
       '<div class="m">' + esc(x.code) + ' · ' + esc(String(rm.name || x.rc)) + ' · ' + esc(k.unit || '') +
-        (rate ? (' · ' + fmt(rate) + ' USD за единицу') : ' · цена не задана') +
+        (rate ? (' · ' + ставка2(rate) + ' USD за единицу') : ' · цена не задана') +
         (auto === null ? ' · объём вводится вручную' : ' · из обмеров не посчитался') + '</div>' +
       '<div class="m" style="margin-top:6px">объём: ' +
         '<input type="number" step="0.01" inputmode="decimal" data-room="' + esc(x.rc) + '" data-code="' + esc(x.code) + '"' +
@@ -11610,7 +11615,7 @@ profile(){
       const dup = !!already[String(k.code).toUpperCase()];
       return '<div class="work" style="' + (on ? 'border-left:3px solid #30d158;padding-left:9px' : '') + '">' +
         '<div class="t" onclick="profToggle(\'' + esc(k.code) + '\')" style="cursor:pointer">' + (on ? '✅ ' : '⬜ ') + esc(k.name) + '</div>' +
-        '<div class="m">' + esc(k.code) + ' · ' + esc(k.unit || '') + ' · ' + (rate ? (fmt(rate) + ' USD за единицу') : 'цена не задана') +
+        '<div class="m">' + esc(k.code) + ' · ' + esc(k.unit || '') + ' · ' + (rate ? (ставка2(rate) + ' USD за единицу') : 'цена не задана') +
           (auto === null ? ' · объём вводится вручную' : '') +
           (hint ? (' · ' + esc(hint)) : '') +
           (mhint ? (' · <span style="color:#0a84ff">' + esc(mhint) + '</span>') : '') +
@@ -17547,7 +17552,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "181.54";
+const BUILD = "181.55";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
