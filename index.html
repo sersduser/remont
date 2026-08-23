@@ -1709,7 +1709,8 @@ async function contractPropose(){
   const sum = contractSum();
   if(!(sum > 0)){ toast('В смете нет работ с ценой', 'err'); return; }
   const nop = contractNoPrice();
-  if(nop.length && !await ask('В смете ' + nop.length + ' работ без цены — в договор они не войдут:\n' +
+  if(nop.length && !await ask('В смете ' + nop.length + ' ' + скл(nop.length, 'работа', 'работы', 'работ')
+        + ' без цены — в договор ' + скл(nop.length, 'она не войдёт', 'они не войдут', 'они не войдут') + ':\n' +
       nop.slice(0, 8).map(w => '· ' + w.name).join('\n') + (nop.length > 8 ? '\n…' : '') +
       '\n\nПредложить договор без них?')){ toast('Отменено'); return; }
   if(!await ask('Предложить договор на ' + fmt(sum) + ' $ ?\n' +
@@ -4051,7 +4052,7 @@ function profTotalText(){
 function profTotalAllText(){
   const t = profTotalAll();
   if(!t.n) return 'План пуст';
-  return 'В плане ' + t.n + ' работ в ' + t.rooms + ' помещ. · ' + fmt(t.sum) + ' USD' + (t.blank ? (' · без объёма: ' + t.blank) : '') + (t.noprice ? (' · без цены: ' + t.noprice) : '') + (t.skipped ? (' · пропущено этапов: ' + t.skipped) : '');
+  return 'В плане ' + t.n + ' ' + скл(t.n, 'работа', 'работы', 'работ') + ' в ' + t.rooms + ' помещ. · ' + fmt(t.sum) + ' USD' + (t.blank ? (' · без объёма: ' + t.blank) : '') + (t.noprice ? (' · без цены: ' + t.noprice) : '') + (t.skipped ? (' · пропущено этапов: ' + t.skipped) : '');
 }
 
 // Сборка сметы: выбранное по ВСЕМ помещениям плана превращается в строки листа 01_Работы [чат 007 · многокомнатно 017]
@@ -4112,7 +4113,7 @@ async function profBuild(){
   });
 
   const t = profTotalAll();
-  if(!await ask('Добавить ' + rows.length + ' работ в смету на ' + fmt(t.sum) + ' USD?' +
+  if(!await ask('Добавить ' + rows.length + ' ' + скл(rows.length, 'работу', 'работы', 'работ') + ' в смету на ' + fmt(t.sum) + ' USD?' +
     (t.skipped ? ('\nИз них пропущенных этапов: ' + t.skipped + ' — уйдут строками без цены, с причиной') : '') +
     '\nПомещения: ' + names.join(', '))){ toast('Отменено'); return; }
 
@@ -7260,7 +7261,7 @@ async function allocApply(total){
     ? ('Записано ' + done + ' из ' + plan.rows.length + ', с ошибкой ' + (fail - (догОК ? 0 : 1))
        + (догОК ? ' · договор выставлен по факту: ' + fmt(итог) + ' $ — повторите разнесение'
                 : ' · и сумму договора записать не удалось'))
-    : ('Сумма разнесена по ' + done + ' работам'), fail ? 'err' : 'ok');
+    : ('Сумма разнесена по ' + done + ' ' + скл(done, 'работе', 'работам', 'работам')), fail ? 'err' : 'ok');
   await load();
   render();
 }
@@ -7775,8 +7776,8 @@ async function dscSubmit(){
   DSC_BUSY = true;
   const pk = 'PK-' + Date.now().toString(36).toUpperCase();
   const head = DSC.mode === 'pct'
-    ? ('скидка ' + c.pct + ' % на ' + c.rows.length + ' работ')
-    : ('итог ' + usd(c.target) + ' $ за ' + c.rows.length + ' работ');
+    ? ('скидка ' + c.pct + ' % на ' + c.rows.length + ' ' + скл(c.rows.length, 'работу', 'работы', 'работ'))
+    : ('итог ' + usd(c.target) + ' $ за ' + c.rows.length + ' ' + скл(c.rows.length, 'работу', 'работы', 'работ'));
   const stamp = chgStamp();
   const rows = c.rows.map((r, i) => ({
     'id': 'CH-' + pk.slice(3) + '-' + String(i + 1).padStart(2, '0'),
@@ -7801,7 +7802,8 @@ async function dscSubmit(){
     });
     const t = (await r.text()).trim();
     if(!r.ok || !t) throw new Error('Не удалось отправить пакет');
-    toast('Скидка заявлена — ' + rows.length + ' работ ждут ответа второй стороны');
+    toast('Скидка заявлена — ' + rows.length + ' '
+      + скл(rows.length, 'работа ждёт', 'работы ждут', 'работ ждут') + ' ответа второй стороны');
     await load();
     back();
   }catch(e){ toast(e.message, 'err'); }
@@ -8128,8 +8130,10 @@ function refParse(str){
   String(str == null ? '' : str).split(';').forEach(p => { const i = p.indexOf('='); if(i > 0) o[p.slice(0, i).trim()] = p.slice(i + 1).trim(); });
   return o;
 }
-const refHuman = s => s.works + ' работ · ' + usd(s.deal) + ' $ · ' + s.days + ' дн · ' +
-  s.mat + ' материалов' + (s.crew ? (' · ' + s.crew + ' чел') : ' · бригада не задана');
+const refHuman = s => s.works + ' ' + скл(Number(s.works) || 0, 'работа', 'работы', 'работ')
+  + ' · ' + usd(s.deal) + ' $ · ' + s.days + ' дн · '
+  + s.mat + ' ' + скл(Number(s.mat) || 0, 'материал', 'материала', 'материалов')
+  + (s.crew ? (' · ' + s.crew + ' чел') : ' · бригада не задана');
 
 const refAll     = () => chgAll().filter(c => String(c.kind || '').trim() === REF_KIND);
 const refPending = () => refAll().find(c => chgSt(c) === 'Заявлено') || null;
@@ -11362,7 +11366,7 @@ profile(){
       }
       return '<div class="work" onclick="PROF.room=\'' + esc(r.code) + '\'; render(true)" style="cursor:pointer' + (t.n ? ';border-left:3px solid #30d158;padding-left:9px' : '') + '">' +
         '<div class="t">' + (t.n ? '✅ ' : '') + esc(r.name) + '</div>' +
-        '<div class="m">' + (t.n ? ('в плане ' + t.n + ' работ · ' + fmt(t.sum) + ' USD' + (t.blank ? (' · без объёма: ' + t.blank) : '') + ' · ') : '') +
+        '<div class="m">' + (t.n ? ('в плане ' + t.n + ' ' + скл(t.n, 'работа', 'работы', 'работ') + ' · ' + fmt(t.sum) + ' USD' + (t.blank ? (' · без объёма: ' + t.blank) : '') + ' · ') : '') +
         'пол ' + fmt(r.floor_m2) + ' · стены ' + fmt(r.wall_m2) + ' · потолок ' + fmt(r.ceiling_m2) + ' · периметр ' + fmt(r.perimeter_m) +
         (miss.length ? ' · не заданы: ' + miss.join(', ') : '') + '</div></div>';
     }).join('');
@@ -11397,7 +11401,7 @@ profile(){
          интерфейса есть дефект, даже когда логика верна. */
       '<div class="stat"><div class="r" style="display:flex;gap:8px">' +
         (all.n
-          ? ('<button onclick="profBuild()" style="flex:2;padding:13px;border-radius:12px;border:0;background:#30d158;color:#000;font-size:15px;font-weight:600">Собрать смету: ' + all.n + ' работ · ' + fmt(all.sum) + ' USD</button>' +
+          ? ('<button onclick="profBuild()" style="flex:2;padding:13px;border-radius:12px;border:0;background:#30d158;color:#000;font-size:15px;font-weight:600">Собрать смету: ' + all.n + ' ' + скл(all.n, 'работа', 'работы', 'работ') + ' · ' + fmt(all.sum) + ' USD</button>' +
              '<button onclick="profClearAsk()" style="flex:1;padding:13px;border-radius:12px;border:0;background:#3a3a3c;color:#fff;font-size:15px">Очистить</button>')
           : '<button id="profBuildOff" disabled style="flex:1;padding:13px;border-radius:12px;border:0;background:#3a3a3c;color:#fff;font-size:15px;opacity:.55">Собрать смету</button>') +
       '</div>' +
@@ -16911,8 +16915,9 @@ const UZ_RULES = [
   /* Итоги профиля ремонта — те же поверхности, что вскрылись в 033. */
   [/^Выбрано (\d+) · на ([\d\s.,]+) USD$/, "Tanlandi: $1 · $2 USD"],
   [/^Выбрано (\d+) · на ([\d\s.,]+) USD · без объёма: (\d+)$/, "Tanlandi: $1 · $2 USD · hajmsiz: $3"],
-  [/^В плане (\d+) работ в (\d+) помещ\. · ([\d\s.,]+) USD$/, "Rejada $2 xonada $1 ish · $3 USD"],
-  [/^В плане (\d+) работ в (\d+) помещ\. · ([\d\s.,]+) USD · без объёма: (\d+)$/, "Rejada $2 xonada $1 ish · $3 USD · hajmsiz: $4"],
+  /* [181, Д-181-31] Русское слово теперь склоняется — шаблон принимает любую форму. */
+  [/^В плане (\d+) работ[аы]? в (\d+) помещ\. · ([\d\s.,]+) USD$/, "Rejada $2 xonada $1 ish · $3 USD"],
+  [/^В плане (\d+) работ[аы]? в (\d+) помещ\. · ([\d\s.,]+) USD · без объёма: (\d+)$/, "Rejada $2 xonada $1 ish · $3 USD · hajmsiz: $4"],
   /* Унаследованный пробел, вскрытый починкой мока [чат 033]: цена вида
      в карточке профиля ремонта не переводилась с 020 — на стенде она
      была нулевой, и строка «N USD за единицу» ни разу не рисовалась. */
@@ -17018,7 +17023,7 @@ const UZ_RULES = [
   [/^Цены изменятся пропорционально: коэффициент ([\d.,]+)\. Сумма работ станет ровно ([\d\s.,]+) \$\.$/, "Narxlar mutanosib o'zgaradi: koeffitsiyent $1. Ishlar summasi aynan $2 $ bo'ladi."],
   [/^и ещё работ: (\d+)$/, "yana ish: $1"],
   [/^Без цены: (\d+) — им цену задайте вручную$/, "Narxsiz: $1 — ularga narxni qo'lda kiriting"],
-  [/^Сумма разнесена по (\d+) работам$/, "Summa $1 ta ishga taqsimlandi"],
+  [/^Сумма разнесена по (\d+) работ(?:е|ам)$/, "Summa $1 ta ishga taqsimlandi"],
   [/^Записываю… (\d+) из (\d+)$/, "Yozyapman… $2 dan $1"],
   [/^Записано (\d+), с ошибкой (\d+)$/, "Yozildi $1, xato bilan $2"],
   [/^окон сейчас ([\d\s.,]+)$/, "hozir deraza $1"],
@@ -17289,7 +17294,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "181.40";
+const BUILD = "181.41";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
