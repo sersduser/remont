@@ -1464,7 +1464,7 @@ function addNewOpen(){
   go('addnew');
   if(!D.catalog){
     toast('Загружаю справочник…');
-    loadCatalog().then(() => render())
+    catOnce().then(() => render())
                  .catch(() => toast('Справочник не загрузился — виды вне сметы будут недоступны', 'err'));
   }
 }
@@ -4191,7 +4191,7 @@ function pauseOf(w){
 }
 async function openTerms(){
   try{
-    if(!D.catalog){ toast('Загружаю справочник…'); await loadCatalog(); }
+    if(!D.catalog){ toast('Загружаю справочник…'); await catOnce(); }
   }catch(e){ /* без справочника паузы просто нулевые */ }
   go('terms');
 }
@@ -4361,6 +4361,7 @@ function planRun(capRoom, capSecDefault, capSecBy, cpm){
    фронтов; снимок совпал — возвращаем готовое. Флаг «уже считал» здесь не
    годится: он разъезжается с правдой на первой же правке, а снимок — нет. */
 let BN_КЛЮЧ = null, BN_ОТВЕТ = null;
+let TERMS_CAT_TRY = false;
 function bnKey(){
   const c = capSet();
   let k = c.room + '|' + c.sec + '|';
@@ -10256,6 +10257,19 @@ function navDiag(){
 }
 const SCROLL = {};
 let WORKS_CAT_TRY = false;   // [181] справочник для сверки единиц просим один раз
+/* [181, Д-181-57] Справочник просят два экрана — «Работы» (сверка единиц) и
+   «Сроки» (технологические паузы). У каждого был свой флаг, и при первом входе
+   уходило ДВА одинаковых запроса. Признак «уже просим» записывается один раз
+   (решение 027): общий промис, к которому оба и подключаются. */
+let CAT_ЖДЁМ = null;
+function catOnce(){
+  if(D.catalog && D.catalog.kinds) return Promise.resolve(true);
+  if(CAT_ЖДЁМ) return CAT_ЖДЁМ;
+  CAT_ЖДЁМ = loadCatalog()
+    .then(v => { CAT_ЖДЁМ = null; return v; })
+    .catch(e => { CAT_ЖДЁМ = null; throw e; });
+  return CAT_ЖДЁМ;
+}
 let PRICES_CAT_TRY = false;  // [181] то же для экрана «Цены Юрия»
 let HOME_CAT_TRY = false;    // [181] и для главного — ради технологических пауз в сроке
 function scrollSave(){ try{ SCROLL[stack[stack.length - 1]] = scrollNow(); }catch(e){} navSave(); }
@@ -11284,7 +11298,7 @@ home(){
      графиком меняется на противоположный. Просим один раз и перерисовываем. */
   if(D && !D.catalog && !HOME_CAT_TRY){
     HOME_CAT_TRY = true;
-    try{ loadCatalog().then(() => render(true)).catch(() => {}); }catch(e){}
+    try{ catOnce().then(() => render(true)).catch(() => {}); }catch(e){}
   }
   /* [138] Экран, который читает D, обязан переживать его отсутствие:
      объект в момент переключения существует, а данных ещё нет. */
@@ -11445,7 +11459,7 @@ works(){
      перерисовываем — молча, потому что экран и без справочника полон. */
   if(!D.catalog && !WORKS_CAT_TRY){
     WORKS_CAT_TRY = true;
-    try{ loadCatalog().then(() => render(true)).catch(() => {}); }catch(e){}
+    try{ catOnce().then(() => render(true)).catch(() => {}); }catch(e){}
   }
   const worker = D.role === "worker";
   /* [181, Д-181-51] Работа без помещения — не выдумка: строка листа может
@@ -11611,7 +11625,7 @@ prices(){
   /* [181] Без справочника прайс не прочитать, а экран его никогда не просил. */
   if(!D.catalog && !PRICES_CAT_TRY){
     PRICES_CAT_TRY = true;
-    try{ loadCatalog().then(() => render(true)).catch(() => {}); }catch(e){}
+    try{ catOnce().then(() => render(true)).catch(() => {}); }catch(e){}
   }
   const st = priceStats();
   const empty = (D.works || []).filter(w => !(Number(w.price_contractor_usd) > 0));
@@ -11965,6 +11979,15 @@ profile(){
 },
 
 terms(){
+  /* [181, Д-181-57] Справочник приходит отдельной веткой и лениво. Без него
+     `pauseOf` возвращает ноль для всех работ, и экран показывает срок БЕЗ
+     технологических пауз — на боевом объекте это 41,5 дн вместо 42,8 и
+     11,5 дн технологического минимума вместо 21,5. Просим один раз и молча
+     перерисовываем — тем же приёмом, что экран «Работы». */
+  if(!(D.catalog && D.catalog.kinds) && !TERMS_CAT_TRY){
+    TERMS_CAT_TRY = true;
+    try{ catOnce().then(() => render(true)).catch(() => {}); }catch(e){}
+  }
   const t = timeCalc();
   const s = t.sched;
   const by = s.by;
@@ -12038,7 +12061,19 @@ terms(){
     '<div class="stat"><span class="k">Критический путь — цепочка, которая определяет срок целиком: задержка любой её работы двигает финиш день в день. Остальные работы имеют запас. Срок объекта больше минимума, потому что работы не идут все разом: в одном помещении и у одного раздела фронт ограничен.</span></div>' +
     gainBox +
     capBox +
-    (t.pcov ? '' : '<div class="stat"><span class="k">Технологические паузы (стяжка сохнет 28 дн, штукатурка 7 дн…) пока не влияют на расчёт: у работ текущей сметы нет привязки к видам справочника. Она появляется у работ, добавленных через «Профиль ремонта».</span></div>') +
+    (t.pcov ? '' : (function(){
+       /* Два разных случая, и путать их нельзя: «справочник ещё не пришёл» —
+          это временно и лечится само; «у работ нет привязки» — это про данные,
+          и чинит человек. Прежняя приписка называла вторую причину всегда и
+          отправляла чинить то, что не сломано. */
+       const нетСправочника = !(D.catalog && D.catalog.kinds && D.catalog.kinds.length);
+       const естьПривязка = (D.works || []).some(w => w && w.note && /вид\s+[A-Za-z]+-\d+/i.test(String(w.note)));
+       if(нетСправочника)
+         return '<div class="stat"><span class="k">Справочник видов ещё не загружен, поэтому технологические паузы (стяжка сохнет 28 дн, штукатурка 7 дн…) в расчёт пока не вошли — срок ниже настоящего. Секунду.</span></div>';
+       if(естьПривязка)
+         return '<div class="stat"><span class="k">Технологические паузы в расчёт не вошли: у видов, к которым привязаны работы, паузы в справочнике не заданы.</span></div>';
+       return '<div class="stat"><span class="k">Технологические паузы (стяжка сохнет 28 дн, штукатурка 7 дн…) пока не влияют на расчёт: у работ текущей сметы нет привязки к видам справочника. Она появляется у работ, добавленных через «Профиль ремонта».</span></div>';
+     })()) +
     '<div class="sub" style="margin-top:14px">Критический путь · ' + crit.length + ' работ</div>' + crit.map(line).join('') +
     '<div class="sub" style="margin-top:14px">Ближайшие по плану</div>' + soon.map(w => line(w.code)).join('');
 },
@@ -16118,7 +16153,7 @@ function showVRepair(d){
      перерисовывается тем же разбором. */
   VREP_D = d;
   if(!(D && D.catalog)){
-    loadCatalog().then(function(){ if(VREP_D === d) showVRepair(d); }).catch(function(){});
+    catOnce().then(function(){ if(VREP_D === d) showVRepair(d); }).catch(function(){});
   }
   vRep = vRepMerge(list).map(r => vLikeFill({ ...r, kinds: (r.kinds || []).map(k => ({ ...k })) }))
              .map(r => ({ ...r, kinds: (r.kinds || []).map(k => ({ ...k, _sel: repSel(k, r.kinds) })) }));
@@ -16479,7 +16514,7 @@ async function applyVoiceRepair(){
      в доп, а спорить стороны будут по бумаге. */
   if(ADD_VOICE){
     ADD_VOICE = false;
-    try{ if(!D.catalog) await loadCatalog(); }catch(e){}
+    try{ if(!D.catalog) await catOnce(); }catch(e){}
     const св = addVoiceApply();
     closeVSheet();
     /* Экран допа мог быть уже закрыт (голос слушают и с других экранов) —
@@ -16494,7 +16529,7 @@ async function applyVoiceRepair(){
   }
   /* [152] Тост в узком окне десктопа не виден — отказ читался как мёртвая
      кнопка (Д-151-6, три чата искали дефект в самой кнопке). Окно видно всегда. */
-  try{ if(!D.catalog) await loadCatalog(); }catch(e){ showVError(e.message); return; }
+  try{ if(!D.catalog) await catOnce(); }catch(e){ showVError(e.message); return; }
   const kinds = (D.catalog || {}).kinds || [];
   let n = 0, noVol = 0, rooms = 0, last = null;
   for(const r of ready){
@@ -16956,6 +16991,8 @@ const UZ = {
 "Бригадир пока не отмечал свои часы.":"Brigadir hozircha o'z soatlarini belgilamagan.",
 "помещение не указано":"xona ko'rsatilmagan",
 "раздел не указан":"bo'lim ko'rsatilmagan",
+"Справочник видов ещё не загружен, поэтому технологические паузы (стяжка сохнет 28 дн, штукатурка 7 дн…) в расчёт пока не вошли — срок ниже настоящего. Секунду.":"Turlar ma'lumotnomasi hali yuklanmagan, shuning uchun texnologik pauzalar (styajka 28 kun, shuvoq 7 kun quriydi…) hisobga kirmadi — muddat haqiqiydan past. Bir soniya.",
+"Технологические паузы в расчёт не вошли: у видов, к которым привязаны работы, паузы в справочнике не заданы.":"Texnologik pauzalar hisobga kirmadi: ishlar bog'langan turlarda ma'lumotnomada pauzalar berilmagan.",
 "Фронтов на раздел":"Bo'lim uchun frontlar","Записать фронты":"Frontlarni yozish","Фронты записаны":"Frontlar yozildi",
 "Фронтов должно быть не меньше одного":"Frontlar soni birdan kam bo'lmasligi kerak",
 "Фронты пока не заданы в настройках объекта — считаю по одному. Это умолчание, а не измерение.":"Frontlar obyekt sozlamalarida hali berilmagan — bittadan hisoblayapman. Bu o'lchov emas, balki standart qiymat.",
@@ -17913,7 +17950,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "181.69";
+const BUILD = "181.70";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
