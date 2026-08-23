@@ -9880,12 +9880,64 @@ function objSwitchBox(){
   '</div>';
 }
 
+/* ── Проверка сохранённых ключей [181, Д-181-19] ───────────────────────────
+   Единственный способ узнать, жив ли объект, когда подписи Telegram нет, —
+   спросить сам объект его ключом. Запрос тяжёлый (тянет объект целиком),
+   поэтому идёт по кнопке и по одному, а не на каждый показ экрана. */
+let OBJPROBE = { busy: false, done: 0, total: 0 };
+async function objsProbeAll(){
+  if(OBJPROBE.busy) return;
+  const list = objsAll();
+  if(!list.length) return;
+  OBJPROBE = { busy: true, done: 0, total: list.length };
+  render(true);
+  for(const o of list){
+    let жив = null, имя = '';
+    try{
+      const r = await fetch(API + '/data?key=' + encodeURIComponent(o.key), { cache: 'no-store' });
+      if(r.status === 401 || r.status === 403){ жив = false; }
+      else if(r.ok){
+        const txt = (await r.text()).trim();
+        let j = null; try{ j = JSON.parse(txt); }catch(e){}
+        /* Ответ бывает и с ok:false — тогда это отказ, а не объект. */
+        if(j && j.ok === false){ жив = false; }
+        else if(j && (j.title || (j.rooms && j.rooms.length) || j.object_id)){ жив = true; имя = String(j.title || ''); }
+      }
+    }catch(e){ /* нет связи — не приговор: строку не трогаем */ }
+    if(жив !== null){
+      const все = objsAll(), i = все.findIndex(x => x.key === o.key);
+      if(i >= 0){
+        все[i].srv = жив ? 1 : 0;
+        if(жив && имя) все[i].title = имя;
+        objsWrite(все);
+      }
+    }
+    OBJPROBE.done++;
+    render(true);
+  }
+  OBJPROBE.busy = false;
+  render(true);
+}
+
 function objSelRole(r){
   const k = String(r || "");
   return k ? (OBJ_ROLE_RU[k] || k) : "";
 }
 function objSelScreen(){
   const list = objsAll().slice().sort((a, b) => (b.ts || 0) - (a.ts || 0));
+  /* [181] Кнопка проверки — рядом со списком, с прогрессом и итогом. */
+  const прб = (typeof OBJPROBE === 'object' && OBJPROBE) ? OBJPROBE : { busy: false };
+  const проверено = list.filter(o => o.srv === 1).length, мёртвых = list.filter(o => o.srv === 0).length;
+  const кнопка = !list.length ? '' :
+    ('<div class="stat"><span class="k">' +
+      (прб.busy
+        ? ('Проверяю ключи: ' + прб.done + ' из ' + прб.total + '…')
+        : (проверено || мёртвых
+            ? ('Проверено: живых ' + проверено + (мёртвых ? (', без доступа ' + мёртвых) : '') + '.')
+            : 'Панель помнит ключи, но не знает, живы ли объекты: подтвердить это без подписи Telegram можно только запросом по каждому ключу.')) +
+      '</span>' +
+      (прб.busy ? '' : '<div style="margin-top:10px"><button onclick="objsProbeAll()" style="width:100%;padding:12px;border-radius:12px;border:0;background:#3a3a3c;color:#fff;font-size:15px">🔄 Проверить ключи</button></div>') +
+      '</div>');
   const rows = list.map(o => {
     const on = (o.key === KEY);
     const role = objSelRole(o.role);
@@ -9900,13 +9952,16 @@ function objSelScreen(){
       (мимо && !on ? ';border:1px solid #3a3a3c' : '') + '">' +
       '<div style="font-size:15px">' + esc(objsTitle(o.key)) + (on ? " · открыт" : "") + '</div>' +
       '<div style="font-size:12px;opacity:.65;margin-top:3px">' + (role ? esc(role) + ' · ' : '') +
-        (on ? 'открыт сейчас' : 'доступ есть') + '</div>' +
+        /* [181] «доступ есть» говорилось и о строках, которые никто не
+           проверял: три из пяти вели в удалённые объекты. Обещаем только
+           подтверждённое. */
+        (on ? 'открыт сейчас' : (o.srv === 1 ? 'доступ подтверждён' : 'ключ сохранён — доступ не проверен')) + '</div>' +
       (мимо ? '<div style="font-size:12px;margin-top:6px;color:var(--warn)">Сервер эту строку не подтвердил — она осталась в памяти этого устройства</div>' +
         '<button onpointerdown="event.stopPropagation()" onpointerup="event.stopPropagation()"' +
         ' onclick="event.stopPropagation(); objsForget(\'' + esc(o.key) + '\')"' +
         ' style="margin-top:8px;padding:8px 12px;border-radius:9px;border:1px solid #3a3a3c;background:#2c2c2e;color:#fff;font-size:13px">Забыть здесь</button>' : '') +
     '</div>';
-  }).join("");
+  }).join("") + кнопка;
   /* Участия без годного ключа: показываем, но переключиться нечем — человеку
      нужна ссылка от бригадира. В хранилище они не попадают (objsAll их режет). */
   const nokey = (OBJSRV.nokey || []).map(o => {
@@ -16976,7 +17031,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "181.25";
+const BUILD = "181.26";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
