@@ -4850,14 +4850,22 @@ function graphSvg(){
       '" stroke-width="2"' + (g.dash ? ' stroke-dasharray="' + g.dash + '"' : "") + ' />' +
       (g.gone ? '<line x1="' + (mx - 5) + '" y1="' + (my - 5) + '" x2="' + (mx + 5) + '" y2="' + (my + 5) +
         '" stroke="' + g.color + '" stroke-width="2" />' : "") +
-      /* Хитбокс во всю длину линии [141]: до этого попадал только тык в
-         середину — кружок ниже. Прозрачный (alpha .01) и толстый: палец
-         промахивается мимо двухпиксельной линии, а мимо четырнадцати нет.
-         Идёт ПОСЛЕ видимой линии и ДО плашек — плашка остаётся главнее. */
-      '<line x1="' + a.x + '" y1="' + a.y + '" x2="' + b.x + '" y2="' + b.y +
-        '" stroke="rgba(0,0,0,.01)" stroke-width="14" stroke-linecap="round" style="cursor:pointer"' +
-        ' onclick="elemEdit(\'' + esc(e.id) + '\')"><title>' + esc(String(e.name || e.id)) + '</title></line>' +
-      '<circle cx="' + mx + '" cy="' + my + '" r="9" fill="rgba(0,0,0,.01)" style="cursor:pointer" onclick="elemEdit(\'' + esc(e.id) + '\')"><title>' +
+      /* Хитбокс на СРЕДНИХ 56 % линии [181, Д-181-8]. С чата 141 он шёл во всю
+         длину при ширине 14 — и это лечило промах мимо тонкой линии, но
+         создавало другой: у плашки Коридора сходятся пять линий, их широкие
+         хитбоксы у самого узла лежат друг на друге, и тык рядом с плашкой
+         открывал соседний проём. Дмитрий поймал это дважды подряд.
+         Обрезаем по 22 % с каждого конца: у узлов линии больше не спорят,
+         а середина остаётся широкой целью. */
+      (function(){
+        const дx = b.x - a.x, дy = b.y - a.y;
+        const x1 = a.x + дx * 0.22, y1 = a.y + дy * 0.22;
+        const x2 = a.x + дx * 0.78, y2 = a.y + дy * 0.78;
+        return '<line x1="' + x1 + '" y1="' + y1 + '" x2="' + x2 + '" y2="' + y2 +
+          '" stroke="rgba(0,0,0,.01)" stroke-width="14" stroke-linecap="round" style="cursor:pointer"' +
+          ' onclick="elemEdit(\'' + esc(e.id) + '\')"><title>' + esc(String(e.name || e.id)) + '</title></line>';
+      })() +
+      '<circle cx="' + mx + '" cy="' + my + '" r="11" fill="rgba(0,0,0,.01)" style="cursor:pointer" onclick="elemEdit(\'' + esc(e.id) + '\')"><title>' +
       esc(String(e.name || e.id)) + '</title></circle>');
   });
   if(extEls.length){
@@ -17061,7 +17069,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "181.28";
+const BUILD = "181.29";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
