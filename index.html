@@ -779,7 +779,7 @@ async function load(){
        Данные не утекают, но и JSON не приходит — трактуем это как отказ в доступе. */
     const raw = (await r.text()).trim();
     if(!raw) throw new Error(BAD);
-    try{ D = JSON.parse(raw); }catch{ throw new Error(BAD); }
+    try{ D = нормОтвет(JSON.parse(raw)); }catch{ throw new Error(BAD); }
     /* Объект без листов [чат 018]: сервер отвечает не отказом, а need_setup —
        панель предлагает создать недостающие листы, вместо тупика «сервер не отвечает». */
     if(D && D.need_setup){ renderSetup(D); return; }
@@ -4453,7 +4453,57 @@ async function bindCheck(id){
    как комнаты связаны между собой. Полы нельзя залить везде разом —
    иначе к дальней комнате не подойти; порядок считаем обходом графа
    от выхода. Связь всегда двусторонняя: помечая соседа, пишем обе строки. */
-const adjMap = () => { const m = {}; (D.adjacency || []).forEach(a => { m[a.code] = a.near || []; }); return m; };
+/* Приведение формы ответа [181, Д-181-51]. Пробник по шестнадцати полям-спискам
+   × четыре подмены типа дал 30 падений из 64: строка вместо массива в `works`
+   роняет пять экранов, в `rooms` — четыре, в `drafts` — три. Защищать сорок
+   мест по отдельности бессмысленно и незаметно ломается при первой же новой
+   строке кода; форма ответа приводится ОДИН раз здесь, как определение сводной
+   величины пишется один раз (решение 027).
+   Приводится только ФОРМА. Смысл не чинится: пришедшее правильным проходит
+   тем же самым, а мусор становится пустотой, о которой экраны уже умеют
+   говорить («данных нет»), — но не белым экраном. */
+const D_СПИСКИ = ["rooms","adjacency","elements","modifiers","works","materials","log",
+                  "changes","accepts","drafts","payments","extras","price","access","docs","crew"];
+function вМассив(v){
+  if(Array.isArray(v)) return v;
+  if(v == null) return [];
+  /* Строка — это формат листа: «SP, KR, BL». Разворачиваем тем же правилом,
+     каким сервер разворачивает смежность (решение 072). */
+  if(typeof v === "string"){
+    const t = v.trim();
+    if(!t) return [];
+    return t.split(/[,;]/).map(x => x.trim()).filter(Boolean);
+  }
+  /* Одиночная запись, пришедшая без обёртки, — это одна строка списка. */
+  if(typeof v === "object") return [v];
+  return [];
+}
+/* Список ЗАПИСЕЙ: элементы обязаны быть объектами. Строка, развёрнутая
+   по запятой, даёт массив строк — для соседей помещения это правильно
+   (там и лежат коды), а для списка работ это мусор: код зовёт у записи
+   поля, и `.split` у строки-«работы» роняет экран. Мусор выбрасывается —
+   пустоту экраны показывать умеют, белый экран нет. */
+function вЗаписи(v){
+  return вМассив(v).filter(x => x && typeof x === "object" && !Array.isArray(x));
+}
+function нормОтвет(d){
+  if(!d || typeof d !== "object") return d;
+  D_СПИСКИ.forEach(k => { if(k in d) d[k] = вЗаписи(d[k]); });
+  if(d.catalog && typeof d.catalog === "object"){
+    if("kinds" in d.catalog) d.catalog.kinds = вЗаписи(d.catalog.kinds);
+    if("price" in d.catalog) d.catalog.price = вЗаписи(d.catalog.price);
+  } else if(d.catalog != null && typeof d.catalog !== "object"){
+    d.catalog = { kinds: [], price: [] };
+  }
+  /* Соседи помещения — вложенный список, и он роняет «Объект» так же, как
+     верхнеуровневые: `adjMap` кладёт `near` в карту как есть, а обход зовёт
+     у него `.forEach`. */
+  (d.adjacency || []).forEach(a => { if(a && typeof a === "object") a.near = вМассив(a.near); });
+  if(!d.settings || typeof d.settings !== "object" || Array.isArray(d.settings)) d.settings = d.settings || {};
+  return d;
+}
+
+const adjMap = () => { const m = {}; вМассив((D || {}).adjacency).forEach(a => { if(a) m[a.code] = вМассив(a.near); }); return m; };
 const adjOf  = (code) => adjMap()[code] || [];
 
 async function adjWrite(code, list){
@@ -11238,7 +11288,11 @@ works(){
     try{ loadCatalog().then(() => render(true)).catch(() => {}); }catch(e){}
   }
   const worker = D.role === "worker";
-  const rooms  = [...new Set(D.works.map(w => w.room))];
+  /* [181, Д-181-51] Работа без помещения — не выдумка: строка листа может
+     прийти неполной. `undefined` в наборе имён роняет кнопку фильтра
+     (`r.split`), то есть весь экран «Работы». Пустые отбрасываем — работа
+     всё равно видна в списке, а фильтровать по «никуда» нечего. */
+  const rooms  = [...new Set(D.works.map(w => String((w && w.room) || "").trim()).filter(Boolean))];
   const base   = fRoom ? D.works.filter(w => w.room === fRoom) : D.works;
   const doneN  = base.filter(w => w.status === "Готово").length;
   const list   = hideDone ? base.filter(w => w.status !== "Готово") : base;
@@ -11306,7 +11360,7 @@ works(){
     ${list.map(w => `
       <div class="work${w.status === "Готово" ? " done" : ""}">
         <div class="t">${esc(w.name)}</div>
-        <div class="m">${esc(w.room.split(" (")[0])} · ${esc(w.section)} · ${w.unit === "компл" ? "комплект" : w.qty + " " + esc(w.unit)}</div>
+        <div class="m">${esc(String(w.room || "").split(" (")[0] || "помещение не указано")} · ${esc(w.section || "раздел не указан")} · ${w.unit === "компл" ? "комплект" : ((w.qty == null ? "?" : w.qty) + " " + esc(w.unit || "ед."))}</div>
         ${(function(){ const n = workUnitNote(w); return n ? ('<div class="m" style="color:var(--warn);opacity:.9">⚠ ' + esc(n) + '</div>') : ''; })()}
         ${(() => { const _b = (w.status === "Готово" || w.status === "Не начато") ? [] : depBlockers(w);
           return _b.length ? `<div class="m" style="color:var(--warn)">⏳ Сначала должно быть принято: ${_b.map(x => esc(x.name)).join(", ")}</div>` : ""; })()}
@@ -17682,7 +17736,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "181.62";
+const BUILD = "181.63";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
