@@ -11705,6 +11705,26 @@ terms(){
       (t.pauses > 0 ? ('<div class="r"><span class="k">в т.ч. технологические паузы</span><span class="v">+' + t.pauses + ' дн</span></div>') : '') +
       '<div class="r"><span class="k">Срок с ограничением параллельности</span><span class="v">' + t.real + ' дн</span></div>' +
       '<div class="r"><span class="k">Всего работы</span><span class="v">' + t.sumDur + ' чел-дн</span></div>' +
+      (function(){
+        /* [181, Д-181-46] Решение 007: срок — БОЛЬШАЯ из двух оценок, где
+           вторая это человекодни ÷ бригада. Панель считала только первую;
+           поле «Рабочих_в_бригаде» заведено и пусто. Считаем и показываем;
+           какое число считать сроком — решает человек. */
+        const бр = чис((D.settings || {})['Рабочих_в_бригаде']);
+        if(!(бр > 0))
+          return '<div class="r"><span class="k" style="font-size:13px;opacity:.65">' +
+            'Сколько людей в бригаде — не задано, поэтому вторая оценка (человекодни ÷ бригада) не посчитана. ' +
+            'Решение 007 требует брать большую из двух: сейчас видна одна.</span><span class="v"></span></div>';
+        const порукам = Math.round(t.sumDur / бр * 10) / 10;
+        const больше = порукам > t.real;
+        return '<div class="r"><span class="k">По рукам: ' + t.sumDur + ' чел-дн ÷ ' + бр + ' ' +
+            скл(бр, 'рабочий', 'рабочих', 'рабочих') + '</span><span class="v">' + порукам + ' дн</span></div>' +
+          '<div class="r"><span class="k" style="font-size:13px;opacity:.65">' +
+            (больше
+              ? ('это больше срока по расписанию (' + t.real + ' дн) — узкое место руки, а не технология')
+              : ('расписание даёт больше (' + t.real + ' дн) — узкое место порядок работ, а не руки')) +
+          '</span><span class="v"></span></div>';
+      })() +
       (t.elapsed !== null ? ('<div class="r"><span class="k">Прошло с начала работ</span><span class="v">' + t.elapsed + ' дн</span></div>') : '') +
       '<div class="r"><span class="k">Пройдено по плану</span><span class="v">' + t.reached + ' дн</span></div>' +
       late +
@@ -17552,7 +17572,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "181.55";
+const BUILD = "181.56";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
