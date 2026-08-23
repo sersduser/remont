@@ -7039,6 +7039,14 @@ const allocLive = () => (D.works || []).filter(w => w.code && w.status !== 'Сн
 function allocBaseSum(){
   return Math.round(allocLive().reduce((s, w) => s + (workBase(w) || (Number(w.price_alloc_usd) || 0)), 0) * 100) / 100;
 }
+/* ── [181, Д-181-25] Сумма сметы по НЫНЕШНИМ ценам ───────────────────────
+   allocBaseSum считает по базовым — то, к чему вернёт отмена разнесения.
+   Здесь нужно другое: сколько смета стоит прямо сейчас, после того как часть
+   записей прошла, а часть нет. Читается через чис(), потому что в памяти
+   значение могло приехать строкой с запятой. */
+function allocFactSum(){
+  return Math.round(allocLive().reduce((s, w) => s + чис(w.price_alloc_usd), 0) * 100) / 100;
+}
 function allocUndoPlan(){
   const rows = allocLive()
     .filter(w => workBase(w) > 0)
@@ -7084,11 +7092,19 @@ async function allocUndoApply(){
   }
   /* Договор идёт следом за ценами: сумма работ и Договор_USD обязаны сойтись,
      иначе экран денег начнёт спорить сам с собой (то же правило, что в allocApply). */
+  /* [181, Д-181-25] То же правило, что в allocApply: при отказах договор
+     называет фактическую сумму, а не ту, которая была задумана. */
+  const итог = fail ? allocFactSum() : allocBaseSum();
+  let догОК = true;
   try{
-    await writeCell('07_Настройки', 'Договор_USD', 'Значение', String(allocBaseSum()).replace('.', ','));
-  }catch(e){ fail++; }
+    await writeCell('07_Настройки', 'Договор_USD', 'Значение', String(итог).replace('.', ','));
+  }catch(e){ fail++; догОК = false; }
   closeVSheet();
-  toast(fail ? ('Возвращено ' + done + ', с ошибкой ' + fail) : 'Цены вернулись к базовым', fail ? 'err' : 'ok');
+  toast(fail
+    ? ('Возвращено ' + done + ' из ' + plan.rows.length + ', с ошибкой ' + (fail - (догОК ? 0 : 1))
+       + (догОК ? ' · договор выставлен по факту: ' + fmt(итог) + ' $ — повторите возврат'
+                : ' · и сумму договора записать не удалось'))
+    : 'Цены вернулись к базовым', fail ? 'err' : 'ok');
   await load();
   render();
 }
@@ -7143,11 +7159,23 @@ async function allocApply(total){
       if(btn) btn.textContent = 'Записываю… ' + done + ' из ' + plan.rows.length;
     }catch(e){ fail++; }
   }
+  /* [181, Д-181-25] Договор обязан называть то, что в базе НА САМОМ ДЕЛЕ.
+     Раньше сюда всегда ехала плановая сумма — даже когда половина цен не
+     записалась: договор говорил 200, смета стоила 170, и экран денег начинал
+     спорить сам с собой ровно там, где комментарий обещал этого не допустить.
+     При отказах берётся фактическая сумма: patch() поправил в памяти только
+     те строки, которые сервер принял. */
+  const итог = fail ? allocFactSum() : plan.sum;
+  let догОК = true;
   try{
-    await writeCell('07_Настройки', 'Договор_USD', 'Значение', String(plan.sum).replace('.', ','));
-  }catch(e){ fail++; }
+    await writeCell('07_Настройки', 'Договор_USD', 'Значение', String(итог).replace('.', ','));
+  }catch(e){ fail++; догОК = false; }
   closeVSheet();
-  toast(fail ? ('Записано ' + done + ', с ошибкой ' + fail) : ('Сумма разнесена по ' + done + ' работам'), fail ? 'err' : 'ok');
+  toast(fail
+    ? ('Записано ' + done + ' из ' + plan.rows.length + ', с ошибкой ' + (fail - (догОК ? 0 : 1))
+       + (догОК ? ' · договор выставлен по факту: ' + fmt(итог) + ' $ — повторите разнесение'
+                : ' · и сумму договора записать не удалось'))
+    : ('Сумма разнесена по ' + done + ' работам'), fail ? 'err' : 'ok');
   await load();
   render();
 }
@@ -8326,18 +8354,22 @@ function patch(sheet, code, field, value){
     const w = D.works.find(x => x.code === code);
     if(!w) return;
     if(field === "Статус")        w.status   = value;
-    if(field === "Готовность_%")  w.progress = Number(value) || 0;
-    if(field === "Цена_Юрия_USD") w.price_contractor_usd = value === "" ? null : Number(value);
-    if(field === "Цена_аллокация_USD") w.price_alloc_usd = value === "" ? null : Number(value);
-    if(field === "Цена_база_USD")      w.price_base_usd  = value === "" ? null : Number(value);
+    /* [181, Д-181-26] На запись число уходит с русской запятой
+       (String(x).replace('.', ',')) — так его хранят листы. Прежний Number()
+       давал на «20,5» NaN, и до перезагрузки экран показывал $NaN. Общая
+       чис() из 181.31 понимает и запятую, и пробелы внутри числа. */
+    if(field === "Готовность_%")  w.progress = чис(value);
+    if(field === "Цена_Юрия_USD") w.price_contractor_usd = value === "" ? null : чис(value);
+    if(field === "Цена_аллокация_USD") w.price_alloc_usd = value === "" ? null : чис(value);
+    if(field === "Цена_база_USD")      w.price_base_usd  = value === "" ? null : чис(value);
     if(field === "Комментарий")   w.comment  = value;
     if(w.status === "Готово") w.progress = 100;
   }
   if(sheet === "03_Материалы"){
     const m = D.materials.find(x => x.name === code);
     if(!m) return;
-    if(field === "Куплено")       m.in  = Number(value) || 0;
-    if(field === "Израсходовано") m.out = Number(value) || 0;
+    if(field === "Куплено")       m.in  = чис(value);
+    if(field === "Израсходовано") m.out = чис(value);
     m.rest = (m.in || 0) - (m.out || 0);
   }
 }
@@ -17120,7 +17152,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "181.33";
+const BUILD = "181.34";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
