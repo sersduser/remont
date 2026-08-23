@@ -9638,7 +9638,7 @@ function tmDayNote(rows){
   const приш = по("пришёл"), ушёл = по("ушёл");
   const он = по("обед начало"), ок = по("обед конец");
 
-  if(приш.length > 1) беды.push("«пришёл» отмечен " + приш.length + " раза");
+  if(приш.length > 1) беды.push("«пришёл» отмечен " + приш.length + " раза");   /* шаблон с числом, см. UZ */
   if(ушёл.length > 1) беды.push("«ушёл» отмечен " + ушёл.length + " раза");
   if(!приш.length && (ушёл.length || он.length || ок.length))
     беды.push("день без отметки «пришёл»");
@@ -9652,8 +9652,23 @@ function tmDayNote(rows){
   if(к !== null && у !== null && к > у) беды.push("обед кончился после ухода");
   if(!он.length && ок.length) беды.push("«вернулся» без «обед»");
 
-  if(!беды.length) return "";
-  return "День не складывается: " + беды.join("; ") + ". Решать вам — но проверьте время.";
+  return беды;   /* список, а не склеенная строка — см. ниже про перевод */
+}
+/* Показ замечания [181, Д-181-55]. Языковой слой переводит собранный DOM по
+   строкам, а ключ словаря — русская строка целиком (решение 020). Склеенное
+   «День не складывается: A; B. Решать вам» в словарь не положить: вариантов
+   столько, сколько сочетаний бед. Поэтому каждая беда — своя строка, и каждая
+   есть в словаре. Заодно список читается лучше, чем перечисление через «;». */
+function tmDayBox(беды, кто){
+  const b = (беды || []).filter(Boolean);
+  if(!b.length) return "";
+  const имя = String(кто == null ? "" : кто).trim();
+  return '<div class="stat" style="border-left:3px solid var(--warn)">' +
+    '<span class="k" style="color:var(--warn);font-size:13px">⚠ ' +
+      (имя ? (esc(имя) + " — день не складывается") : "День не складывается") + '</span>' +
+    b.map(x => '<div class="m" style="font-size:13px;opacity:.9">· ' + esc(x) + '</div>').join('') +
+    '<div class="m" style="font-size:13px;opacity:.7">Решать вам — но проверьте время.</div>' +
+  '</div>';
 }
 
 /* Окно списка отметок: неделя или всё [решение 037 — фильтр не имеет права
@@ -9734,11 +9749,11 @@ function ftBlock(c){
   const списокДня = дата => {
     const по = {};
     (groups[дата] || []).forEach(x => { const w = String(x.worker || ""); (по[w] = по[w] || []).push(x); });
-    return Object.keys(по).map(w => tmDayNote(по[w])).filter(Boolean);
+    return Object.keys(по).map(w => tmDayBox(tmDayNote(по[w]), "")).filter(Boolean);
   };
   const list = Object.keys(groups).sort().reverse().map(d =>
     '<div class="sub" style="margin-top:14px">' + dLabel(d) + "</div>" +
-    списокДня(d).map(n => '<div class="stat"><span class="k" style="color:var(--warn);font-size:13px">⚠ ' + esc(n) + "</span></div>").join("") +
+    списокДня(d).join("") +
     groups[d].map(card).join("")).join("");
   return '<div class="sub" style="margin-top:16px">Часы бригадира</div>' +
     '<div class="stat"><span class="k">' + (wait.length ? (wait.length + " ждут вашего решения") : "все часы бригадира решены") + "</span></div>" +
@@ -12153,14 +12168,11 @@ crew_time(){
   const списокДня = дата => {
     const по = {};
     (groups[дата] || []).forEach(x => { const w = String(x.worker || ""); (по[w] = по[w] || []).push(x); });
-    return Object.keys(по).map(w => {
-      const n = tmDayNote(по[w]);
-      return n ? (String(w || "").trim() ? (w + " — " + n.charAt(0).toLowerCase() + n.slice(1)) : n) : "";
-    }).filter(Boolean);
+    return Object.keys(по).map(w => tmDayBox(tmDayNote(по[w]), w)).filter(Boolean);
   };
   const list = Object.keys(groups).sort().reverse().map(d =>
     '<div class="sub" style="margin-top:14px">' + dLabel(d) + "</div>" +
-    списокДня(d).map(n => '<div class="stat"><span class="k" style="color:var(--warn);font-size:13px">⚠ ' + esc(n) + "</span></div>").join("") +
+    списокДня(d).join("") +
     groups[d].map(card).join("")).join("");
   return '<div class="hello">Табель</div>' +
     '<div class="sub">' + (wait.length ? (wait.length + " ждут решения") : "все отметки решены") + "</div>" +
@@ -16898,6 +16910,18 @@ const UZ = {
 "Срок с ограничением параллельности":"Parallellik cheklovi bilan muddat","Что держит срок":"Muddatni nima ushlab turadi",
 "Ещё одна работа в помещении":"Xonada yana bitta ish","Работ в помещении одновременно":"Xonada bir vaqtda ishlar soni",
 "Объём труда сроком не является: делить человекодни на число рабочих нельзя — состав бригады условен, а узкие специалисты приходят на свой этап. Сколько работ идут разом, задают фронты ниже.":"Mehnat hajmi muddat emas: odam-kunlarni ishchilar soniga bo'lish mumkin emas — brigada tarkibi shartli, tor mutaxassislar esa o'z bosqichiga keladi. Bir vaqtda nechta ish ketishini quyidagi frontlar belgilaydi.",
+"День не складывается":"Kun jips kelmayapti",
+"Решать вам — но проверьте время.":"Qaror sizniki — lekin vaqtni tekshiring.",
+"«ушёл» раньше, чем «пришёл»":"«ketdi» «keldi»dan oldin",
+"«ушёл» отмечен 2 раза":"«ketdi» 2 marta belgilangan",
+"день без отметки «пришёл»":"«keldi» belgisisiz kun",
+"обед кончился раньше, чем начался":"tushlik boshlanishidan oldin tugadi",
+"обед начался до прихода":"tushlik kelishdan oldin boshlandi",
+"обед кончился после ухода":"tushlik ketgandan keyin tugadi",
+"«вернулся» без «обед»":"«tushlikdan qaytdi» «tushlik»siz",
+"Бригадир пока не отмечал свои часы.":"Brigadir hozircha o'z soatlarini belgilamagan.",
+"помещение не указано":"xona ko'rsatilmagan",
+"раздел не указан":"bo'lim ko'rsatilmagan",
 "Фронтов на раздел":"Bo'lim uchun frontlar","Записать фронты":"Frontlarni yozish","Фронты записаны":"Frontlar yozildi",
 "Фронтов должно быть не меньше одного":"Frontlar soni birdan kam bo'lmasligi kerak",
 "Фронты пока не заданы в настройках объекта — считаю по одному. Это умолчание, а не измерение.":"Frontlar obyekt sozlamalarida hali berilmagan — bittadan hisoblayapman. Bu o'lchov emas, balki standart qiymat.",
@@ -17614,6 +17638,9 @@ const UZ_RULES = [
   [/^сегодня в поле: (\d+)$/, "bugun ishda: $1"],
   [/^(\d+) новых$/, "$1 ta yangi"],
   [/^Человекодней за (\d+) дней \(решённых\)$/, "$1 kun ichida odam-kun (hal qilingan)"],
+  [/^(.+) — день не складывается$/, "$1 — kun jips kelmayapti"],
+  [/^«пришёл» отмечен (\d+) раза$/, "«keldi» $1 marta belgilangan"],
+  [/^«ушёл» отмечен (\d+) раза$/, "«ketdi» $1 marta belgilangan"],
   [/^За последнюю неделю отметок нет, поэтому показаны все (\d+) отмет\S+\.$/,
    "Oxirgi haftada belgilar yo'q, shuning uchun barcha $1 ta belgi ko'rsatildi."],
   [/^За последнюю неделю отметок нет, поэтому показаны все (\d+) отмет\S+ — среди них (\d+) жд\S+ решения\.$/,
@@ -17852,7 +17879,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "181.66";
+const BUILD = "181.67";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
