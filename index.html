@@ -3191,6 +3191,24 @@ let PROF_PULLED = 0, PROF_PUSH_T = null, PROF_PUSH_LAST = "", PROF_SRV = null;
    Найдено живым проходом пилота по ключу 20.08. */
 let PROF_ERR = "";
 
+/* ── Отказ сервера человеческими словами [181, Д-181-17] ───────────────────
+   Сообщения вроде «нужна подпись Telegram» написаны для того, кто читает лог,
+   а не для того, кто пришёл смотреть наряды. Разбираем известные отказы и
+   отвечаем тремя вещами: что закрыто, почему и что сделать. Незнакомый отказ
+   отдаём как есть — придуманное объяснение хуже машинного. */
+function errHuman(err){
+  const s = String(err || '').trim();
+  if(!s) return null;
+  if(/подпис/i.test(s) && /telegram/i.test(s)){
+    return {
+      кратко: 'этот экран открывается только из Telegram',
+      полно: 'Наряды и отметки — это данные людей бригады, а не объекта. Ключ в ссылке отпирает объект, но не говорит серверу, КТО его открыл, и такие данные он по ключу не отдаёт. ' +
+             'Откройте панель кнопкой из бота: Telegram подпишет запрос сам, и экран заполнится.'
+    };
+  }
+  return null;
+}
+
 async function profileApi(body){
   let r, txt;
   try{
@@ -10348,8 +10366,13 @@ plan(){
   if(PLAN === null){ planEnsure(); return head + '<div class="sub">Загружаю…</div>'; }
   if(PLAN.absent || PLAN_ABSENT)
     return head + '<div class="sub">серверная часть ещё не выкачена</div>';
-  if(!PLAN.ok)
-    return head + '<div class="sub">' + esc(String(PLAN.error || 'недоступно')) + '</div>';
+  if(!PLAN.ok){
+    const ч = (typeof errHuman === 'function') ? errHuman(PLAN.error) : null;
+    return head + (ч
+      ? ('<div class="sub">' + esc(ч.кратко) + '</div>' +
+         '<div class="stat"><span class="k">' + esc(ч.полно) + '</span></div>')
+      : ('<div class="sub">' + esc(String(PLAN.error || 'недоступно')) + '</div>'));
+  }
 
   /* Шаблон к объекту не применён: показываем, что это значит, и кнопку. */
   if(PLAN.applied === false){
@@ -16953,7 +16976,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "181.24";
+const BUILD = "181.25";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
