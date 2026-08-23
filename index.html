@@ -9450,6 +9450,51 @@ async function ftDecide(i, mode){
   }catch(e){ toast(e.message, "err"); }
   finally{ FT_BUSY = false; }
 }
+/* Складность дня [181, Д-181-49]. Четыре события дня одного человека должны
+   идти по порядку; на боевых нашлась пара «пришёл 2:11 / ушёл 1:13» за 07.08 —
+   уход раньше прихода, обе ждут решения, и подтвердить их можно подряд.
+   Панель НЕ запрещает: решает человек (то же правило, что у предупреждения о
+   зависимостях, решение 004). Но молчать об этом нельзя — подтверждённая пара
+   уходит в человекодни и в спор о деньгах как факт работы.
+   Отклонённые в разбор не идут: их уже вычеркнули. Время без «ЧЧ:ММ» тоже —
+   сравнивать нечего, и выдумывать порядок хуже, чем промолчать. */
+function tmMin(v){
+  const m = String(v == null ? "" : v).match(/^(\d{1,2}):(\d{2})/);
+  if(!m) return null;
+  const h = Number(m[1]), i = Number(m[2]);
+  if(!(h >= 0 && h <= 23 && i >= 0 && i <= 59)) return null;
+  return h * 60 + i;
+}
+function tmDayNote(rows){
+  const r = (rows || []).filter(x => String(x.status || "") !== "отклонено");
+  if(!r.length) return "";
+  const беды = [];
+  const по = ev => r.filter(x => String(x.event || "") === ev);
+  const врем = list => list.map(x => tmMin(x.time)).filter(v => v !== null);
+  const мин = list => { const v = врем(list); return v.length ? Math.min.apply(null, v) : null; };
+  const макс = list => { const v = врем(list); return v.length ? Math.max.apply(null, v) : null; };
+
+  const приш = по("пришёл"), ушёл = по("ушёл");
+  const он = по("обед начало"), ок = по("обед конец");
+
+  if(приш.length > 1) беды.push("«пришёл» отмечен " + приш.length + " раза");
+  if(ушёл.length > 1) беды.push("«ушёл» отмечен " + ушёл.length + " раза");
+  if(!приш.length && (ушёл.length || он.length || ок.length))
+    беды.push("день без отметки «пришёл»");
+
+  const п = мин(приш), у = макс(ушёл);
+  if(п !== null && у !== null && у < п) беды.push("«ушёл» раньше, чем «пришёл»");
+
+  const н = мин(он), к = макс(ок);
+  if(н !== null && к !== null && к < н) беды.push("обед кончился раньше, чем начался");
+  if(н !== null && п !== null && н < п) беды.push("обед начался до прихода");
+  if(к !== null && у !== null && к > у) беды.push("обед кончился после ухода");
+  if(!он.length && ок.length) беды.push("«вернулся» без «обед»");
+
+  if(!беды.length) return "";
+  return "День не складывается: " + беды.join("; ") + ". Решать вам — но проверьте время.";
+}
+
 /* Окно списка отметок: неделя или всё [решение 037 — фильтр не имеет права
    оставить экран пустым]. Возвращает и строки, и объяснение, потому что
    объяснять надо ровно тогда, когда окно сработало вхолостую.
@@ -9508,8 +9553,18 @@ function ftBlock(c){
       tmcUI(x) +
       "</div>";
   };
+  /* Разбор идёт по дню ОДНОГО человека: у бригадирских отметок он один,
+     но группировать всё равно надо им — иначе два человека в одном дне
+     дали бы ложное «пришёл отмечен 2 раза». */
+  const списокДня = дата => {
+    const по = {};
+    (groups[дата] || []).forEach(x => { const w = String(x.worker || ""); (по[w] = по[w] || []).push(x); });
+    return Object.keys(по).map(w => tmDayNote(по[w])).filter(Boolean);
+  };
   const list = Object.keys(groups).sort().reverse().map(d =>
-    '<div class="sub" style="margin-top:14px">' + dLabel(d) + "</div>" + groups[d].map(card).join("")).join("");
+    '<div class="sub" style="margin-top:14px">' + dLabel(d) + "</div>" +
+    списокДня(d).map(n => '<div class="stat"><span class="k" style="color:var(--warn);font-size:13px">⚠ ' + esc(n) + "</span></div>").join("") +
+    groups[d].map(card).join("")).join("");
   return '<div class="sub" style="margin-top:16px">Часы бригадира</div>' +
     '<div class="stat"><span class="k">' + (wait.length ? (wait.length + " ждут вашего решения") : "все часы бригадира решены") + "</span></div>" +
     '<div class="filt"><button class="' + (окно.всё ? "on" : "") + '" onclick="FT_ALL=!FT_ALL;render()">' + (окно.всё ? "Только последняя неделя" : "Показать всё") + "</button></div>" +
@@ -11916,8 +11971,18 @@ crew_time(){
         "</div>") : "") +
       "</div>";
   };
+  const списокДня = дата => {
+    const по = {};
+    (groups[дата] || []).forEach(x => { const w = String(x.worker || ""); (по[w] = по[w] || []).push(x); });
+    return Object.keys(по).map(w => {
+      const n = tmDayNote(по[w]);
+      return n ? (String(w || "").trim() ? (w + " — " + n.charAt(0).toLowerCase() + n.slice(1)) : n) : "";
+    }).filter(Boolean);
+  };
   const list = Object.keys(groups).sort().reverse().map(d =>
-    '<div class="sub" style="margin-top:14px">' + dLabel(d) + "</div>" + groups[d].map(card).join("")).join("");
+    '<div class="sub" style="margin-top:14px">' + dLabel(d) + "</div>" +
+    списокДня(d).map(n => '<div class="stat"><span class="k" style="color:var(--warn);font-size:13px">⚠ ' + esc(n) + "</span></div>").join("") +
+    groups[d].map(card).join("")).join("");
   return '<div class="hello">Табель</div>' +
     '<div class="sub">' + (wait.length ? (wait.length + " ждут решения") : "все отметки решены") + "</div>" +
     '<div class="stat">' +
@@ -17603,7 +17668,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "181.60";
+const BUILD = "181.61";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
