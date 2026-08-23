@@ -3653,6 +3653,23 @@ let BOOK_SVC = false, BOOK_GAP = false;
 function bookSvcToggle(){ BOOK_SVC = !BOOK_SVC; render(true); }
 function bookGapToggle(){ BOOK_GAP = !BOOK_GAP; render(true); }
 
+/* Из чего состоит очередь опроса — двумя-тремя словами для плитки. */
+function qzWhatLeft(){
+  const очередь = (typeof qzQueue === 'function') ? (qzQueue() || []) : [];
+  const счёт = { fate: 0, size: 0, works: 0 };
+  очередь.forEach(q => {
+    const id = String((q && (q.id || q.key)) || q || '');
+    if(id.indexOf('fate:') === 0)  счёт.fate++;
+    else if(id.indexOf('size:') === 0) счёт.size++;
+    else счёт.works++;
+  });
+  const части = [];
+  if(счёт.fate)  части.push(счёт.fate + ' ' + скл(счёт.fate, 'судьба проёма', 'судьбы проёмов', 'судеб проёмов'));
+  if(счёт.size)  части.push(счёт.size + ' ' + скл(счёт.size, 'размер проёма', 'размера проёмов', 'размеров проёмов'));
+  if(счёт.works) части.push(счёт.works + ' ' + скл(счёт.works, 'помещение', 'помещения', 'помещений') + ' по работам');
+  return части.length ? части.join(' · ') : 'спросит по одному';
+}
+
 function profPrice(code){
   const p = ((D.catalog || {}).price || []).find(x => x.code === code);
   if(p && Number(p.price_usd) > 0) return Number(p.price_usd);
@@ -4764,7 +4781,24 @@ const objPlan = () => { const l = objDocs(); return l.length ? l[l.length - 1] :
    требует, порядок заливки полов, схема проёмов и разметка плана его не
    считают. Полный список — roomAll(). */
 const roomAll  = () => (D.rooms || []);
-const roomMergedTo = r => String((r && r.merged_into) || '').trim();
+/* [181, живой проход 23.08] Признак объединения может отсутствовать в данных
+   и жить только в названии — «Туалет (объединён с VN 05.08)». Так и оказалось
+   на боевом объекте: поле merged_into пустое, а помещения фактически нет.
+   Читаем название запасным путём, но помним, откуда взяли: roomMergedSrc()
+   отвечает «данные» или «название», и экран говорит это словами. Молча
+   подменять источник нельзя — иначе догадка панели станет неотличима от факта. */
+const ИМЯ_СЛИЯНИЯ = /\(\s*объединён[аоы]?\s+с\s+([A-Za-zА-Яа-я0-9_-]{1,8})/i;
+function roomMergedByName(r){
+  const m = ИМЯ_СЛИЯНИЯ.exec(String((r && r.name) || ''));
+  if(!m) return '';
+  const код = String(m[1]).trim();
+  /* Ссылка обязана вести в существующее помещение: иначе это просто слова
+     в названии, и прятать по ним помещение — потерять его без следа. */
+  return (D.rooms || []).some(x => String(x.code) === код) ? код : '';
+}
+const roomMergedTo = r => String((r && r.merged_into) || '').trim() || roomMergedByName(r);
+const roomMergedSrc = r => (String((r && r.merged_into) || '').trim() ? 'данные'
+                          : (roomMergedByName(r) ? 'название' : ''));
 const roomIsMerged = r => roomMergedTo(r) !== '';
 const roomList = () => roomAll().filter(r => !roomIsMerged(r));
 const roomsMerged = () => roomAll().filter(roomIsMerged);
@@ -10745,7 +10779,7 @@ book(){
      в том, какую неправду человек прочитает. */
   const svcBlock = служ.length ? (
     '<div class="stat" style="margin-top:14px"><span class="k">Ещё ' + служ.length +
-      ' ' + (служ.length === 1 ? 'строка прайса относится' : 'строк прайса относятся') +
+      ' ' + скл(служ.length, 'строка прайса относится', 'строки прайса относятся', 'строк прайса относятся') +
       ' не к вашему выбору, а к прежнему слою справочника: ' +
       Object.entries(разбор.почему).map(([w, n]) => esc(w) + ' — ' + n).join(' · ') +
       '. В прайсе они не показаны и в смету не попадут.' +
@@ -10761,9 +10795,11 @@ book(){
   const gap = bookGap();
   const gapBlock = gap.сЦеной.length ? (
     '<div class="warnbox" style="margin-top:14px"><b>' + gap.сЦеной.length +
-      '</b> ' + (gap.сЦеной.length === 1 ? 'вид справочника не заведён' : 'видов справочника не заведены') +
+      '</b> ' + скл(gap.сЦеной.length, 'вид справочника не заведён', 'вида справочника не заведены', 'видов справочника не заведены') +
       ' в вашем прайсе, хотя рынок даёт по ним ставку. Пока строки нет, смета возьмёт ориентир рынка, а ваша цена не спросится.' +
-      (gap.безЦены.length ? (' Ещё ' + gap.безЦены.length + ' видов рынок отдельно не оценивает — их заводить нечем.') : '') +
+      (gap.безЦены.length ? (' Ещё ' + gap.безЦены.length + ' ' +
+        скл(gap.безЦены.length, 'вид рынок отдельно не оценивает', 'вида рынок отдельно не оценивает', 'видов рынок отдельно не оценивает') +
+        ' — заводить их нечем.') : '') +
       ' <button onclick="bookGapToggle()" style="margin-left:6px;padding:5px 9px;border-radius:9px;border:0;background:#3a3a3c;color:#fff;font-size:13px">' +
       (BOOK_GAP ? 'Скрыть' : 'Какие') + '</button>' +
       (BOOK_GAP ? ('<div class="sub" style="margin-top:8px">' +
@@ -10836,7 +10872,8 @@ profile(){
        обязан назвать причину и дать дверь, а не молчать. */
     const mergedNote = roomsMerged().length
       ? ('<div class="stat"><span class="k">Объединённые помещения (' + roomsMerged().length + ') в списке не показаны: ' +
-         roomsMerged().map(r => esc(roomShort(r)) + ' → ' + esc(roomShort(roomByCode(roomMergedTo(r))) || roomMergedTo(r))).join(', ') +
+         roomsMerged().map(r => esc(roomShort(r)) + ' → ' + esc(roomShort(roomByCode(roomMergedTo(r))) || roomMergedTo(r)) +
+           (roomMergedSrc(r) === 'название' ? ' (признак взят из названия — в данных он не проставлен)' : '')).join(', ') +
          '. Их работы уже переехали или сняты — правятся у помещения-приёмника.</span></div>')
       : '';
     if(!(D.rooms || []).length){
@@ -11489,7 +11526,10 @@ object(){
         : "помещений нет — начните с опроса") + "</div>" +
     '<div class="grid">' +
       '<button class="tile ' + (долгВсего ? "warnpri" : "pri") + '" onclick="qzStart()"><span class="ic">🧭</span><span class="nm">Пройти<br>вопросами</span>' +
-        '<div class="h">' + (долгВсего ? (долгВсего + " не заполнено — спросит по одному") : "система спросит сама") + "</div></button>" +
+        /* [181] «N не заполнено» рядом с «обмеры полны» читается как спор двух
+           чисел. Спора нет: шапка про размеры помещений, плитка про очередь
+           вопросов. Чтобы это было видно, плитка называет, ЧЕГО не хватает. */
+        '<div class="h">' + (долгВсего ? (долгВсего + " вопросов: " + qzWhatLeft()) : "система спросит сама") + "</div></button>" +
       '<button class="tile" onclick="startVoice(\'rooms\')"><span class="ic">🎤</span><span class="nm">Продиктовать<br>размеры</span><div class="h">пол, потолок, окна, двери</div></button>' +
       '<button class="tile" onclick="objPick()"><span class="ic">🗺️</span><span class="nm">' + (plan ? "Заменить план" : "Загрузить план") + '</span><div class="h">фото плана БТИ</div></button>' +
       /* [180] Ход к смете прямо отсюда: «Профиль ремонта» жил только на главном,
@@ -16683,7 +16723,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "181.16";
+const BUILD = "181.17";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
