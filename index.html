@@ -12509,20 +12509,29 @@ deal(){
       <div class="r"><span class="k">Выплачено</span><span class="v ok">${usd(paidSum())} $</span></div>
       <div class="r"><span class="k">Остаток</span><span class="v">${usd(dealRest())} $</span></div>
     </div>
-    ${canAlloc() ? `
+    ${canAlloc() ? (function(){
+      /* [181, Д-181-43] Признанный договор замораживает позиции — и разнесение
+         в том числе. Блок оставляем видимым (механизм должен быть виден), но
+         запертым: сервер всё равно откажет, а человек потратит время и решит,
+         что сломалось. */
+      const зам = (typeof contractFrozen === 'function') ? contractFrozen() : null;
+      const выкл = зам ? ' disabled' : '';
+      const тень = зам ? 'opacity:.5;' : '';
+      return `
     <div class="card">
       <div class="lbl">Назначить сумму и разнести по работам</div>
       <div class="m" style="margin-bottom:8px">Цены работ изменятся пропорционально их нынешним долям, сумма сойдётся до цента. Принятые изменения считаются сверх этой суммы.</div>
-      <div style="display:flex;gap:8px;align-items:center">
-        <input id="allocSum" type="number" inputmode="decimal" placeholder="сумма договора, $" value="${dealBase() || ""}"
+      <div style="display:flex;gap:8px;align-items:center;${тень}">
+        <input id="allocSum" type="number" inputmode="decimal" placeholder="сумма договора, $" value="${dealBase() || ""}"${выкл}
           style="flex:1;padding:10px;border-radius:10px;border:1px solid #3a3a3c;background:#000;color:#fff;font-size:15px">
-        <button onclick="allocShow()" style="padding:10px 14px;border-radius:10px;border:0;background:#0a84ff;color:#fff;font-size:15px">Разнести</button>
+        <button onclick="allocShow()"${выкл} style="padding:10px 14px;border-radius:10px;border:0;background:#0a84ff;color:#fff;font-size:15px">Разнести</button>
       </div>
+      ${зам ? `<div class="m" style="margin-top:10px;color:var(--warn)">Договор № ${esc(зам.no)} признан — позиции заморожены, разносить нечего: цены больше не меняются ни разнесением, ни правкой. Всё новое оформляется дополнительным соглашением.</div>` : ""}
       <div class="m" style="margin-top:10px">${allocUndoPlan().rows.length
         ? ("Базовая сумма сметы: " + fmt(allocBaseSum()) + " $ — к ней вернёт отмена.")
         : "Базовых цен пока нет — они появятся при сборке сметы или при первом разнесении."}</div>
-      ${allocUndoPlan().rows.length ? `<button onclick="allocUndoShow()" style="margin-top:8px;width:100%;padding:10px 14px;border-radius:10px;border:1px solid #3a3a3c;background:transparent;color:var(--txt);font-size:15px">↩︎ Отменить разнесение</button>` : ""}
-    </div>` : ""}
+      ${allocUndoPlan().rows.length ? `<button onclick="allocUndoShow()"${выкл} style="margin-top:8px;width:100%;padding:10px 14px;border-radius:10px;border:1px solid #3a3a3c;background:transparent;color:var(--txt);font-size:15px;${тень}">↩︎ Отменить разнесение</button>` : ""}
+    </div>`; })() : ""}
     ${contractBlock()}
     ${addendumBlock()}
     <div class="card">
@@ -17524,7 +17533,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "181.52";
+const BUILD = "181.53";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
