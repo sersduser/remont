@@ -11425,8 +11425,11 @@ home(){
   /* Баланс от приёмки. Для работника считаем по его ценам, но только если они
      заполнены (колонка «Цена_Юрия_USD»); иначе блок не показываем.        */
   const adv = (() => {
-    const f = worker ? "price_contractor_usd" : "price_alloc_usd";
-    return (worker && !accSum(f)) ? null : advCalc(f);
+    /* [183, Д-183-1] Аванс оплачен по договору — и отработка его меряется
+       договорной шкалой у ОБЕИХ сторон (было: исполнителю его ценами, и на
+       одном объекте стороны видели 48 против 59). Цены исполнителя — своей
+       строкой ниже, подписанной. Решение Дмитрия 25.08: вариант А. */
+    return advCalc("price_alloc_usd");
   })();
   const advBox = adv ? `
     <div class="r"><span class="k">${adv.k}</span>
@@ -11458,7 +11461,8 @@ home(){
         <span class="v">${fmt(m.received_usd)} из ${usd(dealSum())} $</span></div>
       ${dealDelta() ? `<div class="r"><span class="k" style="font-size:13px;opacity:.65">${esc(dealNote())}</span><span class="v"></span></div>` : ""}
       <div class="r"><span class="k">Принято заказчиком</span>
-        <span class="v" style="color:var(--ok)">${fmt(accSum("price_contractor_usd"))} $</span></div>
+        <span class="v" style="color:var(--ok)">${fmt(accSum("price_alloc_usd"))} $</span></div>
+      ${accSum("price_contractor_usd") ? `<div class="r"><span class="k" style="font-size:13px;opacity:.65">По вашим ценам принято: ${fmt(accSum("price_contractor_usd"))} $</span><span class="v"></span></div>` : ""}
       <div class="r"><span class="k">Готовность объекта</span>
         <span class="v">${Math.round(p)} %</span></div>
       ${progNote() ? `<div class="r"><span class="k" style="font-size:12px;opacity:.5">${progNote()}</span><span class="v"></span></div>` : ""}
@@ -12789,8 +12793,10 @@ money(){
 
       <div class="card">
         <div class="lbl">Мои работы по приёмке</div>
-        <div class="li"><div class="n">Принято заказчиком<div class="d">статус «Готово»</div></div>
+        <div class="li"><div class="n">Принято заказчиком<div class="d">статус «Готово» · по вашим ценам</div></div>
           <div class="v" style="color:var(--ok)">${fmt(accSum("price_contractor_usd"))} $</div></div>
+        <div class="li"><div class="n">В счёт договора<div class="d">по договорным ценам — как видит заказчик</div></div>
+          <div class="v">${fmt(accSum("price_alloc_usd"))} $</div></div>
         <div class="li"><div class="n">В работе, по прогрессу<div class="d">справочно, ждёт приёмки</div></div>
           <div class="v" style="color:var(--hint)">${fmt(wipSum("price_contractor_usd"))} $</div></div>
       </div>
@@ -18069,7 +18075,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "182.1";
+const BUILD = "183.1";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
