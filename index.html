@@ -13946,6 +13946,7 @@ async function qzSay(){
     if(r.status === 401 || r.status === 403) throw new Error(initStale() ? staleMsg() : "Доступ не подтверждён.");
     if(!raw) throw new Error(initStale() ? staleMsg() : "Не удалось разобрать. Попробуйте сказать иначе.");
     let d; try{ d = JSON.parse(raw); }catch{ throw new Error("Сервер вернул неожиданный ответ."); }
+    if (typeof vQ === "string" && vQ) d.q0 = vQ;   /* [183, Н-183-1] тип вопроса едет с разбором */
     showVResult(d);
   }catch(e){ showVError(e.message); }
 }
@@ -14992,6 +14993,7 @@ async function onRecStop(){
     if(r.status === 401 || r.status === 403) throw new Error(initStale() ? staleMsg() : "Доступ не подтверждён.");
     if(!raw) throw new Error(initStale() ? staleMsg() : "Не удалось разобрать запись. Попробуйте ещё раз.");
     let d; try{ d = JSON.parse(raw); }catch{ throw new Error("Сервер вернул неожиданный ответ."); }
+    if (typeof vQ === "string" && vQ) d.q0 = vQ;   /* [183, Н-183-1] тип вопроса едет с разбором */
     showVResult(d);
   }catch(e){ showVError(e.message); }
 }
@@ -15125,6 +15127,7 @@ async function vRetry(mode){
     if(!raw) throw new Error(initStale() ? staleMsg() : "Не удалось разобрать. Попробуйте сказать иначе.");
     let d; try{ d = JSON.parse(raw); }catch{ throw new Error("Сервер вернул неожиданный ответ."); }
     d.ask = false;                     // второй круг переспроса не показываем: человек уже выбрал
+    if (typeof vQ === "string" && vQ) d.q0 = vQ;   /* [183, Н-183-1] тип вопроса едет с разбором */
     showVResult(d);
   }catch(e){ showVError(e.message); }
 }
@@ -16490,7 +16493,12 @@ function showVRepair(d){
       ? '<div class="vd" style="margin:8px 0 2px">Поправки и оговорки — записываются в карточке помещения</div>' : "";
     const ref = (r.refused || []).length;
     const note = [lik ? `перенесено из «${(r._like && r._like.name) || ""}»: ${lik}` : "", blk ? `названо направлением: ${blk} — не отмечено` : "", ofr ? `предложено целиком: ${ofr} — не отмечено` : "", nov ? `без объёма здесь: ${nov} — не отмечено` : "", tech ? (`по технологии добавлено: ${tech}` + (techX ? ` · из них ${techX} не отмечено: другая поверхность` : "")) : "", dup ? `уже в смете: ${dup} — не отмечено` : "", inpl ? `уже отмечено в этом помещении: ${inpl} — не отмечено` : "", ref ? `сказали не делать: ${ref}` : "", (r.mods || []).length ? `поправок услышано: ${(r.mods || []).length} — не записано` : "", skp ? `этапов можно пропустить: ${skp} — решается в профиле` : ""].filter(Boolean).join(" · ");
-    return `<div style="margin-bottom:12px">${head}${note ? `<div class="vd" style="margin:2px 0 6px">${esc(note)}</div>` : ""}${kl}${rfHead}${rf}${ooHead}${oo}${opHead}${op}${mdHead}${md}${(r.room_skip ? `<div class="vd" style="margin:8px 0 2px;color:#ff9f0a">Услышано: «${esc(String(r.room_skip.reason || ""))}» — помещение целиком вне работы. Отметить это можно в его карточке.</div>` : "")}
+    return `<div style="margin-bottom:12px">${head}${note ? `<div class="vd" style="margin:2px 0 6px">${esc(note)}</div>` : ""}${kl}${rfHead}${rf}${ooHead}${oo}${opHead}${op}${mdHead}${md}${(r.room_skip ? ((VREP_D && String(VREP_D.q0 || "").indexOf("works2:") === 0)
+        /* [183, Н-183-1] Подвопрос об инженерке сам подсказывает ответ «ничего» —
+           и «ничего» здесь значит «по этой теме ничего», а не «помещение вне
+           работы»: отделка уже названа, совет пометить помещение — ловушка. */
+        ? `<div class="vd" style="margin:8px 0 2px;color:#30d158">Услышано: «${esc(String(r.room_skip.reason || ""))}» — по электрике и сантехнике ничего. Помещение остаётся в работе.</div>`
+        : `<div class="vd" style="margin:8px 0 2px;color:#ff9f0a">Услышано: «${esc(String(r.room_skip.reason || ""))}» — помещение целиком вне работы. Отметить это можно в его карточке.</div>`) : "")}
       </div>`;
   }).join("");
   openVSheet(`
@@ -18075,7 +18083,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "183.1";
+const BUILD = "183.2";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
