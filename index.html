@@ -10249,6 +10249,7 @@ function handHome(){
     btn("пришёл", "🏁", "Пришёл") + btn("обед начало", "🍲", "Обед") +
     btn("обед конец", "🔁", "Вернулся") + btn("ушёл", "🏠", "Ушёл") +
     '<button class="tile pri" onclick="startVoice()"><span class="ic">🎤</span><span class="nm">Голосом</span><div class="h">пришёл · готовность · расход</div></button>' +
+    '<button class="tile" onclick="asgOpenScr(\'asg_my\')"><span class="ic">🤝</span><span class="nm">Наряды</span><div class="h">принять · отклонить · своё время</div></button>' +
     '<button class="tile" onclick="go(\'crew_cal\')"><span class="ic">📅</span><span class="nm">Мой календарь</span></button>' +
     '<button class="tile" onclick="go(\'hand_rep\')"><span class="ic">📝</span><span class="nm">Отчёт бригадиру</span><div class="h">работа или материал</div></button>' +
     '<button class="tile" onclick="go(\'works\')"><span class="ic">🔨</span><span class="nm">Работы</span><div class="h">без цен</div></button>' +
@@ -11172,10 +11173,234 @@ const wipSum = f => D.works.filter(w => w.status !== "Готово" && (w.progre
 /* ═══════════════════════════════════════════════════════════════
    ЭКРАНЫ
    ═══════════════════════════════════════════════════════════════ */
+
+/* ═══════════════════════════════════════════════════════════════════════
+   НАРЯДЫ ПО СОГЛАСИЮ (I2) [пост-сессия 183, карта 51 §5]
+
+   Наряд — не запись, а договорённость: у предложения есть адресат («чей
+   ход» хранит сервер), ответ — принять · отклонить с причиной · предложить
+   своё время; встречное создаёт новую строку с parent_id, след переговоров
+   виден цепочкой. Права, остаток сметы и пересечения занятости считает
+   БАЗА (assignment_tg) — экран только показывает ответы словами.
+   Наряды — данные людей бригады: ветка требует подпись Telegram, по
+   объектному ключу из браузера она честно отвечает 401.
+   ═══════════════════════════════════════════════════════════════════════ */
+let ASG = null, ASG_BUSY = false, ASG_OPEN = null, ASG_F = null;
+async function asgApi(body){
+  let r, txt;
+  try{
+    r = await fetchT(API + '/assignment', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(Object.assign({ initData: INIT, key: KEY, object_id: D.object_id }, body || {})) });
+    txt = (await r.text()).trim();
+  }catch(e){ return { ok: false, error: 'Нет связи с сервером — попробуйте ещё раз.' }; }
+  let j = null; try{ j = JSON.parse(txt); }catch(e){}
+  /* Ветки ещё нет — n8n отвечает не-JSON на незарегистрированный вебхук [096 · 097]. */
+  if(!j) return { ok: false, absent: true, error: 'Серверная часть нарядов ещё не выкачена' };
+  return j;
+}
+async function asgLoad(force){
+  if(ASG && !force) return ASG;
+  ASG = await asgApi({ mode: 'list' });
+  return ASG;
+}
+function asgOpenScr(k){
+  ASG = null; ASG_OPEN = null;
+  go(k);
+  asgLoad(true).then(() => render());
+}
+const ASG_CL = { 'предложен':'#ff9f0a', 'принят':'#30d158', 'в работе':'#30d158',
+                 'встречное':'#5856d6', 'отклонён':'#8e8e93', 'отозван':'#8e8e93', 'закрыт':'#0a84ff' };
+function asgList(){ return (ASG && ASG.ok && Array.isArray(ASG['наряды'])) ? ASG['наряды'] : []; }
+function asgWhen(a){
+  const p = t => { const d = new Date(t); return isNaN(d) ? String(t || '') :
+    d.toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' }) + ' ' +
+    d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }); };
+  const конец = t => { const d = new Date(t); return isNaN(d) ? String(t || '') :
+    d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }); };
+  return p(a['с']) + ' — ' + конец(a['по']);
+}
+function asgSubj(a){
+  const w = a['работа'] ? ((D.works || []).find(x => String(x.code) === String(a['работа'])) || {}) : {};
+  return a['работа']
+    ? (esc(w.name || a['работа']) + (a['объём'] != null ? (' · ' + esc(String(a['объём'])) + ' ' + esc(String(w.unit || ''))) : ''))
+    : esc(String(a['задание'] || ''));
+}
+/* Карточка наряда — общая для обоих экранов; чьи кнопки показывать, решает роль. */
+function asgCard(a, брг){
+  const st = String(a['состояние'] || '');
+  const цвет = ASG_CL[st] || '#8e8e93';
+  const мойХод = !!a['мой_ход'];
+  const о = ASG_OPEN && ASG_OPEN.id === a.id ? ASG_OPEN : null;
+  const кнопка = (текст, on, главная) =>
+    '<button onclick="' + on + '" style="flex:1;min-width:0;padding:10px;border-radius:10px;border:0;font-size:14px;background:' +
+    (главная ? '#0a84ff' : '#3a3a3c') + ';color:#fff">' + текст + '</button>';
+  let низ = '';
+  if(мойХод && st === 'предложен'){
+    if(о && о.вид === 'откл'){
+      низ = '<div style="margin-top:8px"><input id="asg_rsn" placeholder="Почему не подходит (видно второй стороне)" ' + CREW_INP + '></div>' +
+        '<div style="display:flex;gap:8px;margin-top:8px">' +
+        кнопка('Отмена', 'ASG_OPEN=null;render()') + кнопка('Отклонить', 'asgAnswer(\'' + attr(a.id) + '\',\'отклонён\')', 1) + '</div>';
+    }else if(о && о.вид === 'своё'){
+      низ = '<div class="lbl" style="margin-top:8px">Своё время' + (a['работа'] ? ' и объём' : '') + ' — это встречное предложение, ход перейдёт второй стороне</div>' +
+        '<div style="display:flex;gap:8px;margin:8px 0">' +
+          '<input id="asg_cd" type="date" style="flex:1;padding:10px;border-radius:10px;border:1px solid #3a3a3c;background:#000;color:#fff;font-size:14px">' +
+          '<input id="asg_c1" type="time" style="flex:1;padding:10px;border-radius:10px;border:1px solid #3a3a3c;background:#000;color:#fff;font-size:14px">' +
+          '<input id="asg_c2" type="time" style="flex:1;padding:10px;border-radius:10px;border:1px solid #3a3a3c;background:#000;color:#fff;font-size:14px">' +
+        '</div>' +
+        (a['работа'] ? '<div style="margin:8px 0"><input id="asg_cq" type="number" inputmode="decimal" step="0.01" placeholder="Объём (пусто — прежний)" ' + CREW_INP + '></div>' : '') +
+        '<div style="display:flex;gap:8px">' + кнопка('Отмена', 'ASG_OPEN=null;render()') +
+        кнопка('Предложить своё', 'asgCounter(\'' + attr(a.id) + '\')', 1) + '</div>';
+    }else{
+      низ = '<div style="display:flex;gap:8px;margin-top:8px">' +
+        кнопка('Принять', 'asgAnswer(\'' + attr(a.id) + '\',\'принят\')', 1) +
+        кнопка('Отклонить', 'ASG_OPEN={id:\'' + attr(a.id) + '\',вид:\'откл\'};render()') +
+        кнопка('Своё время', 'ASG_OPEN={id:\'' + attr(a.id) + '\',вид:\'своё\'};render()') + '</div>';
+    }
+  }else if(st === 'предложен' && !мойХод){
+    низ = '<div style="margin-top:8px"><button onclick="asgWithdraw(\'' + attr(a.id) + '\')" ' + CREW_BTN2 + '>Отозвать предложение</button></div>';
+  }else if(брг && (st === 'принят' || st === 'в работе')){
+    низ = '<div style="margin-top:8px"><button onclick="asgClose(\'' + attr(a.id) + '\')" ' + CREW_BTN2 + '>Закрыть наряд</button></div>';
+  }
+  return '<div class="work">' +
+    '<div class="t">' + asgWhen(a) + ' <span style="color:' + цвет + ';font-size:13px">' + esc(st) + '</span></div>' +
+    '<div class="m">' + asgSubj(a) + '</div>' +
+    '<div class="m">' + (брг ? ('работник: ' + esc(String(a['работник'] || ''))) : ('бригадир: ' + esc(String(a['бригадир'] || '')))) +
+      (a['ход_за'] && st === 'предложен' ? (' · ход за: ' + esc(String(a['ход_за']))) : '') + '</div>' +
+    (a['цепочка'] ? '<div class="m" style="color:var(--hint)">↩ встречное — вместо более раннего предложения</div>' : '') +
+    (a['причина'] ? '<div class="m" style="color:var(--hint)">причина: «' + esc(String(a['причина'])) + '»</div>' : '') +
+    низ + '</div>';
+}
+function asgScrHead(имя){
+  if(ASG === null) return '<div class="hello">' + имя + '</div><div class="sub">Загружаю…</div>';
+  if(ASG.absent) return '<div class="hello">' + имя + '</div><div class="sub">серверная часть нарядов ещё не выкачена</div>';
+  if(!ASG.ok){
+    return '<div class="hello">' + имя + '</div><div class="sub">' + esc(String(ASG.error || 'недоступно')) + '</div>' +
+      '<div class="grid"><button class="tile" onclick="asgOpenScr(stack[stack.length-1])"><span class="ic">🔄</span><span class="nm">Обновить</span></button></div>';
+  }
+  return '';
+}
+/* Экран работника: входящие предложения первыми (§5.2). */
+function asgScreenMy(){
+  const шапка = asgScrHead('Наряды');
+  if(шапка) return шапка;
+  const все = asgList();
+  const мои = все.filter(a => a['мой_ход']);
+  const живые = все.filter(a => !a['мой_ход'] && (a['состояние'] === 'принят' || a['состояние'] === 'в работе' || a['состояние'] === 'предложен'));
+  const прочие = все.filter(a => мои.indexOf(a) < 0 && живые.indexOf(a) < 0);
+  const блок = (з, сп) => сп.length ? ('<div class="sub" style="margin-top:14px">' + з + ' · ' + сп.length + '</div>' + сп.map(a => asgCard(a, false)).join('')) : '';
+  return '<div class="hello">Наряды</div>' +
+    '<div class="sub">' + (мои.length ? ('ждут вашего ответа: ' + мои.length) : 'по согласию: предложение можно принять, отклонить или предложить своё время') + '</div>' +
+    блок('Ваш ход', мои) + блок('Принятые и предложенные', живые) + блок('Завершённые', прочие) +
+    '<div class="grid" style="margin-top:12px"><button class="tile" onclick="asgOpenScr(\'asg_my\')"><span class="ic">🔄</span><span class="nm">Обновить</span></button></div>';
+}
+/* Экран бригадира: список по дням + форма назначения (§5.1). */
+function asgScreenObj(){
+  const шапка = asgScrHead('Наряды по согласию');
+  if(шапка) return шапка;
+  const c = CREW_DATA;
+  const все = asgList().slice().sort((a, b) => String(a['с'] || '').localeCompare(String(b['с'] || '')));
+  const группы = {};
+  все.forEach(a => { const d = String(a['с'] || '?').slice(0, 10); (группы[d] = группы[d] || []).push(a); });
+  const список = Object.keys(группы).sort().map(d =>
+    '<div class="sub" style="margin-top:14px">' + dLabel(d) + ' · ' + группы[d].length + '</div>' +
+    группы[d].map(a => asgCard(a, true)).join('')).join('');
+  const люди = ((c && c.workers) || []).filter(w => String(w.status || '') !== 'отключён' && String(w.tg || '').trim());
+  const работы = (typeof addWorks === 'function' ? addWorks() : (D.works || []));
+  const ф = ASG_F || {};
+  const форма = люди.length ?
+    '<div class="card"><div class="lbl">Предложить наряд</div>' +
+      '<div style="margin:8px 0"><select id="asg_w" ' + CREW_INP + '>' +
+        люди.map(w => '<option value="' + attr(w.tg) + '">' + esc(w.name) + '</option>').join('') + '</select></div>' +
+      '<div style="margin:8px 0"><select id="asg_wc" onchange="ASG_F=Object.assign(ASG_F||{},{wc:this.value});render()" ' + CREW_INP + '>' +
+        '<option value="">— задание словами, без строки сметы —</option>' +
+        работы.map(w => '<option value="' + attr(w.code) + '"' + (ф.wc === String(w.code) ? ' selected' : '') + '>' +
+          esc(w.name) + ' (' + esc(String(w.room || '').split(' (')[0]) + ')</option>').join('') + '</select></div>' +
+      (ф.wc
+        ? '<div style="margin:8px 0"><input id="asg_q" type="number" inputmode="decimal" step="0.01" placeholder="Объём на этот наряд" ' + CREW_INP + '></div>'
+        : '<div style="margin:8px 0"><input id="asg_t" placeholder="Задание («вынести мусор из зала»)" ' + CREW_INP + '></div>') +
+      '<div style="display:flex;gap:8px;margin:8px 0">' +
+        '<div style="flex:1"><div class="lbl">день</div><input id="asg_d" type="date" value="' + attr(ф.d || dShift(crewToday(), 1)) + '" ' + CREW_INP + '></div>' +
+        '<div style="flex:1"><div class="lbl">с</div><input id="asg_t1" type="time" value="' + attr(ф.t1 || '09:00') + '" ' + CREW_INP + '></div>' +
+        '<div style="flex:1"><div class="lbl">по</div><input id="asg_t2" type="time" value="' + attr(ф.t2 || '18:00') + '" ' + CREW_INP + '></div>' +
+      '</div>' +
+      '<button class="tile pri" style="width:100%" onclick="asgPropose()"><span class="nm">Предложить</span>' +
+        '<div class="h">работник ответит: принять · отклонить · своё время</div></button>' +
+    '</div>' :
+    '<div class="stat"><span class="k">Предлагать наряды можно вошедшим работникам бригады — пока таких нет. Приглашения — на экране «Бригада».</span></div>';
+  return '<div class="hello">Наряды по согласию</div>' +
+    '<div class="sub">' + (все.length ? ('договорённостей: ' + все.length) : 'наряд предлагается и принимается — обе стороны видят один и тот же уговор') + '</div>' +
+    форма + список +
+    '<div class="grid" style="margin-top:12px"><button class="tile" onclick="asgOpenScr(\'asg_obj\')"><span class="ic">🔄</span><span class="nm">Обновить</span></button></div>';
+}
+/* Тонкие действия: ответ сервера — словами человеку, список — заново. */
+async function asgDo(body, слово){
+  if(ASG_BUSY) return;
+  ASG_BUSY = true;
+  toast('Отправляю…', 'wait');
+  const j = await asgApi(body);
+  ASG_BUSY = false;
+  if(!j || !j.ok){
+    toast((j && j.error) || 'Не получилось — попробуйте ещё раз', 'err');
+    return;
+  }
+  let хвост = '';
+  if(Array.isArray(j['пересечения']) && j['пересечения'].length)
+    хвост = ' · внимание: у работника уже есть принятый наряд в этом времени';
+  toast(слово + хвост);
+  ASG_OPEN = null; ASG_F = null;
+  await asgLoad(true);
+  render();
+}
+function asgVal(id){ const el = document.getElementById(id); return el ? el.value : ''; }
+function asgISO(d, t){ return d && t ? (d + 'T' + t + ':00+05:00') : null; }  /* пояс объекта — Ташкент */
+async function asgAnswer(id, отв){
+  const данные = { answer: отв };
+  if(отв === 'отклонён') данные.reason = asgVal('asg_rsn');
+  if(отв === 'принят' && !await ask('Принять наряд? Это обязательство: время займётся, бригадир будет рассчитывать на вас.')) return;
+  await asgDo({ mode: 'answer', assignment_id: id, data: данные }, отв === 'принят' ? 'Наряд принят' : 'Отклонено — бригадир увидит причину');
+}
+async function asgCounter(id){
+  const d = asgVal('asg_cd'), t1 = asgVal('asg_c1'), t2 = asgVal('asg_c2'), q = asgVal('asg_cq');
+  const данные = {};
+  if(d && t1) данные.starts_at = asgISO(d, t1);
+  if(d && t2) данные.ends_at = asgISO(d, t2);
+  if(q) данные.qty = q;
+  if(!Object.keys(данные).length){ toast('Встречное должно менять время или объём', 'err'); return; }
+  await asgDo({ mode: 'counter', assignment_id: id, data: данные }, 'Встречное отправлено — ход за второй стороной');
+}
+async function asgWithdraw(id){
+  if(!await ask('Отозвать предложение? Вернуть его нельзя — только предложить заново.')) return;
+  await asgDo({ mode: 'withdraw', assignment_id: id }, 'Предложение отозвано');
+}
+async function asgClose(id){
+  if(!await ask('Закрыть наряд? Это финал договорённости — так и останется в истории.')) return;
+  await asgDo({ mode: 'close', assignment_id: id }, 'Наряд закрыт');
+}
+async function asgPropose(){
+  const tg = asgVal('asg_w'), wc = asgVal('asg_wc');
+  const d = asgVal('asg_d'), t1 = asgVal('asg_t1'), t2 = asgVal('asg_t2');
+  if(!tg){ toast('Выберите работника', 'err'); return; }
+  if(!d || !t1 || !t2){ toast('Нужны день и время с/по', 'err'); return; }
+  const данные = { worker_tg: tg, starts_at: asgISO(d, t1), ends_at: asgISO(d, t2) };
+  if(wc){
+    данные.work_code = wc;
+    данные.qty = asgVal('asg_q');
+    if(!данные.qty){ toast('У строки сметы нужен объём', 'err'); return; }
+  }else{
+    данные.task = asgVal('asg_t');
+    if(!данные.task){ toast('Напишите задание словами или выберите строку сметы', 'err'); return; }
+  }
+  await asgDo({ mode: 'propose', data: данные }, 'Предложено — работнику ушло сообщение бота');
+}
+
 const SCREENS = {
 
 /* Мастер-опрос [чат 059]: экран целиком собирает модуль опроса. */
 quiz(){ return qzScreen(); },
+
+/* Наряды по согласию (I2) [183]: работник и бригадир — два взгляда на один уговор. */
+asg_my(){ return asgScreenMy(); },
+asg_obj(){ return asgScreenObj(); },
 
 /* Ход работ [чат 118, путь D разбора 38]: этапы шаблона по порядку,
    работы сметы внутри этапа, встречные шаги с отметкой. Порядок и зона
@@ -12252,6 +12477,7 @@ crew(){
     crewsBlock() +
     '<div class="grid" style="margin-bottom:12px">' +
       '<button class="tile" onclick="go(\'crew_orders\')"><span class="ic">🗓️</span><span class="nm">Наряды</span><div class="h">' + (todayN ? "сегодня в поле: " + todayN : "кто где завтра") + "</div></button>" +
+      '<button class="tile" onclick="asgOpenScr(\'asg_obj\')"><span class="ic">🤝</span><span class="nm">Наряды по согласию</span><div class="h">время и ответ работника</div></button>' +
       '<button class="tile' + (waitTm ? " pri" : "") + '" onclick="go(\'crew_time\')"><span class="ic">⏱️</span><span class="nm">Табель</span><div class="h">' + (waitTm ? waitTm + " ждут решения" : "отметки бригады") + "</div></button>" +
       '<button class="tile' + (waitRp ? " pri" : "") + '" onclick="go(\'crew_reports\')"><span class="ic">📨</span><span class="nm">Отчёты</span><div class="h">' + (waitRp ? waitRp + " новых" : "работы и материалы") + "</div></button>" +
       '<button class="tile" onclick="openInvites()"><span class="ic">🎟️</span><span class="nm">Приглашения</span><div class="h">коды и отзыв</div></button>' +
@@ -18083,7 +18309,7 @@ function langInit(){
 /* Метка сборки [чат 021]. Ставится рядом с кнопкой языка, ничего не
    перехватывает (pointer-events:none) и не переводится языковым слоем —
    в ней нет кириллицы. Номер ведётся вручную: «чат.сборка». */
-const BUILD = "183.2";
+const BUILD = "184.1";
 function buildTag(){
   if(document.getElementById("buildtag")) return;
   const d = document.createElement("div");
